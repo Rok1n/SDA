@@ -95,12 +95,13 @@ pnpm core:build        # cargo build --target wasm32 + wasm-bindgen → pkg-web(
 
 双耳模式用的头相关脉冲响应来自 **SADIE II 数据库**（University of York，
 **Apache-2.0**，D1 = Neumann KU100 人工头，含消声室 HRIR + 房间 BRIR）。
-去 [SADIE 项目页](https://www.york.ac.uk/sadie-project/) 下载 D1 的
-HRIR 与 BRIR（48kHz WAV zip），然后：
+从 [Zenodo](https://doi.org/10.5281/zenodo.12092466) 下载 `D1.zip`（~117MB，
+48kHz WAV），然后：
 
 ```bash
-# 网络通的话也可以直接传 zip 的 http(s) 地址
-pnpm hrtf:build -- --hr <HRIR zip路径或URL> --br <BRIR zip路径或URL>
+# D1.zip 同时含 HRIR/BRIR，用路径过滤各取所需；也可以直接传 zip 的 http(s) 地址
+pnpm hrtf:build -- --hr D1.zip --br D1.zip \
+  --hr-path D1_HRIR_WAV/48K_24bit --br-path D1_BRIR_WAV/48K_24bit
 # → apps/web/public/hrtf/hrtf-set.json + 每个方向的 dry/wet .f32
 ```
 

@@ -13,9 +13,9 @@
  * 文件名里必须能解析出方位角/仰角（支持 az30_el0、AZ030_EL000 等写法，
  * 见 AZ_EL_PATTERNS，数据集命名不同时在这里加一条即可）。
  *
- * 约定：本渲染器方位角 + = 左（ADM/ITU）；多数 HRTF 数据集 + = 右，
- * 默认 --flip-az 取反匹配（左右声道不互换，只是选另一边的测量点）。
- * 若数据集也是 + = 左，传 --no-flip-az。
+ * 约定：本渲染器方位角 + = 左（ADM/ITU）；SADIE II 同为 + = 左（逆时针），
+ * 默认不翻转。换用 + = 右 的数据集（如 MIT KEMAR）时传 --flip-az
+ * （选对称侧的测量点，左右声道不互换）。
  */
 
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -34,9 +34,24 @@ const DRY_TAPS = 512;   // HRIR 截断（≈10.7ms @48k，直达声）
 const WET_TAPS = 8192;  // BRIR 截断（≈170ms @48k，含房间早期反射 + 尾音）
 
 const AZ_EL_PATTERNS = [
+  // SADIE II：azi_148,0_ele_-15,0.wav（逗号 = 小数点，Windows 区域风格）
+  /azi_(-?\d+),(\d+)_ele_(-?\d+),(\d+)/i,
   /az(-?\d+(?:\.\d+)?)[^\d-]+el(-?\d+(?:\.\d+)?)/i,   // az30_el0 / AZ030_EL000
   /(-?\d+)_(-?\d+)/,                                   // 30_0.wav
 ];
+
+function parseAzEl(name) {
+  for (const re of AZ_EL_PATTERNS) {
+    const m = name.match(re);
+    if (!m) continue;
+    if (m.length === 5) {
+      // SADIE 逗号小数：azi_X,x_ele_Y,y
+      return [parseFloat(`${m[1]}.${m[2]}`), parseFloat(`${m[3]}.${m[4]}`)];
+    }
+    return [parseFloat(m[1]), parseFloat(m[2])];
+  }
+  return null;
+}
 
 const args = process.argv.slice(2);
 function opt(name, dflt) {
@@ -45,12 +60,18 @@ function opt(name, dflt) {
 }
 const HR_SRC = opt("hr", null);
 const BR_SRC = opt("br", null);
+// zip/目录内的路径子串过滤（SADIE D1.zip 同时含 44/48/96k 三套 + HRIR/BRIR 两类）
+const HR_PATH = opt("hr-path", "48K_24bit");
+const BR_PATH = opt("br-path", "48K_24bit");
 const OUT_DIR = resolve(opt("out", "apps/web/public/hrtf"));
-const FLIP_AZ = !args.includes("--no-flip-az");
+// SADIE II 方位角 + = 左（逆时针），与本渲染器一致，默认不翻转；
+// 用 + = 右 的数据集（如 MIT KEMAR）时传 --flip-az。
+const FLIP_AZ = args.includes("--flip-az");
 
 if (!HR_SRC || !BR_SRC) {
-  console.error("用法: node scripts/build-hrtf.mjs --hr <HRIR zip/目录/URL> --br <BRIR zip/目录/URL>");
-  console.error("数据集：SADIE II D1 (KU100)，https://www.york.ac.uk/sadie-project/ （Apache-2.0）");
+  console.error("用法: node scripts/build-hrtf.mjs --hr <HRIR zip/目录/URL> --br <BRIR zip/目录/URL> [--hr-path 48K_24bit] [--br-path 48K_24bit] [--flip-az]");
+  console.error("数据集：SADIE II D1 (KU100)，https://doi.org/10.5281/zenodo.12092466 （Apache-2.0）");
+  console.error("  D1.zip 同时含 HRIR/BRIR：--hr D1.zip --br D1.zip --hr-path D1_HRIR_WAV/48K_24bit --br-path D1_BRIR_WAV/48K_24bit");
   process.exit(1);
 }
 
@@ -129,8 +150,9 @@ function parseWav(buf) {
 }
 
 // ---- 收集某个来源的全部「方向 → 立体声 IR」 ----
-async function collectIrs(src, tag) {
+async function collectIrs(src, tag, pathFilter) {
   let files = []; // {name, buf}
+  const match = (p) => /\.wav$/i.test(p) && (!pathFilter || p.replace(/\\/g, "/").includes(pathFilter));
   if (/^https?:\/\//.test(src)) {
     console.log(`[${tag}] 下载 ${src}`);
     const res = await fetch(src);
@@ -138,7 +160,7 @@ async function collectIrs(src, tag) {
     const buf = Buffer.from(await res.arrayBuffer());
     console.log(`[${tag}] ${(buf.length / 1048576).toFixed(1)} MB，解 zip…`);
     for (const e of readZipEntries(buf)) {
-      if (/\.wav$/i.test(e.name)) files.push({ name: basename(e.name), buf: zipEntryData(e) });
+      if (match(e.name)) files.push({ name: basename(e.name), buf: zipEntryData(e) });
     }
   } else {
     const p = resolve(src);
@@ -148,14 +170,14 @@ async function collectIrs(src, tag) {
         for (const f of readdirSync(dir)) {
           const fp = join(dir, f);
           if (statSync(fp).isDirectory()) walk(fp);
-          else if (/\.wav$/i.test(f)) files.push({ name: f, buf: readFileSync(fp) });
+          else if (match(fp)) files.push({ name: f, buf: readFileSync(fp) });
         }
       };
       walk(p);
     } else {
       const buf = readFileSync(p);
       for (const e of readZipEntries(buf)) {
-        if (/\.wav$/i.test(e.name)) files.push({ name: basename(e.name), buf: zipEntryData(e) });
+        if (match(e.name)) files.push({ name: basename(e.name), buf: zipEntryData(e) });
       }
     }
   }
@@ -163,21 +185,17 @@ async function collectIrs(src, tag) {
   const irs = []; // {az, el, L, R, rate}
   let skipped = 0;
   for (const f of files) {
-    let m = null;
-    for (const re of AZ_EL_PATTERNS) {
-      m = f.name.match(re);
-      if (m) break;
-    }
-    if (!m) { skipped++; continue; }
+    const azel = parseAzEl(f.name);
+    if (!azel) { skipped++; continue; }
     try {
       const { L, R, rate } = parseWav(f.buf);
-      irs.push({ az: parseFloat(m[1]), el: parseFloat(m[2]), L, R, rate });
+      irs.push({ az: azel[0], el: azel[1], L, R, rate });
     } catch (e) {
       console.warn(`[${tag}] 跳过 ${f.name}: ${e.message}`);
     }
   }
-  if (!irs.length) throw new Error(`[${tag}] 没有可用的方向 WAV（跳过 ${skipped}/${files.length}）— 文件名里解析不出方位角/仰角，需要在 AZ_EL_PATTERNS 加规则`);
-  console.log(`[${tag}] ${irs.length} 个方向（跳过 ${skipped} 个无法解析的文件）@${irs[0].rate}Hz`);
+  if (!irs.length) throw new Error(`[${tag}] 没有可用的方向 WAV（匹配路径 "${pathFilter}" 的 ${files.length} 个文件中跳过 ${skipped} 个）— 文件名里解析不出方位角/仰角，需要在 AZ_EL_PATTERNS 加规则`);
+  console.log(`[${tag}] ${irs.length} 个方向（路径过滤 "${pathFilter}" 命中 ${files.length} 个文件，跳过 ${skipped} 个）@${irs[0].rate}Hz`);
   return irs;
 }
 
@@ -225,7 +243,7 @@ function nameFor(az, el, kind) {
 }
 
 // ---- 主流程 ----
-const [hrIrs, brIrs] = [await collectIrs(HR_SRC, "HRIR"), await collectIrs(BR_SRC, "BRIR")];
+const [hrIrs, brIrs] = [await collectIrs(HR_SRC, "HRIR", HR_PATH), await collectIrs(BR_SRC, "BRIR", BR_PATH)];
 const sampleRate = hrIrs[0].rate;
 if (brIrs[0].rate !== sampleRate) {
   console.warn(`警告：HRIR ${sampleRate}Hz 与 BRIR ${brIrs[0].rate}Hz 采样率不一致，运行时按 HRIR 速率声明（renderer 会重采样到设备速率）`);

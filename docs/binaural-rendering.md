@@ -158,8 +158,10 @@ SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 
 - SOFA 规范: https://www.sofaconventions.org/
 - 数据集索引: https://www.sofacoustics.org/data/database/
-- SADIE II: https://www.york.ac.uk/sadie-project/
-- MIT KEMAR: https://sound.media.mit.edu/resources/KEMAR.html
+- SADIE II: https://doi.org/10.5281/zenodo.12092466 （D1.zip = KU100 全部 WAV，
+  `azi_<方位角,小数>_ele_<仰角,小数>.wav` 逗号小数命名，方位角 + = 左与 ADM 一致；
+  引用：DOI 10.3390/app8112029）
+- MIT KEMAR: https://sound.media.mit.edu/resources/KEMAR.html （备选，仅干声 HRIR）
 - BEAR: https://github.com/ebu/bear （IR 处理: doc/ir_processing.md）
 
 ## 6. Web Audio PannerNode HRTF 能力与局限（降级方案依据）
