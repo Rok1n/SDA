@@ -20,7 +20,7 @@
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
 import { LAYOUT_7_1_4, positionForLabel, isLfeLabel, type VirtualSpeaker } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
-import { BINAURAL_MODES, buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
+import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
@@ -255,16 +255,16 @@ export class SpatialRenderer {
   private applyGains(state: SourceState, rampSamples: number): void {
     const gains = this.vbap.pan(state.position, state.spread);
 
-    // 苹果式 inverse 距离定律（rolloff=1，参考距离内不衰减）。
-    // ADM 距离 1 = 音箱环 = 当前模式的参考距离（杜比近/中/远 0.7/1.2/2.5m），
-    // 环外（房间角落可达 √3）按 ref/d 衰减并施加空气吸收低通。
-    const ref = BINAURAL_MODES[this.binauralMode].refDistance;
-    const d = Math.max(1e-3, state.position.distance) * ref;
+    // 距离增益：ADM 距离已按房间归一化（1 = 音箱环），环内一律满增益 —
+    // 环内的对象响度差异交给混音师的 gainDb，渲染器不动。
+    // 环外（房间角落可达 √3）按苹果 inverse 定律 1/d 衰减，并施加轻度
+    // 空气吸收低通（截止 ∝ 1/d，下限 6kHz —— 保住高频瞬态，移动感不被糊掉）。
+    const d = Math.max(1e-3, state.position.distance);
     let distGain = 1;
     let lp = 1; // worklet 一阶低通系数；1 = 直通
-    if (d > ref) {
-      distGain = ref / d;
-      const fc = Math.min(19000, 19000 * (ref / d) ** 2);
+    if (d > 1) {
+      distGain = 1 / d;
+      const fc = Math.min(19000, Math.max(6000, 19000 / d));
       lp = 1 - Math.exp((-2 * Math.PI * fc) / this.ctx.sampleRate);
     }
 

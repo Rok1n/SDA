@@ -29,9 +29,9 @@ export interface BinauralModeSpec {
 }
 
 export const BINAURAL_MODES: Record<BinauralMode, BinauralModeSpec> = {
-  near: { wet: 0.15, refDistance: 0.7 },
-  mid: { wet: 0.45, refDistance: 1.2 },
-  far: { wet: 0.8, refDistance: 2.5 },
+  near: { wet: 0.1, refDistance: 0.7 },
+  mid: { wet: 0.3, refDistance: 1.2 },
+  far: { wet: 0.6, refDistance: 2.5 },
 };
 
 export interface HrtfManifestEntry {
