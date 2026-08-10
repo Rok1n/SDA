@@ -5,8 +5,10 @@
  *   AudioWorkletNode(sda-renderer, N-bus output)
  *     ├── "multichannel": → ctx.destination (N discrete channels)
  *     ├── "binaural":     → ChannelSplitter(N)
- *     │                     → per bus: ConvolverNode(stereo BRIR/HRIR mix)
- *     │                       (LFE: 直送双耳；无 IR 时 PannerNode HRTF 兜底)
+ *     │                     → 低频管理（LR4 分频 @85Hz）→ 主总线 / 低音炮总线
+ *     │                     → per 主总线: ConvolverNode(stereo BRIR/HRIR mix)
+ *     │                     → 低音炮总线: LFE(120Hz LP +10dB) + 各主总线低频
+ *     │                       → 真力 7370A 响应（19Hz 次声滚降）→ 直送双耳
  *     │                     → ChannelMerger(2) → ctx.destination
  *     └── "stereo":       → downmix gain matrix → merger(2) → destination
  *
@@ -15,6 +17,12 @@
  * 「干 HRIR + 湿 BRIR 按模式混合」的 IR 卷积求和。卷积数固定（总线数 × 2 耳），
  * 与对象数量解耦。近/中/远（杜比 Binaural Settings）= 干/湿混合比 +
  * 参考距离；苹果式 inverse 距离定律 + 空气吸收低通在源侧（worklet）施加。
+ *
+ * 监听系统仿真（真力 The Ones + 7370A）：杜比未公布各布局逐音箱 EQ（只有
+ * 摆位角度、低频管理概念和 LFE 规范），可听的声音塑造来自监听音箱本身。
+ * 按官网指标建模：The Ones 轴上 ±1.5dB 平直（无需补偿），GLM 默认低频管理
+ * 分频 85Hz（LR4 = 两个 Q=1/√2 的二阶级联）；LFE 按 ITU-R BS.775 / 杜比规范
+ * 120Hz LR4 低通 + 带内 +10dB；7370A：-6dB @19Hz 次声滚降、上限 150Hz。
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
@@ -24,6 +32,15 @@ import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
+
+/** 低频管理分频点：真力 GLM 默认 85Hz。 */
+const BM_CROSSOVER_HZ = 85;
+/** LFE 低通：ITU-R BS.775 / 杜比规范 120Hz。 */
+const LFE_LOWPASS_HZ = 120;
+/** LFE 带内增益：杜比监听规范 +10dB（编码侧 -10dB 录制，重放逐带补偿）。 */
+const LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+/** 真力 7370A 低频截止：-6dB @19Hz。 */
+const SUB_CUTOFF_HZ = 19;
 
 export interface RendererOptions {
   mode?: OutputMode;
@@ -129,6 +146,20 @@ export class SpatialRenderer {
     this.convs = [];
   }
 
+  /** LR4（Linkwitz-Riley 四阶）滤波对：两个 Q=1/√2 的二阶 biquad 级联，
+   *  级联后分频点处 -6dB，高低通同相叠加平坦。返回 [入口, 出口]。 */
+  private lr4(type: BiquadFilterType, freq: number): [BiquadFilterNode, BiquadFilterNode] {
+    const a = this.ctx.createBiquadFilter();
+    const b = this.ctx.createBiquadFilter();
+    for (const f of [a, b]) {
+      f.type = type;
+      f.frequency.value = freq;
+      f.Q.value = Math.SQRT1_2;
+    }
+    a.connect(b);
+    return [a, b];
+  }
+
   private buildOutputGraph(): void {
     if (!this.node || !this.master) return;
     this.teardownPostNodes();
@@ -148,17 +179,44 @@ export class SpatialRenderer {
       ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode)
       : null;
 
+    // 低音炮总线（真力 7370A）：LFE + 各主总线经低频管理分出的低频。
+    // 低频无方向性，不卷积，直送双耳（与杜比/苹果双耳管线一致）。
+    let subBus: GainNode | null = null;
+    if (this.mode === "binaural" && this.layout.some((s) => s.isLfe)) {
+      const sum = this.ctx.createGain();
+      // 7370A 次声滚降（-6dB @19Hz，LR4）；上限 150Hz 由 85/120Hz 低通保证。
+      const [subHpIn, subHpOut] = this.lr4("highpass", SUB_CUTOFF_HZ);
+      const subOut = this.ctx.createGain();
+      subOut.gain.value = 0.5;
+      sum.connect(subHpIn);
+      subHpOut.connect(subOut);
+      subOut.connect(merger, 0, 0);
+      subOut.connect(merger, 0, 1);
+      this.postNodes.push(sum, subHpIn, subHpOut, subOut);
+      subBus = sum;
+    }
+
     for (let bus = 0; bus < n; bus++) {
       const spk = this.layout[bus]!;
       if (this.mode === "binaural") {
         if (spk.isLfe) {
-          // LFE 无方向性（低频不可定位）：等量直送双耳。
-          const g = this.ctx.createGain();
-          g.gain.value = 0.5;
-          splitter.connect(g, bus);
-          g.connect(merger, 0, 0);
-          g.connect(merger, 0, 1);
-          this.postNodes.push(g);
+          // LFE：ITU/杜比 120Hz LR4 低通 + 带内 +10dB，进低音炮总线。
+          // 无低音炮的布局退化为等量直送双耳。
+          const lfeGain = this.ctx.createGain();
+          if (subBus) {
+            const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
+            splitter.connect(lpIn, bus);
+            lfeGain.gain.value = LFE_INBAND_GAIN;
+            lpOut.connect(lfeGain);
+            lfeGain.connect(subBus);
+            this.postNodes.push(lpIn, lpOut, lfeGain);
+          } else {
+            lfeGain.gain.value = 0.5;
+            splitter.connect(lfeGain, bus);
+            lfeGain.connect(merger, 0, 0);
+            lfeGain.connect(merger, 0, 1);
+            this.postNodes.push(lfeGain);
+          }
           this.convs.push(null);
           continue;
         }
@@ -171,7 +229,19 @@ export class SpatialRenderer {
           // 会被 0.5(L+R) 降混 —— 必须用 splitter 把左右耳分开接线，
           // 否则整个双耳路径塌成单声道（声像全挤在中间）。
           const earSplit = this.ctx.createChannelSplitter(2);
-          splitter.connect(conv, bus);
+          if (subBus) {
+            // 低频管理：主音箱 85Hz LR4 高通后进卷积（The Ones + 炮的标准
+            // 接法）；分出的低频进低音炮总线。
+            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
+            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
+            splitter.connect(hpIn, bus);
+            splitter.connect(lpIn, bus);
+            hpOut.connect(conv);
+            lpOut.connect(subBus);
+            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
+          } else {
+            splitter.connect(conv, bus);
+          }
           conv.connect(earSplit);
           earSplit.connect(merger, 0, 0);
           earSplit.connect(merger, 1, 1);
@@ -190,7 +260,17 @@ export class SpatialRenderer {
           panner.positionY.value = y;
           panner.positionZ.value = z;
           const earSplit = this.ctx.createChannelSplitter(2);
-          splitter.connect(panner, bus);
+          if (subBus) {
+            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
+            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
+            splitter.connect(hpIn, bus);
+            splitter.connect(lpIn, bus);
+            hpOut.connect(panner);
+            lpOut.connect(subBus);
+            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
+          } else {
+            splitter.connect(panner, bus);
+          }
           panner.connect(earSplit);
           earSplit.connect(merger, 0, 0);
           earSplit.connect(merger, 1, 1);

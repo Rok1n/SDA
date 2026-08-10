@@ -142,10 +142,12 @@ function Room({ p }: { p: Palette }) {
   const geometry = useMemo(() => new THREE.BoxGeometry(ROOM * 2, WALL_H, ROOM * 2), []);
   return (
     <group>
-      {/* 实体地板（听者脚下） */}
+      {/* 地板（听者脚下）：半透明且不写深度 —— ADM z 为负的对象（测试文件
+          常有固定环绕一圈的低空对象）位于地板以下，实体地板会把它们整个
+          遮住，必须能透过去看到 */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, FLOOR_Y + 0.001, 0]}>
         <planeGeometry args={[ROOM * 2, ROOM * 2]} />
-        <meshBasicMaterial color={p.floor} />
+        <meshBasicMaterial color={p.floor} transparent opacity={0.45} depthWrite={false} />
       </mesh>
       {/* 两面实体侧墙（-x / -z），半透明，不挡对象 */}
       <mesh rotation={[0, Math.PI / 2, 0]} position={[-ROOM + 0.001, WALL_MID_Y, 0]}>

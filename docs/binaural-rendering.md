@@ -73,9 +73,9 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 
 | 档位 | 湿声权重 w | 参考距离 | 听感 |
 |---|---|---|---|
-| near 近 | 0.15 | 0.7 m | 贴头、干、直接 |
-| mid 中（默认） | 0.45 | 1.2 m | 标准听音位、少量房间 |
-| far 远 | 0.8 | 2.5 m | 房间感强、直达声占比低 |
+| near 近 | 0.1 | 0.7 m | 贴头、干、直接 |
+| mid 中（默认） | 0.3 | 1.2 m | 标准听音位、少量房间 |
+| far 远 | 0.6 | 2.5 m | 房间感强、直达声占比低 |
 
 配合每源距离处理（`renderer.ts applyGains`）：
 1. **苹果 inverse 距离定律**：`gain = ref/d`，参考距离内不衰减
@@ -92,6 +92,52 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 - Dolby 官方 dbmd 解析器: https://github.com/DolbyLaboratories/dbmd-atmos-parser
 - wavinfo 的 dbmd reader（字段表）: https://github.com/iluvcapra/wavinfo
 - 《Dolby Atmos Binaural Settings Plug-in Guide》(professional.dolby.com, PDF)
+
+## 3.5 监听系统仿真：真力 The Ones + 7370A（EQ / 低频管理补偿）
+
+3D 视图里的虚拟音箱是真力 The Ones 同轴系列 + 73 系列低音炮，双耳渲染
+模拟的就是这套监听系统在房间里的声音。官网实测指标：
+
+| 型号 | 自由场频响 | -6dB 下限 | 说明 |
+|---|---|---|---|
+| 8331A | 58 Hz – 20 kHz (±1.5 dB) | 45 Hz | The Ones 最小 |
+| 8341A | 45 Hz – 20 kHz (±1.5 dB) | 38 Hz | The Ones 中号 |
+| 8351B | 38 Hz – 20 kHz (±1.5 dB) | 32 Hz | The Ones 最大 |
+| 7370A | 19 – 100 Hz (±3 dB) | 19 Hz / 150 Hz | 12" 低音炮 |
+
+关键结论：**The Ones 轴上响应在通带内 ±1.5 dB，本质是平的，没有可补偿的
+"每音箱 EQ"**。杜比对 5.1 / 5.1.2 / 5.1.4 / 7.1.2 / 7.1.4 / 9.1.2 / 9.1.4 /
+9.1.6 各布局也只公布**摆位角度**（ITU-R BS.775 / BS.2051，见 §2），从未公布
+逐音箱 EQ 曲线 —— 唯一成文的音箱相关 EQ 是 Dolby Atmos Enabled（向上反射）
+音箱的目标曲线，而我们的布局全部是入顶箱，不适用。
+
+杜比 / ITU 真正成文、且可听的两条低频规范（已实现）：
+
+1. **低频管理（bass management）**：主音箱设为 "small" 时，分频点以下的
+   低频从各主音箱剥离、重定向到低音炮重放（真力 GLM 默认分频 **85 Hz**）。
+   低频不可定位，低音炮信号不卷积、直送双耳。
+2. **LFE 通道规范（ITU-R BS.775 / 杜比）**：LFE 带宽限制 **120 Hz**（编码侧
+   低通），重放时施加 **带内 +10 dB** 增益（录制侧 -10 dB，换取 10 dB 余量）。
+
+`renderer.ts` 双耳路径的实现（全部用 Web Audio BiquadFilter 级联成 LR4
+—— 两个 Q=1/√2 的二阶级联，分频点 -6dB、高低通同相叠加平坦）：
+
+```
+主音箱总线 → LR4 高通 @85Hz → 方向 IR 卷积 → 双耳
+           → LR4 低通 @85Hz ─┐
+LFE 总线   → LR4 低通 @120Hz → +10dB ─┤→ 低音炮总线 → LR4 高通 @19Hz
+                                      │   (7370A 次声滚降，上限 150Hz
+                                      └→  由 85/120Hz 低通保证) → 直送双耳
+```
+
+效果：每个主音箱听起来像接了炮的 The Ones（85Hz 以下交给炮），低频下潜到
+19Hz，LFE 有正确的带内响度 —— 正是真力官方推荐的多声道监听接法。
+
+参考：
+- Genelec 8331A / 8341A / 8351B / 7370A 官网规格页（genelec.com）
+- Genelec GLM 校准默认分频 85 Hz（Genelec 多声道监听设置指南）
+- ITU-R BS.775-3（LFE 20–120 Hz，+10 dB 带内增益）
+- Dolby Atmos Home Theater Studio Guidelines（摆位 + 低频管理概念，无逐音箱 EQ）
 
 ## 4. Apple 侧：移动端原生渲染可用 API（Expo 原生模块设计依据）
 
