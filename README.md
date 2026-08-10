@@ -91,6 +91,24 @@ pnpm core:build        # cargo build --target wasm32 + wasm-bindgen → pkg-web(
 
 可选验证：`cd packages/core && pnpm test`（用 harletty-bridge 仓库里的 JOC 测试向量冒烟）。
 
+### 4.5 生成双耳 HRTF 资产（仅当没有 apps/web/public/hrtf 时）
+
+双耳模式用的头相关脉冲响应来自 **SADIE II 数据库**（University of York，
+**Apache-2.0**，D1 = Neumann KU100 人工头，含消声室 HRIR + 房间 BRIR）。
+去 [SADIE 项目页](https://www.york.ac.uk/sadie-project/) 下载 D1 的
+HRIR 与 BRIR（48kHz WAV zip），然后：
+
+```bash
+# 网络通的话也可以直接传 zip 的 http(s) 地址
+pnpm hrtf:build -- --hr <HRIR zip路径或URL> --br <BRIR zip路径或URL>
+# → apps/web/public/hrtf/hrtf-set.json + 每个方向的 dry/wet .f32
+```
+
+没有这些资产时双耳模式仍能工作（回退浏览器内置 HRTF），但方位精度、
+房间感和「距离：近/中/远」切换都会大打折扣。设计依据见
+`docs/binaural-rendering.md`（杜比 BS.2127 虚拟音箱+BRIR 管线 /
+苹果 inverse 距离定律）。
+
 ### 5. 日常使用
 
 ```bash
@@ -135,7 +153,8 @@ Windows「开发者模式」后去掉该选项再配 `win.icon` / 证书。
 
 用法：拖入含 TrueHD/Atmos 或 E-AC-3 JOC 音轨的 `.mkv`（或裸 `.thd`/`.ec3`/`.dts`），
 主视图是实时 3D 对象位置，底栏是迷你播放器（暂停/重播/音量），
-顶栏可切换输出模式（双耳/立体声/多声道）、音箱布局（5.1 ~ 9.1.6）和深浅色主题。
+顶栏可切换输出模式（双耳/立体声/多声道）、双耳距离（近/中/远，杜比
+Binaural Settings 语义）、音箱布局（5.1 ~ 9.1.6）和深浅色主题。
 
 ### 常见问题
 

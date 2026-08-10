@@ -5,20 +5,22 @@
  *   AudioWorkletNode(sda-renderer, N-bus output)
  *     ├── "multichannel": → ctx.destination (N discrete channels)
  *     ├── "binaural":     → ChannelSplitter(N)
- *     │                     → per bus: ConvolverNode(stereo IR)   [IRs loaded]
- *     │                       or PannerNode(mono, HRTF, fixed pos) [fallback]
+ *     │                     → per bus: ConvolverNode(stereo BRIR/HRIR mix)
+ *     │                       (LFE: 直送双耳；无 IR 时 PannerNode HRTF 兜底)
  *     │                     → ChannelMerger(2) → ctx.destination
  *     └── "stereo":       → downmix gain matrix → merger(2) → destination
  *
- * The binaural path follows the industry-standard virtual-loudspeaker
- * approach (Dolby/EBU BEAR): objects are VBAP-panned onto a fixed virtual
- * speaker ring, then each virtual speaker is binauralised. Convolution
- * count is fixed (bus count × 2 ears), decoupled from object count.
+ * 双耳路径遵循业界标准虚拟音箱方案（杜比 BS.2127 / Apple 虚拟化 5.1）：
+ * 对象先 VBAP 到固定虚拟音箱环，每个虚拟音箱与该方向的
+ * 「干 HRIR + 湿 BRIR 按模式混合」的 IR 卷积求和。卷积数固定（总线数 × 2 耳），
+ * 与对象数量解耦。近/中/远（杜比 Binaural Settings）= 干/湿混合比 +
+ * 参考距离；苹果式 inverse 距离定律 + 空气吸收低通在源侧（worklet）施加。
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
 import { LAYOUT_7_1_4, positionForLabel, isLfeLabel, type VirtualSpeaker } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
+import { BINAURAL_MODES, buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
@@ -26,9 +28,9 @@ export type OutputMode = "multichannel" | "binaural" | "stereo";
 export interface RendererOptions {
   mode?: OutputMode;
   layout?: readonly VirtualSpeaker[];
-  /** Pre-measured binaural IRs per bus (stereo, e.g. MIT KEMAR derived).
-   *  When absent, binaural mode falls back to PannerNode HRTF. */
-  binauralIrs?: Map<number, AudioBuffer>;
+  /** 预加载的双耳 IR 集（SADIE II KU100 派生）；也可 init 后 setBinauralData。
+   *  缺省时双耳模式回退到浏览器内置 PannerNode HRTF。 */
+  binauralIrSet?: BinauralIrSet;
   /** worklet 每消耗约 1/8 秒回调一次 —— 播放器用它泵入更多 PCM（背压）。 */
   onConsumedTick?: () => void;
 }
@@ -36,11 +38,6 @@ export interface RendererOptions {
 /** Scalar spread derived from ADM object size (w, d, h in [0,1]). */
 function sizeToSpread(size: [number, number, number]): number {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
-}
-
-/** Simple distance rolloff: inverse model, reference distance = 1. */
-function distanceGain(distance: number): number {
-  return 1 / Math.max(1, distance);
 }
 
 interface SourceState {
@@ -60,8 +57,12 @@ export class SpatialRenderer {
   private node: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
   private postNodes: AudioNode[] = [];
+  /** 双耳路径每总线的卷积器（LFE/兜底位置为 null），切模式时只换 buffer。 */
+  private convs: (ConvolverNode | null)[] = [];
   private sources = new Map<string, SourceState>();
-  private irs?: Map<number, AudioBuffer>;
+  private irSet: BinauralIrSet | null = null;
+  /** 杜比 Binaural Settings 语义：虚拟音箱距离 近0.7m / 中1.2m / 远2.5m。 */
+  private binauralMode: BinauralMode = "mid";
   private onConsumedTick?: () => void;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
@@ -71,7 +72,7 @@ export class SpatialRenderer {
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
     this.vbap = new VbapSolver(this.layout);
-    if (options.binauralIrs) this.irs = options.binauralIrs;
+    if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
   }
 
@@ -95,9 +96,37 @@ export class SpatialRenderer {
     this.buildOutputGraph();
   }
 
+  /** 注入双耳 IR 集（可在 init 后、播放前随时调用），重建双耳输出图。 */
+  setBinauralData(set: BinauralIrSet): void {
+    this.irSet = set;
+    if (this.mode === "binaural" && this.node) this.buildOutputGraph();
+  }
+
+  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）并换卷积 buffer，
+   *  同时按新参考距离重算所有源的距离增益 —— 播放中实时切换，不中断音频。 */
+  setBinauralMode(mode: BinauralMode): void {
+    if (mode === this.binauralMode) return;
+    this.binauralMode = mode;
+    if (this.mode !== "binaural") return;
+    if (this.irSet) {
+      const irs = buildBusIrs(this.ctx, this.irSet, this.layout, mode);
+      this.convs.forEach((conv, bus) => {
+        const ir = irs.get(bus);
+        if (conv && ir) conv.buffer = ir;
+      });
+    }
+    // 距离定律随模式改变（参考距离不同），平滑重推全部源的增益。
+    for (const state of this.sources.values()) this.applyGains(state, 4096);
+  }
+
+  get binauralModeName(): BinauralMode {
+    return this.binauralMode;
+  }
+
   private teardownPostNodes(): void {
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
+    this.convs = [];
   }
 
   private buildOutputGraph(): void {
@@ -115,10 +144,25 @@ export class SpatialRenderer {
     const merger = this.ctx.createChannelMerger(2);
     merger.connect(this.master);
 
+    const busIrs = this.mode === "binaural" && this.irSet
+      ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode)
+      : null;
+
     for (let bus = 0; bus < n; bus++) {
       const spk = this.layout[bus]!;
       if (this.mode === "binaural") {
-        const ir = this.irs?.get(bus);
+        if (spk.isLfe) {
+          // LFE 无方向性（低频不可定位）：等量直送双耳。
+          const g = this.ctx.createGain();
+          g.gain.value = 0.5;
+          splitter.connect(g, bus);
+          g.connect(merger, 0, 0);
+          g.connect(merger, 0, 1);
+          this.postNodes.push(g);
+          this.convs.push(null);
+          continue;
+        }
+        const ir = busIrs?.get(bus);
         if (ir) {
           const conv = this.ctx.createConvolver();
           conv.buffer = ir;
@@ -127,8 +171,9 @@ export class SpatialRenderer {
           conv.connect(merger, 0, 0);
           conv.connect(merger, 0, 1);
           this.postNodes.push(conv);
+          this.convs.push(conv);
         } else {
-          // Fallback: browser built-in HRTF at the virtual speaker position.
+          // 无 IR 资产时的优雅降级：浏览器内置 HRTF。
           const panner = this.ctx.createPanner();
           panner.panningModel = "HRTF";
           panner.distanceModel = "linear";
@@ -143,6 +188,7 @@ export class SpatialRenderer {
           panner.connect(merger, 0, 0);
           panner.connect(merger, 0, 1);
           this.postNodes.push(panner);
+          this.convs.push(null);
         }
       } else {
         // "stereo": cheap downmix — weight by speaker direction.
@@ -208,19 +254,35 @@ export class SpatialRenderer {
   /** Recompute and send a source's gain vector over the buses. */
   private applyGains(state: SourceState, rampSamples: number): void {
     const gains = this.vbap.pan(state.position, state.spread);
-    let scalar = Math.pow(10, state.gainDb / 20) * distanceGain(state.position.distance);
+
+    // 苹果式 inverse 距离定律（rolloff=1，参考距离内不衰减）。
+    // ADM 距离 1 = 音箱环 = 当前模式的参考距离（杜比近/中/远 0.7/1.2/2.5m），
+    // 环外（房间角落可达 √3）按 ref/d 衰减并施加空气吸收低通。
+    const ref = BINAURAL_MODES[this.binauralMode].refDistance;
+    const d = Math.max(1e-3, state.position.distance) * ref;
+    let distGain = 1;
+    let lp = 1; // worklet 一阶低通系数；1 = 直通
+    if (d > ref) {
+      distGain = ref / d;
+      const fc = Math.min(19000, 19000 * (ref / d) ** 2);
+      lp = 1 - Math.exp((-2 * Math.PI * fc) / this.ctx.sampleRate);
+    }
+
+    let scalar = Math.pow(10, state.gainDb / 20) * distGain;
     if (state.isLfe) {
       // LFE bypasses spatial panning: straight to the LFE bus.
       gains.fill(0);
       const lfeBus = this.layout.findIndex((s) => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
       scalar = Math.pow(10, state.gainDb / 20);
+      lp = 1;
     }
     this.node?.port.postMessage({
       type: "gains",
       id: state.id,
       gains,
       gain: scalar,
+      lp,
       ramp: Math.max(1, rampSamples),
     });
   }

@@ -13,7 +13,7 @@
  * The player paces pushes so the renderer stays ~TARGET_AHEAD_SECONDS ahead.
  */
 
-import { SpatialRenderer, type OutputMode, type VirtualSpeaker } from "@sda/renderer";
+import { SpatialRenderer, getBinauralIrSet, type BinauralMode, type OutputMode, type VirtualSpeaker } from "@sda/renderer";
 import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent } from "@sda/core";
 
 export interface VisualObject {
@@ -64,8 +64,10 @@ export class SdaPlayer {
   private visualTimer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
   /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
-  private initArgs: { mode: OutputMode; workletUrl: string | URL; layout?: readonly VirtualSpeaker[] } | null = null;
+  private initArgs: { mode: OutputMode; workletUrl: string | URL; layout?: readonly VirtualSpeaker[]; binauralBaseUrl: string } | null = null;
   private lastVolume = 1;
+  /** 杜比近/中/远（Binaural Settings），重建 renderer 后需恢复。 */
+  private binauralMode: BinauralMode = "mid";
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
   private disposed = false;
@@ -77,14 +79,14 @@ export class SdaPlayer {
     this.worker.onmessage = (e) => this.onWorkerMessage(e.data);
   }
 
-  async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[]): Promise<void> {
+  async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[], binauralBaseUrl = "/hrtf"): Promise<void> {
     console.log(`[SDA] player#${this.id} init (active=#${SdaPlayer.active?.id ?? "-"})`);
     if (SdaPlayer.active && SdaPlayer.active !== this) {
       console.warn(`[SDA] player#${this.id} 强制销毁泄漏的 player#${SdaPlayer.active.id}`);
       void SdaPlayer.active.dispose();
     }
     SdaPlayer.active = this;
-    this.initArgs = { mode, workletUrl, layout };
+    this.initArgs = { mode, workletUrl, layout, binauralBaseUrl };
     const ctx = new AudioContext({ latencyHint: "playback" });
     this.renderer = new SpatialRenderer(ctx, {
       mode,
@@ -92,8 +94,31 @@ export class SdaPlayer {
       onConsumedTick: () => this.pumpPcm(),
     });
     await this.renderer.init(workletUrl);
+    void this.attachBinauralIrs(this.renderer);
     this.worker.postMessage({ type: "init" });
     await this.ready;
+  }
+
+  /** 加载双耳 IR 集（SADIE II KU100）并注入渲染器。失败时优雅降级到
+   *  浏览器内置 HRTF（PannerNode），播放不受影响。原始数据跨 AudioContext
+   *  缓存，采样率对齐重建时不会重复下载。 */
+  private async attachBinauralIrs(r: SpatialRenderer): Promise<void> {
+    if (this.initArgs?.mode !== "binaural") return;
+    try {
+      const set = await getBinauralIrSet(this.initArgs.binauralBaseUrl);
+      if (this.disposed || this.renderer !== r) return;
+      r.setBinauralData(set);
+      r.setBinauralMode(this.binauralMode);
+      console.log(`[SDA] player#${this.id} 双耳 IR 已加载（${set.positions.length} 方向 @${set.sampleRate}Hz）`);
+    } catch (e) {
+      console.warn(`[SDA] player#${this.id} 双耳 IR 资产缺失，回退浏览器内置 HRTF（先跑 node scripts/build-hrtf.mjs）`, e);
+    }
+  }
+
+  /** 切换杜比近/中/远（播放中实时生效）。 */
+  setBinauralMode(mode: BinauralMode): void {
+    this.binauralMode = mode;
+    this.renderer?.setBinauralMode(mode);
   }
 
   /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）
@@ -128,6 +153,8 @@ export class SdaPlayer {
     }
     r.setVolume(this.lastVolume);
     this.renderer = r;
+    // 采样率对齐重建后：重新注入双耳 IR（原始数据有缓存，不会重复下载）
+    void this.attachBinauralIrs(r);
     // 床层/对象源在新 worklet 里重新声明
     this.knownBedLabels = [];
     for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);

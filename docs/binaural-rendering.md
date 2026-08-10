@@ -2,6 +2,7 @@
 
 > 基于 Dolby / Apple 官方文档与开源实现（EBU BEAR）调研整理。
 > 本文档是 `packages/renderer` 及移动端原生渲染的设计依据。
+> **2026-08 更新：§1–§5 描述的管线已全部落地实现**（见各节「实现」注记）。
 
 ## 1. 总体架构：虚拟扬声器 + BRIR 卷积
 
@@ -12,12 +13,13 @@ Dolby 渲染器与 EBU/BBC 的 BEAR（Binaural EBU ADM Renderer, Apache-2.0）�
   │
   ├─ (1) Panning: 对象位置 → N 个虚拟扬声器的增益向量
   │      VBAP 3D (Pulkki 1997)；size/spread → 向最近扬声器群扩散
-  ├─ (2) 虚拟扬声器总线: 各对象按增益求和到 N 条总线
+  ├─ (2) 虚拟扬声器总线: 各对象按增益求和到 N 条总线（AudioWorklet）
   │      （复杂度与对象数解耦，卷积次数恒为 N × 2 耳）
-  ├─ (3) 双耳化: 每条总线卷积对应位置的 BRIR（左右耳各一条）
+  │      + 每源一阶低通（空气吸收，苹果/杜比远场 cue）
+  ├─ (3) 双耳化: 每条总线卷积对应位置的「干 HRIR ↔ 湿 BRIR 混合」IR
   │      → ConvolverNode（FFT 卷积，浏览器原生加速）
-  ├─ (4) 距离层: 距离增益(inverse rolloff) + 直达声/混响比 + 频谱
-  │      → 逼近 Dolby near/mid/far（见 §3）
+  ├─ (4) 距离层: 苹果 inverse 距离定律（参考距离内不衰减）+ 空气吸收低通
+  │      → Dolby near/mid/far = 干/湿混合比 + 参考距离 0.7/1.2/2.5m（见 §3）
   └─ (5) 头追(可选/v2): 旋转世界坐标→头部坐标，重算各扬声器相对方位
 ```
 
@@ -27,6 +29,11 @@ Dolby 渲染器与 EBU/BBC 的 BEAR（Binaural EBU ADM Renderer, Apache-2.0）�
 - bed（固定声道布局）与对象无法用同一管线处理。
 
 SDA 里 PannerNode HRTF 仅作为**无 IR 数据时的降级方案**（对 N 条虚拟扬声器总线各用一个 PannerNode，而非每对象一个）。
+
+> **实现**：worklet 总线混合 + 每源低通在
+> `packages/renderer/worklet/sda-renderer.worklet.js`；双耳图（splitter →
+> 每总线 ConvolverNode → merger）在 `packages/renderer/src/renderer.ts`；
+> LFE 无方向性，等量直送双耳不卷积（杜比双耳渲染惯例）。
 
 ## 2. 虚拟扬声器布局（7.1.4，ITU-R BS.2051 / Dolby 家庭规范）
 
@@ -59,13 +66,26 @@ SDA 里 PannerNode HRTF 仅作为**无 IR 数据时的降级方案**（对 N 条
 **语义**：三档对应不同 BRIR 集 —— near 用近头、几乎无房间成分的 HRIR；
 mid 用标准听音距离、含少量早期反射的 BRIR；far 用低直达声/混响比的 BRIR。
 
-**SDA 的近似方案**（不必真测三套 BRIR）：同一套位置 BRIR + 三个参数 —
-1. 距离增益：near 不衰减；far 按 inverse-square 压 12–20 dB
-2. 直达声/混响比：near 全干；far 加房间混响 send
-3. 频谱：near 全频；far 加空气吸收式低通
+**SDA 的实现**（`packages/renderer/src/hrtf.ts`）：同一测量方向的
+**干 HRIR（消声室直达）与湿 BRIR（含房间早期反射 + ~170ms 尾音）按时域对齐混合**：
+`IR = (1-w)·HRIR + w·BRIR`，混合后能量归一化（近/中/远切换响度一致）。
+BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响总线。
+
+| 档位 | 湿声权重 w | 参考距离 | 听感 |
+|---|---|---|---|
+| near 近 | 0.15 | 0.7 m | 贴头、干、直接 |
+| mid 中（默认） | 0.45 | 1.2 m | 标准听音位、少量房间 |
+| far 远 | 0.8 | 2.5 m | 房间感强、直达声占比低 |
+
+配合每源距离处理（`renderer.ts applyGains`）：
+1. **苹果 inverse 距离定律**：`gain = ref/d`，参考距离内不衰减
+   （ADM 距离 1 = 音箱环 = 当前档位参考距离；房间角落 √3 处才触发衰减）
+2. **空气吸收低通**：越远截止频率越低（∝(ref/d)²，上限 19kHz），
+   worklet 内每源一阶低通实现
 
 > 注意：harletty 解码出的事件流（OAMD）**不携带** binauralRenderMode —
-> 它只存在于 DAMF/dbmd。所以 SDA v1 的距离处理是统一近似；
+> 它只存在于 DAMF/dbmd。所以 SDA 的距离档位是全局用户选择（UI 近/中/远），
+> 播放中可实时切换（IR 重混 + 增益平滑重推，不中断音频）；
 > 若将来接入 harletty CLI 的 .atmos.metadata 文件，可按对象应用真实模式。
 
 参考：
@@ -108,27 +128,37 @@ iOS 15+ 系统对 Atmos 内容自动做头追双耳；`AVAudioSession.SpatialExp
 可选头追：Android HeadTracker API（`android.hardware.SensorManager` 头追或
 `android.media.audiofx`？v2 再定）。
 
-## 5. 可合法打包的 HRTF 数据集
+## 5. HRTF 数据集：SADIE II KU100（已落地）
 
-**格式标准：SOFA（AES69）**，netCDF-4 容器；离线预转为 SDA 自定义
-f32le 格式（见 `packages/renderer/src/hrtf.ts`），运行时零解析成本。
+**格式标准：SOFA（AES69）**，netCDF-4 容器；但 SADIE II 同时发布 **WAV 版本**，
+SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 
 | 数据集 | 内容 | 许可 |
 |---|---|---|
-| **MIT KEMAR** | 710 位置，44.1kHz，含 diffuse-field EQ 版 | **"free with no restrictions on use"**（要求引用）→ **首选** |
+| **SADIE II D1 (York)** | **Neumann KU100 假头**：HRIR（消声室）+ BRIR（房间）+ 耳机 EQ | **Apache-2.0** → **首选，干湿两全** |
+| MIT KEMAR | 710 位置，44.1kHz，仅 HRIR | "free with no restrictions on use"（要求引用）→ 备选（只有干声） |
 | CIPIC | 45 真人，1.27 m | 免费 license agreement，条款需核实 |
 | LISTEN (IRCAM) | ~50 被试 | Chromium HRTF 的源头；许可需核实 |
-| SADIE II (York) | 20 被试 HRTF + BRIR + 耳机 EQ | 免费协议，学术友好；BEAR 备选 |
 | TH Köln / HUTUBS | 96 头高分辨率 | CC 系；BEAR 的 HRIR_FULL2DEG 即此 |
 | BBC R&D (BEAR 默认) | 录音室 KU100 BRIR | 见 ebu/bear 仓库 |
 
-**打包建议**：MIT KEMAR（无限制）做主 HRTF。它是自由场 HRIR（无房间成分），
-正好配合 §3 的参数化 near/mid/far。转换管线（SOFA → f32le manifest）：
-用 Python `pysofaconventions` 或 netCDF4 读取 → 按 SDA 扬声器方位角
-就近取测量点 → 重采样到 48k → 裁剪到 128–256 taps → 写 `hrtf-set.json` + `*.f32`。
+**选 SADIE II KU100 的理由**：① Apache-2.0 可随应用自由再发布；② 同一假头
+同时有 HRIR 和 BRIR —— 杜比 near/mid/far 的「干/湿混合」方案（§3）正好需要
+成对的干湿数据；③ KU100 与 SDA 3D 视图里的假头模型一致。
+
+**转换管线**（`scripts/build-hrtf.mjs`，Node 零依赖）：
+下载/读取 WAV zip → 从文件名解析方位角/仰角 → 为全部布局的 17 个音箱方向
+就近取测量点 → 截断（HRIR 512 taps / BRIR 8192 taps）→ 双耳峰值归一化
+（保 ILD）→ 写 `apps/web/public/hrtf/hrtf-set.json` + `*.f32`（f32le，
+`[leftIR][rightIR]` 拼接）。运行时加载/混合/重采样见
+`packages/renderer/src/hrtf.ts`。
+
+> ⚠️ 方位角约定：SDA 为 + = 左（ADM/ITU），多数数据集为 + = 右，
+> 脚本默认 `--flip-az` 取反匹配（选对称侧的测量点，声道不互换）。
 
 - SOFA 规范: https://www.sofaconventions.org/
 - 数据集索引: https://www.sofacoustics.org/data/database/
+- SADIE II: https://www.york.ac.uk/sadie-project/
 - MIT KEMAR: https://sound.media.mit.edu/resources/KEMAR.html
 - BEAR: https://github.com/ebu/bear （IR 处理: doc/ir_processing.md）
 

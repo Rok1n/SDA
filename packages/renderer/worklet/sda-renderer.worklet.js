@@ -45,6 +45,10 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           rampStep: new Float32Array(this.busCount),
           gain: 1,
           targetGain: 1,
+          // 空气吸收一阶低通（苹果/杜比远场 cue）：lpA=1 时直通，
+          // 距离越远系数越小，高频衰减越明显。
+          lpA: 1,
+          lpY: 0,
         });
         break;
       }
@@ -73,12 +77,14 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           src.rampStep[i] = (src.target[i] - src.gains[i]) / ramp;
         }
         src.targetGain = msg.gain ?? 1;
+        src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
         src.rampLeft = ramp;
         break;
       }
       case "reset":
         for (const src of this.sources.values()) {
           src.read = src.write = 0;
+          src.lpY = 0;
         }
         this.paused = false;
         this.consumed = 0;
@@ -110,10 +116,18 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       const n = Math.min(blockSize, available);
       let gain = src.gain;
       const gainStep = (src.targetGain - gain) / Math.max(1, src.rampLeft);
+      const useLp = src.lpA < 0.999;
+      let lpY = src.lpY;
+      const lpA = src.lpA;
 
       for (let i = 0; i < n; i++) {
-        const sample = src.ring[src.read & (RING_SIZE - 1)] * gain;
+        let s = src.ring[src.read & (RING_SIZE - 1)];
         src.read++;
+        if (useLp) {
+          lpY += lpA * (s - lpY);
+          s = lpY;
+        }
+        const sample = s * gain;
         if (src.rampLeft > 0) {
           for (let b = 0; b < this.busCount; b++) src.gains[b] += src.rampStep[b];
           gain += gainStep;
@@ -125,6 +139,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         }
       }
       src.gain = gain;
+      src.lpY = lpY;
       // starvation: leave read pointer; samples will arrive late → silence gap
     }
 

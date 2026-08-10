@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SdaPlayer, type VisualObject } from "@sda/player";
-import { LAYOUTS, type LayoutId, type OutputMode } from "@sda/renderer";
+import { LAYOUTS, type BinauralMode, type LayoutId, type OutputMode } from "@sda/renderer";
 // @ts-ignore — plain JS asset served by Vite
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
@@ -9,6 +9,7 @@ import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
+  const [binauralMode, setBinauralModeState] = useState<BinauralMode>("mid");
   const [layoutId, setLayoutId] = useState<LayoutId>("7.1.4");
   const [theme, setTheme] = useState<Theme>("dark");
   const [track, setTrack] = useState<TrackInfo | null>(null);
@@ -68,13 +69,14 @@ export function App() {
         // Always rebuild with the currently selected output mode and layout.
         const player = await createPlayer(mode, layoutId);
         player.setVolume(volume);
+        player.setBinauralMode(binauralMode);
         await player.playFile(file, "auto");
       } catch (e) {
         setErrors((prev) => [...prev, String(e)]);
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume],
+    [createPlayer, mode, layoutId, volume, binauralMode],
   );
 
   const onDrop = useCallback(
@@ -114,6 +116,12 @@ export function App() {
     playerRef.current?.setVolume(v);
   }, []);
 
+  /** 杜比 Binaural Settings 近/中/远：播放中实时切换（IR 重混 + 距离重算）。 */
+  const changeBinauralMode = useCallback((m: BinauralMode) => {
+    setBinauralModeState(m);
+    playerRef.current?.setBinauralMode(m);
+  }, []);
+
   const replay = useCallback(() => {
     const file = lastFileRef.current;
     if (file) void play(file);
@@ -137,6 +145,17 @@ export function App() {
             <option value="stereo">立体声</option>
             <option value="multichannel">多声道</option>
           </select>
+          {mode === "binaural" && (
+            <select
+              value={binauralMode}
+              onChange={(e) => changeBinauralMode(e.target.value as BinauralMode)}
+              title="杜比 Binaural Settings：虚拟音箱距离"
+            >
+              <option value="near">距离：近</option>
+              <option value="mid">距离：中</option>
+              <option value="far">距离：远</option>
+            </select>
+          )}
           <select value={layoutId} onChange={(e) => setLayoutId(e.target.value as LayoutId)}>
             {(Object.keys(LAYOUTS) as LayoutId[]).map((id) => (
               <option key={id} value={id}>

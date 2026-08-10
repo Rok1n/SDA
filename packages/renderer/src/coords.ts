@@ -21,7 +21,9 @@ export interface Spherical {
 /** ADM cartesian [x, y, z] → spherical. */
 export function admToSpherical(pos: [number, number, number]): Spherical {
   const [x, y, z] = pos;
-  const distance = Math.min(1, Math.hypot(x, y, z));
+  // 不钳制到 1：房间角落的 ADM 距离可达 √3，距离增益/空气吸收 cue 靠它驱动
+  // （VBAP 只用方向，不受距离影响）。上限 4 防异常值。
+  const distance = Math.min(4, Math.hypot(x, y, z));
   if (distance < 1e-6) return { azimuth: 0, elevation: 0, distance: 0 };
   return {
     azimuth: (Math.atan2(x, y) * 180) / Math.PI,
