@@ -63,6 +63,12 @@ export class SdaPlayer {
   private objects = new Map<number, VisualObject>();
   private visualTimer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
+  /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
+  private initArgs: { mode: OutputMode; workletUrl: string | URL; layout?: readonly VirtualSpeaker[] } | null = null;
+  private lastVolume = 1;
+  /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
+  private rateChecked = false;
+  private disposed = false;
 
   constructor(cb: PlayerCallbacks = {}) {
     this.cb = cb;
@@ -78,6 +84,7 @@ export class SdaPlayer {
       void SdaPlayer.active.dispose();
     }
     SdaPlayer.active = this;
+    this.initArgs = { mode, workletUrl, layout };
     const ctx = new AudioContext({ latencyHint: "playback" });
     this.renderer = new SpatialRenderer(ctx, {
       mode,
@@ -87,6 +94,44 @@ export class SdaPlayer {
     await this.renderer.init(workletUrl);
     this.worker.postMessage({ type: "init" });
     await this.ready;
+  }
+
+  /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）
+   *  重建 AudioContext —— 否则按错误速率播放 = 变慢/降调。
+   *  只在音轨发现/首帧时调用一次，此时环形缓冲还没喂数据，切换无损。 */
+  private ensureStreamRate(rate: number): void {
+    if (this.rateChecked || !this.renderer || !this.initArgs) return;
+    this.rateChecked = true;
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    if (Math.abs(this.renderer.ctx.sampleRate - rate) < 1) return;
+    console.log(`[SDA] player#${this.id} 采样率不匹配：ctx=${this.renderer.ctx.sampleRate} 码流=${rate}，重建 AudioContext`);
+    void this.recreateRenderer(rate);
+  }
+
+  private async recreateRenderer(sampleRate: number): Promise<void> {
+    const { mode, workletUrl, layout } = this.initArgs!;
+    const old = this.renderer;
+    this.renderer = null; // pump/feed 暂停，帧在队列里堆积
+    await old?.close();
+    let ctx: AudioContext;
+    try {
+      ctx = new AudioContext({ latencyHint: "playback", sampleRate });
+    } catch {
+      // 设备不接受该采样率：退回默认速率（仍会变速，但优于无声）
+      ctx = new AudioContext({ latencyHint: "playback" });
+    }
+    const r = new SpatialRenderer(ctx, { mode, layout, onConsumedTick: () => this.pumpPcm() });
+    await r.init(workletUrl);
+    if (this.disposed) {
+      await r.close();
+      return;
+    }
+    r.setVolume(this.lastVolume);
+    this.renderer = r;
+    // 床层/对象源在新 worklet 里重新声明
+    this.knownBedLabels = [];
+    for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);
+    this.pumpPcm();
   }
 
   get audioContext(): AudioContext | null {
@@ -138,6 +183,7 @@ export class SdaPlayer {
     this.pcmQueue = [];
     this.queuedSamples = 0;
     this.containerDurationSec = null;
+    this.rateChecked = false;
   }
 
   /** Pause: silence the worklet (buffer-preserving) AND suspend the clock.
@@ -166,11 +212,13 @@ export class SdaPlayer {
   }
 
   setVolume(v: number): void {
+    this.lastVolume = v;
     this.renderer?.setVolume(v);
   }
 
   async dispose(): Promise<void> {
     console.log(`[SDA] player#${this.id} dispose`);
+    this.disposed = true;
     this.stop();
     this.worker.terminate();
     await this.renderer?.close();
@@ -216,6 +264,7 @@ export class SdaPlayer {
         if (track.durationSec && Number.isFinite(track.durationSec)) {
           this.containerDurationSec = track.durationSec;
         }
+        this.ensureStreamRate(track.sampleRate);
         this.cb.onTrack?.(track);
         break;
       }
@@ -236,6 +285,7 @@ export class SdaPlayer {
     // panel info from the first decoded frame instead.
     if (!this.trackReported) {
       this.trackReported = true;
+      this.ensureStreamRate(frame.sampleRate);
       this.cb.onTrack?.({
         codec: frame.codec,
         sampleRate: frame.sampleRate,
