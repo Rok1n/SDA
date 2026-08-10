@@ -33,7 +33,7 @@ import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
 
-/** 低频管理分频点：真力 GLM 默认 85Hz。 */
+/** 低频管理分频点：真力多声道监听常用值 85Hz（SAM 炮由 GLM 软件配置）。 */
 const BM_CROSSOVER_HZ = 85;
 /** LFE 低通：ITU-R BS.775 / 杜比规范 120Hz。 */
 const LFE_LOWPASS_HZ = 120;
@@ -63,6 +63,8 @@ interface SourceState {
   position: Spherical;
   gainDb: number;
   isLfe: boolean;
+  /** 对象静音（mute/solo）：静音时标量增益乘 0，走平滑斜坡无爆音。 */
+  muted: boolean;
   lfeBus?: number;
 }
 
@@ -307,6 +309,7 @@ export class SpatialRenderer {
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
+      muted: false,
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
@@ -314,6 +317,15 @@ export class SpatialRenderer {
     this.sources.set(id, state);
     this.node.port.postMessage({ type: "add", id });
     this.applyGains(state, 0);
+  }
+
+  /** 静音/取消静音一个源（Omniphony 式对象 mute/solo 的底层原语）。
+   *  走 2048 采样斜坡（@48k ≈ 43ms），切换无爆音。 */
+  setSourceMuted(id: string, muted: boolean): void {
+    const state = this.sources.get(id);
+    if (!state || state.muted === muted) return;
+    state.muted = muted;
+    this.applyGains(state, 2048);
   }
 
   removeSource(id: string): void {
@@ -364,6 +376,7 @@ export class SpatialRenderer {
       scalar = Math.pow(10, state.gainDb / 20);
       lp = 1;
     }
+    if (state.muted) scalar = 0;
     this.node?.port.postMessage({
       type: "gains",
       id: state.id,

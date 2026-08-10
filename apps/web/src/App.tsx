@@ -14,6 +14,9 @@ export function App() {
   const [theme, setTheme] = useState<Theme>("dark");
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [objects, setObjects] = useState<VisualObject[]>([]);
+  /** 被静音的对象 id（Omniphony Studio 语义：mute 独立切换；
+   *  solo = mute 其他全部对象，独奏态由"只剩一个未静音"导出）。 */
+  const [mutedIds, setMutedIds] = useState<ReadonlySet<number>>(new Set());
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [debug, setDebug] = useState("");
@@ -23,6 +26,8 @@ export function App() {
   const [volume, setVolume] = useState(1);
   const [dragOver, setDragOver] = useState(false);
   const lastFileRef = useRef<File | null>(null);
+  /** 静音推送回调用的最新对象列表（避免闭包拿旧 state）。 */
+  const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
   const fileNameRef = useRef<string | null>(null);
 
@@ -32,6 +37,7 @@ export function App() {
       const player = new SdaPlayer({
         onTrack: (t) => setTrack({ ...t, title: t.title ?? fileNameRef.current ?? undefined }),
         onVisualState: (objs, t) => {
+          objectsRef.current = objs;
           setObjects(objs);
           setPosition(t);
           const p = playerRef.current;
@@ -54,6 +60,43 @@ export function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  /** 把整组静音状态推到播放器（新建播放器后也要重放一遍）。 */
+  const applyMutes = useCallback((muted: ReadonlySet<number>) => {
+    const player = playerRef.current;
+    if (!player) return;
+    for (const o of objectsRef.current) player.setObjectMuted(o.id, muted.has(o.id));
+    // 静音集合里可能有当前文件尚未声明的 id —— 也推过去，播放器会记住
+    for (const id of muted) player.setObjectMuted(id, true);
+  }, []);
+
+  const toggleMute = useCallback(
+    (id: number) => {
+      const next = new Set(mutedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setMutedIds(next);
+      applyMutes(next);
+    },
+    [mutedIds, applyMutes],
+  );
+
+  /** Omniphony Studio 的 solo：不是独立状态，而是"mute 其他全部" —
+   *  只剩一个未静音对象时它就是独奏者；再按一次 S 取消（全部解除静音）。 */
+  const soloTarget =
+    objects.length > 1 && objects.filter((o) => !mutedIds.has(o.id)).length === 1
+      ? objects.find((o) => !mutedIds.has(o.id))!.id
+      : null;
+
+  const toggleSolo = useCallback(
+    (id: number) => {
+      const next = new Set<number>();
+      if (soloTarget !== id) for (const o of objects) if (o.id !== id) next.add(o.id);
+      setMutedIds(next);
+      applyMutes(next);
+    },
+    [objects, soloTarget, applyMutes],
+  );
+
   const play = useCallback(
     async (file: File) => {
       setErrors([]);
@@ -70,13 +113,14 @@ export function App() {
         const player = await createPlayer(mode, layoutId);
         player.setVolume(volume);
         player.setBinauralMode(binauralMode);
+        applyMutes(mutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
         await player.playFile(file, "auto");
       } catch (e) {
         setErrors((prev) => [...prev, String(e)]);
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume, binauralMode],
+    [createPlayer, mode, layoutId, volume, binauralMode, applyMutes, mutedIds],
   );
 
   const onDrop = useCallback(
@@ -189,7 +233,7 @@ export function App() {
 
       <main>
         <section className="view">
-          <ObjectView objects={objects} layout={LAYOUTS[layoutId]} theme={theme} />
+          <ObjectView objects={objects} layout={LAYOUTS[layoutId]} theme={theme} mutedIds={mutedIds} />
           <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
           <MiniPlayer
             track={track}
@@ -231,12 +275,28 @@ export function App() {
             <h2>对象 ({objects.length})</h2>
             <ul className="objects">
               {objects.map((o) => (
-                <li key={o.id}>
+                <li key={o.id} className={mutedIds.has(o.id) ? "obj-muted" : ""}>
                   <b>#{o.id}</b>{" "}
                   {o.hasPos
                     ? `(${o.pos.map((v) => v.toFixed(2)).join(", ")})`
                     : "—"}
                   {o.gainDb !== 0 && ` ${o.gainDb}dB`}
+                  <span className="obj-ms">
+                    <button
+                      className={`obj-ms-btn ${mutedIds.has(o.id) ? "m-on" : ""}`}
+                      title={mutedIds.has(o.id) ? "取消静音" : "静音此对象"}
+                      onClick={() => toggleMute(o.id)}
+                    >
+                      M
+                    </button>
+                    <button
+                      className={`obj-ms-btn ${soloTarget === o.id ? "s-on" : ""}`}
+                      title={soloTarget === o.id ? "取消独奏" : "独奏此对象（静音其他全部）"}
+                      onClick={() => toggleSolo(o.id)}
+                    >
+                      S
+                    </button>
+                  </span>
                 </li>
               ))}
             </ul>

@@ -244,7 +244,7 @@ function Listener() {
   );
 }
 
-function ObjectDot({ obj }: { obj: VisualObject }) {
+function ObjectDot({ obj, muted }: { obj: VisualObject; muted: boolean }) {
   const ref = useRef<THREE.Group>(null);
   const target = useMemo(() => new THREE.Vector3(), []);
   useFrame((_, dt) => {
@@ -257,16 +257,18 @@ function ObjectDot({ obj }: { obj: VisualObject }) {
   const color = new THREE.Color().setHSL(0.55 - height * 0.25, 0.9, 0.6);
   // ADM size[0]（宽度 0..1）→ 半透明扩散光晕半径
   const spread = Math.min(1, Math.max(0, obj.size?.[0] ?? 0));
+  // 静音对象：调暗（保留轮廓可辨识位置，区别于有声对象）
+  const dotOpacity = muted ? 0.18 : 1;
   return (
     <group ref={ref}>
       <mesh>
         <sphereGeometry args={[0.06, 16, 16]} />
-        <meshBasicMaterial color={color} />
+        <meshBasicMaterial color={color} transparent={muted} opacity={dotOpacity} />
       </mesh>
       {/* 尺寸光晕：对象越大，halo 越大 */}
       <mesh>
         <sphereGeometry args={[0.09 + spread * 0.3, 24, 24]} />
-        <meshBasicMaterial color={color} transparent opacity={0.16} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={muted ? 0.05 : 0.16} depthWrite={false} />
       </mesh>
     </group>
   );
@@ -276,10 +278,13 @@ export function ObjectView({
   objects,
   layout,
   theme = "dark",
+  mutedIds,
 }: {
   objects: VisualObject[];
   layout: readonly VirtualSpeaker[];
   theme?: Theme;
+  /** 被静音的对象 id —— 在 3D 视图里调暗。 */
+  mutedIds?: ReadonlySet<number>;
 }) {
   const p = PALETTE[theme];
   return (
@@ -292,7 +297,7 @@ export function ObjectView({
       <SpeakerRing layout={layout} />
       <Listener />
       {objects.map((o) => (
-        <ObjectDot key={o.id} obj={o} />
+        <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} />
       ))}
       <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />
       {/* 听者半身像的光照 */}

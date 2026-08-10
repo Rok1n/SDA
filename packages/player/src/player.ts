@@ -68,6 +68,8 @@ export class SdaPlayer {
   private lastVolume = 1;
   /** 杜比近/中/远（Binaural Settings），重建 renderer 后需恢复。 */
   private binauralMode: BinauralMode = "mid";
+  /** 被静音的对象事件 id（Omniphony 式 mute/solo）；重建 renderer 后恢复。 */
+  private mutedObjects = new Set<number>();
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
   private disposed = false;
@@ -121,6 +123,15 @@ export class SdaPlayer {
     this.renderer?.setBinauralMode(mode);
   }
 
+  /** 静音/取消静音一个对象（Omniphony 式 per-object mute 原语；
+   *  solo 由 UI 层用"mute 其他全部"组合实现）。对象尚未声明时
+   *  只记录状态，声明到达/渲染器重建时自动生效。 */
+  setObjectMuted(objectId: number, muted: boolean): void {
+    if (muted) this.mutedObjects.add(objectId);
+    else this.mutedObjects.delete(objectId);
+    this.renderer?.setSourceMuted(`obj:${objectId}`, muted);
+  }
+
   /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）
    *  重建 AudioContext —— 否则按错误速率播放 = 变慢/降调。
    *  只在音轨发现/首帧时调用一次，此时环形缓冲还没喂数据，切换无损。 */
@@ -158,6 +169,8 @@ export class SdaPlayer {
     // 床层/对象源在新 worklet 里重新声明
     this.knownBedLabels = [];
     for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);
+    // 恢复静音状态（addSource 重置源状态）
+    for (const id of this.mutedObjects) r.setSourceMuted(`obj:${id}`, true);
     this.pumpPcm();
   }
 
@@ -354,6 +367,8 @@ export class SdaPlayer {
       for (const decl of frame.objectChannels as ObjectChannelDecl[]) {
         this.objectChannels.set(decl.id, decl.channel);
         this.renderer.addSource(`obj:${decl.id}`);
+        // 重新声明会重置源状态 —— 恢复静音
+        if (this.mutedObjects.has(decl.id)) this.renderer.setSourceMuted(`obj:${decl.id}`, true);
       }
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
 
