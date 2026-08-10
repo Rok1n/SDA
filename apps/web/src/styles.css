@@ -1,0 +1,565 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #0c101c;
+  --text: #dbe2f0;
+  --border: #1c2740;
+  --panel: #111830;
+  --dim: #55648a;
+  --subtle: #6f80a8;
+  --btn-bg: #182238;
+  --btn-border: #2a3a5f;
+  --btn-hover: #1f2c4a;
+  --hint-bg: rgba(12, 16, 28, 0.7);
+  --error: #e88f8f;
+  --drag-border: #4a6fa5;
+  --drag-text: #8fb0e8;
+  --drag-bg: rgba(12, 16, 28, 0.8);
+  /* 迷你播放器 */
+  --mp-text: #f2f6ff;
+  --mp-subtext: rgba(200, 214, 246, 0.85);
+  --mp-dim: rgba(200, 214, 246, 0.5);
+  --mp-time: #e6edff;
+  --mp-btn: rgba(230, 238, 255, 0.85);
+  --mp-btn-hover: rgba(255, 255, 255, 0.12);
+  --mp-play-bg: rgba(242, 246, 255, 0.95);
+  --mp-play-text: #0c101c;
+  --mp-chip-bg: rgba(255, 255, 255, 0.1);
+  --mp-chip-line: rgba(255, 255, 255, 0.12);
+  --mp-track: rgba(255, 255, 255, 0.16);
+  --mp-shimmer: rgba(230, 240, 255, 0.85);
+  --mp-text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --mp-glass-bg: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0.04) 42%,
+    rgba(130, 160, 230, 0.07)
+  );
+  --mp-glass-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    inset 0 -1px 2px rgba(180, 200, 255, 0.12),
+    inset 1px 0 1px rgba(255, 255, 255, 0.14),
+    inset -1px 0 1px rgba(255, 255, 255, 0.08),
+    0 14px 44px rgba(0, 0, 0, 0.55);
+  --mp-sheen: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.02) 30%,
+    transparent 55%
+  );
+}
+
+:root[data-theme="light"] {
+  --bg: #f2f4f8;
+  --text: #1c2434;
+  --border: #d4dae6;
+  --panel: #ffffff;
+  --dim: #6b7690;
+  --subtle: #7a8499;
+  --btn-bg: #ffffff;
+  --btn-border: #ccd4e2;
+  --btn-hover: #eef1f7;
+  --hint-bg: rgba(255, 255, 255, 0.8);
+  --error: #c04545;
+  --drag-border: #6f9bd8;
+  --drag-text: #3a6cb0;
+  --drag-bg: rgba(242, 244, 248, 0.85);
+  --mp-text: #16203a;
+  --mp-subtext: rgba(40, 55, 85, 0.78);
+  --mp-dim: rgba(40, 55, 85, 0.45);
+  --mp-time: #24304c;
+  --mp-btn: rgba(30, 45, 75, 0.8);
+  --mp-btn-hover: rgba(20, 35, 70, 0.08);
+  --mp-play-bg: #1c2a48;
+  --mp-play-text: #f5f8ff;
+  --mp-chip-bg: rgba(20, 35, 70, 0.07);
+  --mp-chip-line: rgba(20, 35, 70, 0.12);
+  --mp-track: rgba(20, 35, 70, 0.16);
+  --mp-shimmer: rgba(60, 90, 160, 0.55);
+  --mp-text-shadow: none;
+  --mp-glass-bg: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, 0.75),
+    rgba(255, 255, 255, 0.45) 45%,
+    rgba(235, 240, 250, 0.5)
+  );
+  --mp-glass-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.9),
+    inset 0 -1px 2px rgba(20, 40, 90, 0.08),
+    inset 1px 0 1px rgba(255, 255, 255, 0.55),
+    0 14px 44px rgba(30, 45, 80, 0.18);
+  --mp-sheen: linear-gradient(
+    115deg,
+    rgba(255, 255, 255, 0.6),
+    rgba(255, 255, 255, 0.1) 30%,
+    transparent 55%
+  );
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app.drag::after {
+  content: "松开以播放";
+  position: fixed;
+  inset: 12px;
+  border: 2px dashed var(--drag-border);
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  color: var(--drag-text);
+  background: var(--drag-bg);
+  pointer-events: none;
+  z-index: 10;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+}
+
+button,
+select {
+  background: var(--btn-bg);
+  color: var(--text);
+  border: 1px solid var(--btn-border);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--btn-hover);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.view {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+.view-hint {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--hint-bg);
+  padding: 3px 12px;
+  border-radius: 10px;
+  pointer-events: none;
+  transition: left 0.3s ease, transform 0.3s ease, opacity 0.3s ease;
+}
+
+/* 播放器出现时隐藏操作提示 */
+.view-hint.shifted {
+  opacity: 0;
+}
+
+aside {
+  width: 300px;
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.panel h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--subtle);
+  margin: 0 0 8px;
+}
+
+.panel dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.panel dt {
+  color: var(--subtle);
+}
+
+.panel dd {
+  margin: 0;
+}
+
+.dim {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.objects {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.objects li {
+  padding: 2px 0;
+}
+
+.errors ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--error);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+/* ── 迷你播放器（macOS 通栏液态玻璃底条） ───────────────── */
+
+.miniplayer {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 14px;
+  z-index: 5;
+  animation: mp-in 0.55s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+
+@keyframes mp-in {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 液态玻璃本体：backdrop 磨砂 + 顶部镜面高光描边 + 淡色内透渐变 + 外阴影 */
+.mp-glass {
+  position: relative;
+  border-radius: 22px;
+  overflow: hidden;
+  background: var(--mp-glass-bg);
+  backdrop-filter: blur(18px) saturate(165%);
+  -webkit-backdrop-filter: blur(18px) saturate(165%);
+  box-shadow: var(--mp-glass-shadow);
+}
+
+/* 顶部一抹斜向光泽，模拟液态玻璃的镜面反射 */
+.mp-glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--mp-sheen);
+  pointer-events: none;
+}
+
+/* 三段式布局：左封面 / 中控制 / 右功能 */
+.mp-bar {
+  position: relative; /* 内容压在光泽层之上 */
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  padding: 12px 18px;
+  text-shadow: var(--mp-text-shadow);
+}
+
+.mp-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 240px;
+  flex: none;
+  min-width: 0;
+}
+
+/* 封面位：均衡条 */
+.mp-art {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: 11px;
+  background: linear-gradient(145deg, rgba(64, 88, 148, 0.85), rgba(22, 32, 58, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  padding: 9px 8px;
+}
+
+.mp-art span {
+  width: 4px;
+  height: 25%;
+  border-radius: 2px;
+  background: linear-gradient(to top, #4a7fd4, #9fc4ff);
+}
+
+.mp-art.playing span {
+  animation: eq 0.85s ease-in-out infinite alternate;
+}
+.mp-art.playing span:nth-child(2) {
+  animation-duration: 0.62s;
+  animation-delay: 0.15s;
+}
+.mp-art.playing span:nth-child(3) {
+  animation-duration: 0.74s;
+  animation-delay: 0.3s;
+}
+.mp-art.playing span:nth-child(4) {
+  animation-duration: 0.55s;
+  animation-delay: 0.45s;
+}
+
+@keyframes eq {
+  from {
+    height: 18%;
+  }
+  to {
+    height: 92%;
+  }
+}
+
+.mp-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mp-title {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--mp-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mp-sub {
+  font-size: 11px;
+  color: var(--mp-subtext);
+  white-space: nowrap;
+}
+
+/* 中：传输控制 + 进度 */
+.mp-center {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mp-transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mp-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 12px;
+  color: var(--mp-btn);
+  background: transparent;
+  border: none;
+  display: grid;
+  place-items: center;
+}
+
+.mp-btn:hover:not(:disabled) {
+  background: var(--mp-btn-hover);
+}
+
+.mp-btn.mp-play {
+  width: 38px;
+  height: 38px;
+  font-size: 14px;
+  color: var(--mp-play-text);
+  background: var(--mp-play-bg);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.mp-btn.mp-play:hover:not(:disabled) {
+  filter: brightness(1.08);
+  background: var(--mp-play-bg);
+}
+
+.mp-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(460px, 100%);
+}
+
+.mp-time {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--mp-time);
+  min-width: 34px;
+}
+
+.mp-time:last-child {
+  text-align: right;
+}
+
+.mp-time.dim {
+  color: var(--mp-dim);
+}
+
+.mp-track-line {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--mp-track);
+  overflow: hidden;
+}
+
+/* 流式播放无总时长：一道流动的光泽表示进行中 */
+.mp-track-shimmer {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--mp-shimmer), transparent);
+  animation: shimmer 2.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}
+
+/* 右：对象数 + 音量 */
+.mp-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  width: 240px;
+  flex: none;
+}
+
+.mp-objs {
+  font-size: 11px;
+  color: var(--mp-subtext);
+  padding: 3px 9px;
+  border-radius: 9px;
+  background: var(--mp-chip-bg);
+  box-shadow: inset 0 0 0 1px var(--mp-chip-line);
+  white-space: nowrap;
+}
+
+.mp-vol {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mp-vol-icon {
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.mp-vol input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 96px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--mp-track);
+  outline: none;
+  cursor: pointer;
+}
+
+.mp-vol input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--mp-play-bg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.mp-vol input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 50%;
+  background: var(--mp-play-bg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}

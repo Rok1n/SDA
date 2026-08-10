@@ -1,0 +1,11 @@
+{
+  "name": "@sda/renderer",
+  "version": "0.1.0",
+  "description": "Object audio renderer: VBAP 3D panning to virtual speaker buses, multichannel or binaural (HRTF) output via Web Audio",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@sda/core": "workspace:*"
+  }
+}

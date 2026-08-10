@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+**/node_modules/
+
+# 构建产物
+apps/web/dist/
+apps/desktop/out/
+apps/desktop/dist/
+packages/core/target/
+packages/core/pkg-web/
+packages/core/pkg-node/
+
+# 参考资料（上游渲染器仓库，仅文档参考，不参与构建）
+/Omniphony/
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+*.log

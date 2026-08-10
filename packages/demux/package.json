@@ -1,0 +1,11 @@
+{
+  "name": "@sda/demux",
+  "version": "0.1.0",
+  "description": "Streaming MKV (EBML) and MP4 demuxers extracting TrueHD / E-AC-3 / DTS audio access units",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "mp4box": "^0.5.3"
+  }
+}

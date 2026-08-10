@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "SDA",
+    "slug": "sda",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0c101c",
+    "ios": {
+      "bundleIdentifier": "app.sda.mobile",
+      "infoPlist": {
+        "UIBackgroundModes": ["audio"]
+      }
+    },
+    "android": {
+      "package": "app.sda.mobile"
+    },
+    "plugins": []
+  }
+}

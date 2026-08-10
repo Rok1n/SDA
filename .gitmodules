@@ -1,0 +1,3 @@
+[submodule "harletty-bridge"]
+	path = harletty-bridge
+	url = https://github.com/harletty/harletty-bridge.git

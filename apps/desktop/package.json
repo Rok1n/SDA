@@ -1,0 +1,35 @@
+{
+  "name": "@sda/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SDA desktop — Electron shell around the web build",
+  "main": "./main.cjs",
+  "scripts": {
+    "dev": "electron . --dev",
+    "build": "pnpm --filter @sda/web build && electron-builder",
+    "pack": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "@sda/web": "workspace:*",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "app.sda.desktop",
+    "productName": "SDA",
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      {
+        "from": "../web/dist",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    }
+  }
+}

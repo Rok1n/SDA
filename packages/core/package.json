@@ -1,0 +1,16 @@
+{
+  "name": "@sda/core",
+  "version": "0.1.0",
+  "description": "WASM decoder core: TrueHD / E-AC-3(JOC) / DTS -> PCM + object spatial events",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "node ../../scripts/build-core.mjs",
+    "test": "node test/smoke.mjs"
+  },
+  "files": [
+    "src",
+    "pkg-web"
+  ]
+}

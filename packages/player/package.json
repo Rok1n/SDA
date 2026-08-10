@@ -1,0 +1,13 @@
+{
+  "name": "@sda/player",
+  "version": "0.1.0",
+  "description": "Player orchestration: demux → decoder worker → spatial renderer, with a sample-clock metadata timeline",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@sda/core": "workspace:*",
+    "@sda/demux": "workspace:*",
+    "@sda/renderer": "workspace:*"
+  }
+}
