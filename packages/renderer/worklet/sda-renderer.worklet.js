@@ -23,6 +23,10 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     const opts = (options && options.processorOptions) || {};
     this.busCount = opts.busCount || 12;
     this.paused = false;
+    // 已实际输出（消耗）的帧数 —— 播放头的唯一权威来源。
+    // 暂停时不推进，主线程的 ctx 时钟漂移/挂起都不影响它。
+    this.consumed = 0;
+    this.lastTick = 0;
     this.sources = new Map(); // id -> {ring, read, write, gains, target, rampLeft, rampStep, gain}
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
@@ -77,6 +81,8 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           src.read = src.write = 0;
         }
         this.paused = false;
+        this.consumed = 0;
+        this.lastTick = 0;
         break;
       case "pause":
         // 主线程 ctx.suspend() 不可信时的硬暂停：静音且不消耗缓冲，
@@ -120,6 +126,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       }
       src.gain = gain;
       // starvation: leave read pointer; samples will arrive late → silence gap
+    }
+
+    // 每输出一个 block，播放头就前进 blockSize 帧（含欠载静音段）。
+    // 约每 1/8 秒向主线程上报一次，供时间轴/缓冲水位使用。
+    this.consumed += blockSize;
+    const tickEvery = (typeof sampleRate === "number" ? sampleRate : 48000) >> 3;
+    if (this.consumed - this.lastTick >= tickEvery) {
+      this.lastTick = this.consumed;
+      this.port.postMessage({ type: "tick", consumed: this.consumed });
     }
     return true;
   }

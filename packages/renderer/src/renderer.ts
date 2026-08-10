@@ -29,6 +29,8 @@ export interface RendererOptions {
   /** Pre-measured binaural IRs per bus (stereo, e.g. MIT KEMAR derived).
    *  When absent, binaural mode falls back to PannerNode HRTF. */
   binauralIrs?: Map<number, AudioBuffer>;
+  /** worklet 每消耗约 1/8 秒回调一次 —— 播放器用它泵入更多 PCM（背压）。 */
+  onConsumedTick?: () => void;
 }
 
 /** Scalar spread derived from ADM object size (w, d, h in [0,1]). */
@@ -60,6 +62,9 @@ export class SpatialRenderer {
   private postNodes: AudioNode[] = [];
   private sources = new Map<string, SourceState>();
   private irs?: Map<number, AudioBuffer>;
+  private onConsumedTick?: () => void;
+  /** Frames actually rendered by the worklet (authoritative playhead). */
+  consumedSamples = 0;
 
   constructor(ctx: AudioContext, options: RendererOptions = {}) {
     this.ctx = ctx;
@@ -67,6 +72,7 @@ export class SpatialRenderer {
     this.layout = options.layout ?? LAYOUT_7_1_4;
     this.vbap = new VbapSolver(this.layout);
     if (options.binauralIrs) this.irs = options.binauralIrs;
+    this.onConsumedTick = options.onConsumedTick;
   }
 
   /** Load the worklet module and build the downstream graph. */
@@ -80,6 +86,12 @@ export class SpatialRenderer {
       outputChannelCount: [this.layout.length],
       processorOptions: { busCount: this.layout.length },
     });
+    this.node.port.onmessage = (e: MessageEvent) => {
+      if (e.data?.type === "tick") {
+        this.consumedSamples = e.data.consumed;
+        this.onConsumedTick?.();
+      }
+    };
     this.buildOutputGraph();
   }
 
@@ -215,7 +227,13 @@ export class SpatialRenderer {
 
   /** Buffered samples for a source (for buffer-level telemetry). */
   resetBuffers(): void {
+    this.consumedSamples = 0;
     this.node?.port.postMessage({ type: "reset" });
+  }
+
+  /** Playhead in seconds: frames the worklet actually rendered. */
+  consumedSeconds(): number {
+    return this.consumedSamples / this.ctx.sampleRate;
   }
 
   /** Worklet-level pause: outputs silence without consuming the ring buffers,
@@ -233,6 +251,6 @@ export class SpatialRenderer {
     this.teardownPostNodes();
     this.node?.disconnect();
     this.master?.disconnect();
-    await this.ctx.close();
+    if (this.ctx.state !== "closed") await this.ctx.close();
   }
 }

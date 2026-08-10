@@ -15,6 +15,10 @@ export interface MkvAudioTrack {
   sampleRate: number;
   channels: number;
   name?: string;
+  /** Segment duration from the container header (seconds), when present. */
+  durationSec?: number;
+  /** 标题：优先音轨 Name，其次 Segment Title。 */
+  title?: string;
 }
 
 export interface MkvPacket {
@@ -37,6 +41,8 @@ const ID = {
   Segment: 0x18538067,
   Info: 0x1549a966,
   TimestampScale: 0x2ad7b1,
+  Duration: 0x4489,
+  Title: 0x7ba9,
   Tracks: 0x1654ae6b,
   TrackEntry: 0xae,
   TrackNumber: 0xd7,
@@ -105,6 +111,10 @@ export class MkvDemuxer {
   private buf = new Uint8Array(0);
   private cb: MkvDemuxerCallbacks;
   private timestampScaleNs = 1_000_000; // default: ms
+  /** Segment Duration element value, in TimestampScale units. */
+  private durationFloat?: number;
+  /** Segment Title element（歌曲/影片标题）。 */
+  private segmentTitle?: string;
   private tracks = new Map<number, MkvAudioTrack>();
   private sawTracks = false;
   private clusterTimestamp = 0;
@@ -190,6 +200,10 @@ export class MkvDemuxer {
       const el = readElementHeader(this.buf, pos);
       if (!el || el.size < 0 || el.dataOffset + el.size > end) break;
       if (el.id === ID.TimestampScale) this.timestampScaleNs = this.readUint(el.dataOffset, el.size);
+      if (el.id === ID.Duration) this.durationFloat = this.readFloat(el.dataOffset, el.size);
+      if (el.id === ID.Title) {
+        this.segmentTitle = new TextDecoder().decode(this.buf.subarray(el.dataOffset, el.dataOffset + el.size));
+      }
       pos = el.dataOffset + el.size;
     }
   }
@@ -260,6 +274,12 @@ export class MkvDemuxer {
     if (!codec) return;
     const track: MkvAudioTrack = { trackNumber, codecId, codec, sampleRate, channels };
     if (name !== undefined) track.name = name;
+    // Duration 与 TimestampScale 在 Info 内顺序不定，到这里两者都已解析。
+    if (this.durationFloat !== undefined && Number.isFinite(this.durationFloat)) {
+      track.durationSec = (this.durationFloat * this.timestampScaleNs) / 1e9;
+    }
+    const title = name ?? this.segmentTitle;
+    if (title) track.title = title;
     this.tracks.set(trackNumber, track);
     this.cb.onTrack?.(track);
   }

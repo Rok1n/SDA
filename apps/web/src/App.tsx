@@ -14,21 +14,28 @@ export function App() {
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [objects, setObjects] = useState<VisualObject[]>([]);
   const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [debug, setDebug] = useState("");
   const [errors, setErrors] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
   const [paused, setPaused] = useState(false);
   const [volume, setVolume] = useState(1);
   const [dragOver, setDragOver] = useState(false);
   const lastFileRef = useRef<File | null>(null);
+  /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
+  const fileNameRef = useRef<string | null>(null);
 
   const createPlayer = useCallback(
     async (m: OutputMode, lid: LayoutId) => {
       await playerRef.current?.dispose();
       const player = new SdaPlayer({
-        onTrack: (t) => setTrack(t),
+        onTrack: (t) => setTrack({ ...t, title: t.title ?? fileNameRef.current ?? undefined }),
         onVisualState: (objs, t) => {
           setObjects(objs);
           setPosition(t);
+          const p = playerRef.current;
+          setDuration(p?.durationSeconds() ?? 0);
+          setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
         },
         onError: (m) => setErrors((prev) => [...prev.slice(-19), m]),
         onEnded: () => setPlaying(false),
@@ -51,9 +58,12 @@ export function App() {
       setErrors([]);
       setTrack(null);
       setObjects([]);
+      setPosition(0);
+      setDuration(0);
       setPlaying(true);
       setPaused(false);
       lastFileRef.current = file;
+      fileNameRef.current = file.name.replace(/\.[^.]+$/, "");
       try {
         // Always rebuild with the currently selected output mode and layout.
         const player = await createPlayer(mode, layoutId);
@@ -83,13 +93,17 @@ export function App() {
     await play(new File([blob], "demo-joc.ec3"));
   }, [play]);
 
-  /** 播放中 → 暂停；暂停中 → 继续；已播完 → 重播（macOS 播放键行为）。 */
+  /** 播放中 → 暂停；暂停中 → 继续；已播完 → 重播（macOS 播放键行为）。
+   *  UI 状态立即切换（乐观更新），不等 suspend/resume 的 promise —
+   *  某些环境下这些 promise 不 resolve，会表现为按钮"没反应"。 */
   const togglePlay = useCallback(() => {
     const player = playerRef.current;
     if (playing && !paused) {
-      void player?.pause().then(() => setPaused(true));
+      setPaused(true);
+      void player?.pause();
     } else if (paused) {
-      void player?.resume().then(() => setPaused(false));
+      setPaused(false);
+      void player?.resume();
     } else if (lastFileRef.current) {
       void play(lastFileRef.current);
     }
@@ -161,6 +175,7 @@ export function App() {
           <MiniPlayer
             track={track}
             position={position}
+            duration={duration}
             playing={playing}
             paused={paused}
             objectCount={objects.length}
@@ -186,6 +201,8 @@ export function App() {
                 <dd>{track.container}</dd>
                 <dt>播放</dt>
                 <dd>{position.toFixed(1)} s</dd>
+                <dt>诊断</dt>
+                <dd>{debug || "—"}</dd>
               </dl>
             ) : (
               <p className="dim">拖入 .mkv / .mp4 / .thd / .ec3 / .dts 文件开始</p>

@@ -12,6 +12,8 @@ export interface Mp4AudioTrack {
   codec: string; // mp4a codec string, e.g. "ec-3"
   sampleRate: number;
   channels: number;
+  /** Movie duration from the container header (seconds), when known. */
+  durationSec?: number;
 }
 
 export interface Mp4Packet {
@@ -38,7 +40,7 @@ export class Mp4Demuxer {
     this.cb = cb;
     this.file = MP4Box.createFile();
     this.file.onError = (e: unknown) => this.cb.onError?.(String(e));
-    this.file.onReady = (info: { audioTracks: Array<{ id: number; codec: string; audio: { sample_rate: number; channel_count: number } }> }) => {
+    this.file.onReady = (info: { audioTracks: Array<{ id: number; codec: string; duration?: number; timescale?: number; movie_duration?: number; movie_timescale?: number; audio: { sample_rate: number; channel_count: number } }> }) => {
       for (const t of info.audioTracks) {
         if (!AUDIO_CODECS.has(t.codec)) continue;
         const track: Mp4AudioTrack = {
@@ -47,6 +49,10 @@ export class Mp4Demuxer {
           sampleRate: t.audio.sample_rate,
           channels: t.audio.channel_count,
         };
+        const dur = t.duration && t.timescale ? t.duration / t.timescale
+          : t.movie_duration && t.movie_timescale ? t.movie_duration / t.movie_timescale
+          : undefined;
+        if (dur && Number.isFinite(dur)) track.durationSec = dur;
         this.cb.onTrack?.(track);
         // Extract the first supported track only.
         if (this.wantedTrackId === null) {

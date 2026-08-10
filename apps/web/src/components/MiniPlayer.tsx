@@ -9,11 +9,15 @@ export interface TrackInfo {
   sampleRate: number;
   channels: number;
   container: string;
+  /** 歌曲标题：容器元数据（MKV Title / 音轨 Name）或文件名兜底。 */
+  title?: string;
 }
 
 interface MiniPlayerProps {
   track: TrackInfo | null;
   position: number;
+  /** 已解码总时长（秒）。流式解码中持续增长，读完即为全长；0 表示未知。 */
+  duration: number;
   playing: boolean;
   paused: boolean;
   objectCount: number;
@@ -33,6 +37,7 @@ function formatTime(sec: number): string {
 export function MiniPlayer({
   track,
   position,
+  duration,
   playing,
   paused,
   objectCount,
@@ -43,6 +48,7 @@ export function MiniPlayer({
   onVolume,
 }: MiniPlayerProps) {
   if (!track) return null;
+  const progress = duration > 0 ? Math.min(1, position / duration) : 0;
   return (
     <div className="miniplayer">
       <div className="mp-glass">
@@ -56,9 +62,9 @@ export function MiniPlayer({
               <span />
             </div>
             <div className="mp-meta">
-              <div className="mp-title">{track.codec}</div>
+              <div className="mp-title">{track.title ?? track.codec}</div>
               <div className="mp-sub">
-                {(track.sampleRate / 1000).toFixed(1)} kHz · {track.channels} 声道 · {track.container}
+                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.channels} 声道 · {track.container}
               </div>
             </div>
           </div>
@@ -83,9 +89,10 @@ export function MiniPlayer({
             <div className="mp-progress">
               <span className="mp-time">{formatTime(position)}</span>
               <div className="mp-track-line">
-                <div className="mp-track-shimmer" />
+                <div className="mp-track-fill" style={{ width: `${progress * 100}%` }} />
+                {duration <= 0 && <div className="mp-track-shimmer" />}
               </div>
-              <span className="mp-time dim">--:--</span>
+              <span className="mp-time dim">{duration > 0 ? formatTime(duration) : "--:--"}</span>
             </div>
           </div>
 

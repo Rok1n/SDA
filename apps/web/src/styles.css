@@ -484,6 +484,17 @@ aside {
   overflow: hidden;
 }
 
+/* 已知总时长：实心进度填充 */
+.mp-track-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 2px;
+  background: var(--mp-shimmer);
+  transition: width 0.12s linear;
+}
+
 /* 流式播放无总时长：一道流动的光泽表示进行中 */
 .mp-track-shimmer {
   position: absolute;

@@ -59,12 +59,13 @@ Omniphony Studio 的 3D 视图）。
 
 ### 2. 拿代码
 
-本项目是 git 仓库，`harletty-bridge` 以 **git submodule** 形式挂在仓库里
-（锁定在上游 `fcf1c00`），克隆时一条命令一起拉下来：
+本项目是 git 仓库（https://github.com/fengluoxiao/SDA），`harletty-bridge` 以
+**git submodule** 形式挂在仓库里（fork 自上游，锁定在 `fcf1c00`，
+地址 https://github.com/fengluoxiao/harletty-bridge），克隆时一条命令一起拉下来：
 
 ```bash
 # 克隆主项目 + 自动克隆 harletty-bridge（必须带 --recurse-submodules）
-git clone --recurse-submodules <仓库地址> SDA
+git clone --recurse-submodules https://github.com/fengluoxiao/SDA.git SDA
 
 # 如果已经克隆了但没带子模块，补拉：
 git submodule update --init --recursive
@@ -106,6 +107,31 @@ pnpm web:build && pnpm desktop:dev
 # 手机版（Expo 壳）
 pnpm mobile:start
 ```
+
+### 6. 打包桌面安装包（Windows）
+
+```bash
+cd apps/desktop
+
+# 国内网络先设 Electron 下载镜像（否则 GitHub 下不动）
+export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+
+# 先构建 web 产物再打包
+pnpm --filter @sda/web build
+npx electron-builder --win nsis
+```
+
+产物在 `apps/desktop/dist/`：
+
+- `SDA Setup x.y.z.exe` —— NSIS 安装包（推荐分发）
+- `win-unpacked/` —— 免安装绿色版，直接运行里面的 `SDA.exe`
+
+**注意：不要设 `ELECTRON_BUILDER_BINARIES_MIRROR`**。electron-builder 每次运行都会
+重新下载 winCodeSign 工具包，其中包含 macOS 的 `.dylib` 符号链接，Windows 无
+开发者模式/管理员权限时 7zip 解压必然报「客户端没有所需的特权」。已在
+`apps/desktop/package.json` 里设了 `win.signAndEditExecutable: false` 跳过该步骤
+（代价：exe 用 Electron 默认图标、无数字签名）。要加图标/签名时，需开启
+Windows「开发者模式」后去掉该选项再配 `win.icon` / 证书。
 
 用法：拖入含 TrueHD/Atmos 或 E-AC-3 JOC 音轨的 `.mkv`（或裸 `.thd`/`.ec3`/`.dts`），
 主视图是实时 3D 对象位置，底栏是迷你播放器（暂停/重播/音量），
