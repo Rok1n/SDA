@@ -49,9 +49,9 @@ const PALETTE = {
 type Palette = (typeof PALETTE)[Theme];
 
 /** ADM cartesian → scene position (three.js: x right, y up, z toward viewer;
- *  ADM: x left, y front, z up). */
+ *  ADM: x right, y front, z up —— ITU-R BS.2076：+X 是右，与 Omniphony/EAR 一致). */
 function admToScene(pos: [number, number, number]): [number, number, number] {
-  return [-pos[0] * ROOM, pos[2] * ROOM, -pos[1] * ROOM];
+  return [pos[0] * ROOM, pos[2] * ROOM, -pos[1] * ROOM];
 }
 
 /** 仿真力 The Ones 同轴音箱：圆角箱体 + 大椭圆波导 + 中央同轴单元 + Iso-Pod 支架。

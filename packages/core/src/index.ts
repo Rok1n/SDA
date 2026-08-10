@@ -18,7 +18,8 @@ export interface ObjectEvent {
   id: number;
   samplePos: number;
   hasPos: boolean;
-  /** ADM cartesian [x, y, z]: x+ = left, y+ = front, z+ = up. */
+  /** ADM cartesian [x, y, z]: x+ = right, y+ = front, z+ = up
+   *  (ITU-R BS.2076 / EBU EAR / Omniphony 约定). */
   pos: [number, number, number];
   gainDb: number;
   /** (width, depth, height) each normalised to [0, 1]; [0,0,0] = point source. */
