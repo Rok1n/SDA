@@ -71,19 +71,33 @@ impl Eac3Pipeline {
         self.total_samples += pcm.samples_per_channel() as u64;
 
         let core = pcm.core;
-        let num_bed = core.total_channels();
         let object_count = pcm.object_channels.len();
+        let dynamics = pcm
+            .oamd_payloads
+            .first()
+            .map_or(0, |(oamd, _)| dynamic_object_count(oamd, object_count));
+        // 全动态 JOC 呈现：核心床层是完整混音（对象内容已烘焙在内，供 JOC
+        // 处理器重建用）。若把它也输出，床层会照着对象再完整放一遍 ——
+        // 静音/独奏对象自然听不出变化。harletty 原话："The fullband core bed
+        // is used as JOC input, so exposing it here would double-count the
+        // final mix." → 此时只输出 LFE + 对象通道。
+        // 混合呈现（含床成员对象）暂保留核心床层，避免床成员内容丢失。
+        let full_dynamic = dynamics > 0 && dynamics == object_count;
 
-        let mut channels = core.fullband_channels.clone();
-        let mut labels: Vec<String> = core
-            .fullband_channel_order
-            .iter()
-            .map(|b| format!("{b:?}"))
-            .collect();
+        let mut channels: Vec<Vec<f32>> = if full_dynamic { Vec::new() } else { core.fullband_channels.clone() };
+        let mut labels: Vec<String> = if full_dynamic {
+            Vec::new()
+        } else {
+            core.fullband_channel_order
+                .iter()
+                .map(|b| format!("{b:?}"))
+                .collect()
+        };
         if let Some(lfe) = &core.lfe_channel {
             channels.push(lfe.clone());
             labels.push("LFE".to_string());
         }
+        let obj_channel_base = channels.len();
         for (k, obj) in pcm.object_channels.iter().enumerate() {
             channels.push(obj.clone());
             labels.push(format!("Obj_{}", 10 + k));
@@ -92,10 +106,10 @@ impl Eac3Pipeline {
         let (events, object_channels) = match pcm.oamd_payloads.first() {
             Some((oamd, _)) => {
                 let events = extract_events(oamd, sample_pos, object_count);
-                let decl: Vec<ObjectChannelDecl> = (0..dynamic_object_count(oamd, object_count))
+                let decl: Vec<ObjectChannelDecl> = (0..dynamics)
                     .map(|k| ObjectChannelDecl {
                         id: (10 + k) as u32,
-                        channel: (num_bed + k) as u32,
+                        channel: (obj_channel_base + k) as u32,
                     })
                     .collect();
                 (events, self.sparse_declare(decl))
