@@ -59,19 +59,22 @@ Omniphony Studio 的 3D 视图）。
 
 ### 2. 拿代码
 
-本仓库目前不是 git 仓库，直接整体拷贝文件夹即可（或自行 `git init`）。
-如果拷贝时带上了 `packages/core/pkg-web` 和 `pkg-node`（已编译的 WASM 产物），
-可以**跳过第 4 步**，Rust 工具链都不用装。
+本项目是 git 仓库，`harletty-bridge` 以 **git submodule** 形式挂在仓库里
+（锁定在上游 `fcf1c00`），克隆时一条命令一起拉下来：
 
-两个上游目录是否需要一起拷：
+```bash
+# 克隆主项目 + 自动克隆 harletty-bridge（必须带 --recurse-submodules）
+git clone --recurse-submodules <仓库地址> SDA
 
-| 目录 | 大小 | 是否必须 | 说明 |
-|---|---|---|---|
-| `harletty-bridge` | ~165 MB | **重新编译 WASM 时必须** | `packages/core/Cargo.toml` 以 path 依赖引用其中的 `eac3/` 和 `dca/` 解码 crate；不重新编译（带 pkg-web/pkg-node）则不需要。另外冒烟测试的 JOC 测试向量也在里面 |
-| `Omniphony` | ~24 MB | **完全不需要** | 上游渲染器参考实现，只在文档/注释里提及，构建和运行都不依赖，可不拷 |
+# 如果已经克隆了但没带子模块，补拉：
+git submodule update --init --recursive
+```
 
-> 打算在新电脑上改 Rust 解码代码 → 必须带 `harletty-bridge`；
-> 只是跑起来用/改前端 → 两个都可以不带。
+`Omniphony`（~24 MB）是上游渲染器参考实现，只在文档/注释里提及，
+构建和运行都不依赖，**没有纳入仓库**，不需要拷。
+
+> WASM 产物（`packages/core/pkg-web`、`pkg-node`）不入库，克隆后需要
+> 按第 1 步装好 Rust 工具链，再执行第 4 步 `pnpm core:build` 生成。
 
 ### 3. 安装依赖
 
