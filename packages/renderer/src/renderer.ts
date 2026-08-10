@@ -300,16 +300,18 @@ export class SpatialRenderer {
     this.postNodes.push(splitter, merger);
   }
 
-  /** Register a source. Bed channels pass their speaker label; objects an event id. */
+  /** Register a source. Bed channels pass their speaker label; objects an event id.
+   *  重复声明同一 id（稀疏声明变化时 player 会重放整组）不重置用户静音状态。 */
   addSource(id: string, opts: { bedLabel?: string } = {}): void {
     if (!this.node) throw new Error("SpatialRenderer.init() first");
+    const wasMuted = this.sources.get(id)?.muted ?? false;
     const state: SourceState = {
       id,
       spread: 0,
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
-      muted: false,
+      muted: wasMuted,
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
@@ -320,12 +322,19 @@ export class SpatialRenderer {
   }
 
   /** 静音/取消静音一个源（Omniphony 式对象 mute/solo 的底层原语）。
-   *  走 2048 采样斜坡（@48k ≈ 43ms），切换无爆音。 */
-  setSourceMuted(id: string, muted: boolean): void {
+   *  走 2048 采样斜坡（@48k ≈ 43ms），切换无爆音。
+   *  返回 false = 源不存在（调用方可据此提示 id 不匹配）。 */
+  setSourceMuted(id: string, muted: boolean): boolean {
     const state = this.sources.get(id);
-    if (!state || state.muted === muted) return;
+    if (!state) {
+      console.warn(`[SDA] setSourceMuted 无源 "${id}"，现有源: ${[...this.sources.keys()].join(", ") || "(空)"}`);
+      return false;
+    }
+    if (state.muted === muted) return true;
     state.muted = muted;
     this.applyGains(state, 2048);
+    console.log(`[SDA] ${id} ${muted ? "静音" : "解除静音"} → scalar ${muted ? 0 : 1}`);
+    return true;
   }
 
   removeSource(id: string): void {

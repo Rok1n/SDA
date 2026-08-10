@@ -129,7 +129,15 @@ export class SdaPlayer {
   setObjectMuted(objectId: number, muted: boolean): void {
     if (muted) this.mutedObjects.add(objectId);
     else this.mutedObjects.delete(objectId);
-    this.renderer?.setSourceMuted(`obj:${objectId}`, muted);
+    const r = this.renderer;
+    if (!r) return;
+    // 已声明的对象必须命中声源；未命中说明 id 链路断了，告诉用户而不是静默吞掉。
+    // （未声明的对象属正常 —— 状态已记录，声明到达时会应用。）
+    if (this.objectChannels.has(objectId) && !r.setSourceMuted(`obj:${objectId}`, muted)) {
+      this.cb.onError?.(`静音未命中：obj:${objectId} 已声明但渲染器无此声源`);
+    } else if (!this.objectChannels.has(objectId)) {
+      r.setSourceMuted(`obj:${objectId}`, muted); // 记录用；无源时 renderer 打 warn
+    }
   }
 
   /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）

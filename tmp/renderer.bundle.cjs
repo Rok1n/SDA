@@ -1,0 +1,782 @@
+"use strict";
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// packages/renderer/src/index.ts
+var index_exports = {};
+__export(index_exports, {
+  BINAURAL_MODES: () => BINAURAL_MODES,
+  LAYOUTS: () => LAYOUTS,
+  LAYOUT_7_1_4: () => LAYOUT_7_1_4,
+  SpatialRenderer: () => SpatialRenderer,
+  VbapSolver: () => VbapSolver,
+  admToSpherical: () => admToSpherical,
+  buildBusIrs: () => buildBusIrs,
+  getBinauralIrSet: () => getBinauralIrSet,
+  isLfeLabel: () => isLfeLabel,
+  mixIrForMode: () => mixIrForMode,
+  positionForLabel: () => positionForLabel,
+  sphericalToAdm: () => sphericalToAdm,
+  sphericalToWebAudio: () => sphericalToWebAudio
+});
+module.exports = __toCommonJS(index_exports);
+
+// packages/renderer/src/coords.ts
+function admToSpherical(pos) {
+  const [x, y, z] = pos;
+  const distance = Math.min(4, Math.hypot(x, y, z));
+  if (distance < 1e-6) return { azimuth: 0, elevation: 0, distance: 0 };
+  return {
+    // +az = 左 = cartesian X 负侧（EBU EAR: azimuth = -atan2(x, y)）
+    azimuth: -Math.atan2(x, y) * 180 / Math.PI,
+    elevation: Math.asin(Math.min(1, Math.max(-1, z / distance))) * 180 / Math.PI,
+    distance
+  };
+}
+function sphericalToAdm(s) {
+  const az = s.azimuth * Math.PI / 180;
+  const el = s.elevation * Math.PI / 180;
+  const r = s.distance;
+  return [-r * Math.cos(el) * Math.sin(az), r * Math.cos(el) * Math.cos(az), r * Math.sin(el)];
+}
+function sphericalToWebAudio(s) {
+  const [x, y, z] = sphericalToAdm(s);
+  return [x, z, -y];
+}
+
+// packages/renderer/src/layouts.ts
+var FRONT = [
+  { name: "FrontLeft", azimuth: 30, elevation: 0, distance: 1 },
+  { name: "FrontRight", azimuth: -30, elevation: 0, distance: 1 },
+  { name: "Center", azimuth: 0, elevation: 0, distance: 1 },
+  { name: "LFE", azimuth: 45, elevation: 0, distance: 1, isLfe: true }
+];
+var SURROUND_5 = [
+  { name: "SurroundLeft", azimuth: 110, elevation: 0, distance: 1 },
+  { name: "SurroundRight", azimuth: -110, elevation: 0, distance: 1 }
+];
+var SURROUND_7 = [
+  { name: "SurroundLeft", azimuth: 100, elevation: 0, distance: 1 },
+  { name: "SurroundRight", azimuth: -100, elevation: 0, distance: 1 },
+  { name: "RearLeft", azimuth: 140, elevation: 0, distance: 1 },
+  { name: "RearRight", azimuth: -140, elevation: 0, distance: 1 }
+];
+var WIDE = [
+  { name: "WideLeft", azimuth: 60, elevation: 0, distance: 1 },
+  { name: "WideRight", azimuth: -60, elevation: 0, distance: 1 }
+];
+var TOP_FRONT = [
+  { name: "TopFrontLeft", azimuth: 45, elevation: 45, distance: 1 },
+  { name: "TopFrontRight", azimuth: -45, elevation: 45, distance: 1 }
+];
+var TOP_REAR = [
+  { name: "TopRearLeft", azimuth: 135, elevation: 45, distance: 1 },
+  { name: "TopRearRight", azimuth: -135, elevation: 45, distance: 1 }
+];
+var TOP_SIDE = [
+  { name: "TopSideLeft", azimuth: 90, elevation: 45, distance: 1 },
+  { name: "TopSideRight", azimuth: -90, elevation: 45, distance: 1 }
+];
+var BED_5_1 = [...FRONT, ...SURROUND_5];
+var BED_7_1 = [...FRONT, ...SURROUND_7];
+var BED_9_1 = [...FRONT, ...WIDE, ...SURROUND_7];
+var LAYOUT_7_1_4 = [...BED_7_1, ...TOP_FRONT, ...TOP_REAR];
+var LAYOUTS = {
+  "5.1": BED_5_1,
+  "5.1.2": [...BED_5_1, ...TOP_FRONT],
+  "5.1.4": [...BED_5_1, ...TOP_FRONT, ...TOP_REAR],
+  "7.1.2": [...BED_7_1, ...TOP_FRONT],
+  "7.1.4": LAYOUT_7_1_4,
+  "9.1.2": [...BED_9_1, ...TOP_FRONT],
+  "9.1.4": [...BED_9_1, ...TOP_FRONT, ...TOP_REAR],
+  "9.1.6": [...BED_9_1, ...TOP_FRONT, ...TOP_SIDE, ...TOP_REAR]
+};
+var LABEL_POSITIONS = Object.fromEntries(
+  [...LAYOUTS["9.1.6"]].map((s) => [s.name, s])
+);
+var LABEL_ALIASES = {
+  // truehd ChannelLabel variants
+  Left: "FrontLeft",
+  Right: "FrontRight",
+  Ls: "SurroundLeft",
+  Rs: "SurroundRight",
+  Lrs: "RearLeft",
+  Rrs: "RearRight",
+  Ltf: "TopFrontLeft",
+  Rtf: "TopFrontRight",
+  Ltr: "TopRearLeft",
+  Rtr: "TopRearRight",
+  Lfe: "LFE",
+  LFE2: "LFE",
+  // eac3/dca BedChannel variants
+  SurroundLeftRear: "RearLeft",
+  SurroundRightRear: "RearRight",
+  RearLeftSurround: "RearLeft",
+  RearRightSurround: "RearRight",
+  TopLeft: "TopFrontLeft",
+  TopRight: "TopFrontRight",
+  WideLeft: "WideLeft",
+  // 9.1 前宽 ±60°
+  WideRight: "WideRight",
+  TopCenter: "TopFrontLeft",
+  CenterSurround: "RearLeft",
+  RearCenter: "RearLeft"
+};
+function positionForLabel(label) {
+  const aliased = LABEL_ALIASES[label] ?? label;
+  return LABEL_POSITIONS[aliased] ?? { azimuth: 0, elevation: 0, distance: 1 };
+}
+function isLfeLabel(label) {
+  return label === "LFE" || label === "Lfe" || label === "LFE2";
+}
+
+// packages/renderer/src/vbap.ts
+function unit(v) {
+  const n = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / n, v[1] / n, v[2] / n];
+}
+function det3(m) {
+  return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+}
+function inv3(m) {
+  const d = det3(m);
+  if (Math.abs(d) < 1e-9) return null;
+  const [a, b, c] = m[0];
+  const [e, f, g] = m[1];
+  const [h, i, j] = m[2];
+  return [
+    [(f * j - g * i) / d, -(b * j - c * i) / d, (b * g - c * f) / d],
+    [-(e * j - g * h) / d, (a * j - c * h) / d, -(a * g - c * e) / d],
+    [(e * i - f * h) / d, -(a * i - b * h) / d, (a * f - b * e) / d]
+  ];
+}
+var VbapSolver = class {
+  speakerCount;
+  /** Speaker unit vectors in ADM cartesian. */
+  dirs;
+  lfeMask;
+  triplets = [];
+  /** 纯水平布局（无顶箱，全部共面）时使用相邻声像对做 2D VBAP。 */
+  pairs = [];
+  constructor(layout) {
+    this.speakerCount = layout.length;
+    this.dirs = layout.map((s) => unit(sphericalToAdm(s)));
+    this.lfeMask = layout.map((s) => s.isLfe === true);
+    const n = layout.length;
+    const coplanar = this.dirs.every((d) => Math.abs(d[2]) < 1e-3);
+    if (coplanar) {
+      const order = layout.map((s, i) => ({ az: s.azimuth, i })).filter((o) => !this.lfeMask[o.i]).sort((a, b) => a.az - b.az);
+      const m = order.length;
+      for (let k = 0; k < m; k++) {
+        const a = order[k].i;
+        const b = order[(k + 1) % m].i;
+        const [ax, ay] = [this.dirs[a][0], this.dirs[a][1]];
+        const [bx, by] = [this.dirs[b][0], this.dirs[b][1]];
+        const det = ax * by - bx * ay;
+        if (Math.abs(det) < 1e-9) continue;
+        this.pairs.push({
+          speakers: [a, b],
+          inv2: [by / det, -bx / det, -ay / det, ax / det]
+        });
+      }
+      return;
+    }
+    for (let i = 0; i < n; i++) {
+      if (this.lfeMask[i]) continue;
+      for (let j = i + 1; j < n; j++) {
+        if (this.lfeMask[j]) continue;
+        for (let k = j + 1; k < n; k++) {
+          if (this.lfeMask[k]) continue;
+          const basis = [
+            [this.dirs[i][0], this.dirs[j][0], this.dirs[k][0]],
+            [this.dirs[i][1], this.dirs[j][1], this.dirs[k][1]],
+            [this.dirs[i][2], this.dirs[j][2], this.dirs[k][2]]
+          ];
+          const invBasis = inv3(basis);
+          if (invBasis) this.triplets.push({ speakers: [i, j, k], invBasis });
+        }
+      }
+    }
+  }
+  /**
+   * Gain vector over all speakers for a source at `pos` with scalar
+   * `spread` ∈ [0, 1] (0 = point source, 1 = fully diffuse).
+   * LFE always gets 0 — low-frequency content is routed by the bed, not panned.
+   */
+  pan(pos, spread = 0) {
+    const gains = new Float32Array(this.speakerCount);
+    const p = unit(sphericalToAdm(pos));
+    if (this.pairs.length > 0) {
+      const pn = Math.hypot(p[0], p[1]) || 1;
+      const px = p[0] / pn;
+      const py = p[1] / pn;
+      let bestPair = null;
+      for (const pair of this.pairs) {
+        const [a, b, c, d] = pair.inv2;
+        const g = [a * px + b * py, c * px + d * py];
+        const minGain = Math.min(g[0], g[1]);
+        if (minGain >= -1e-4 && (!bestPair || minGain > bestPair.minGain)) {
+          bestPair = { g, pair, minGain };
+        }
+      }
+      if (bestPair) {
+        gains[bestPair.pair.speakers[0]] = Math.max(0, bestPair.g[0]);
+        gains[bestPair.pair.speakers[1]] = Math.max(0, bestPair.g[1]);
+      } else {
+        let bestIdx = 0;
+        let bestDot = -Infinity;
+        for (let i = 0; i < this.speakerCount; i++) {
+          if (this.lfeMask[i]) continue;
+          const d = this.dirs[i][0] * px + this.dirs[i][1] * py;
+          if (d > bestDot) {
+            bestDot = d;
+            bestIdx = i;
+          }
+        }
+        gains[bestIdx] = 1;
+      }
+    } else {
+      let best = null;
+      for (const t of this.triplets) {
+        const m = t.invBasis;
+        const g = [
+          m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2],
+          m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2],
+          m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2]
+        ];
+        const minGain = Math.min(g[0], g[1], g[2]);
+        if (minGain >= -1e-4 && (!best || minGain > best.minGain)) {
+          best = { g, t, minGain };
+        }
+      }
+      if (best) {
+        const { g, t } = best;
+        for (let s = 0; s < 3; s++) {
+          gains[t.speakers[s]] = Math.max(0, g[s]);
+        }
+      } else {
+        let bestIdx = 0;
+        let bestDot = -Infinity;
+        for (let i = 0; i < this.speakerCount; i++) {
+          if (this.lfeMask[i]) continue;
+          const d = this.dirs[i][0] * p[0] + this.dirs[i][1] * p[1] + this.dirs[i][2] * p[2];
+          if (d > bestDot) {
+            bestDot = d;
+            bestIdx = i;
+          }
+        }
+        gains[bestIdx] = 1;
+      }
+    }
+    let power = 0;
+    for (const g of gains) power += g * g;
+    const norm = power > 0 ? 1 / Math.sqrt(power) : 0;
+    for (let i = 0; i < gains.length; i++) gains[i] *= norm;
+    if (spread > 0) {
+      const s = Math.min(1, spread);
+      const active = this.lfeMask.filter((l) => !l).length;
+      const diffuse = 1 / Math.sqrt(active);
+      for (let i = 0; i < gains.length; i++) {
+        if (this.lfeMask[i]) continue;
+        gains[i] = (1 - s) * gains[i] + s * diffuse;
+      }
+    }
+    return gains;
+  }
+};
+
+// packages/renderer/src/hrtf.ts
+var BINAURAL_MODES = {
+  near: { wet: 0.1, refDistance: 0.7 },
+  mid: { wet: 0.3, refDistance: 1.2 },
+  far: { wet: 0.6, refDistance: 2.5 }
+};
+var setCache = /* @__PURE__ */ new Map();
+function getBinauralIrSet(baseUrl) {
+  let p = setCache.get(baseUrl);
+  if (!p) {
+    p = loadSet(baseUrl);
+    p.catch(() => setCache.delete(baseUrl));
+    setCache.set(baseUrl, p);
+  }
+  return p;
+}
+async function loadSet(baseUrl) {
+  const res = await fetch(`${baseUrl}/hrtf-set.json`);
+  if (!res.ok) throw new Error(`hrtf-set.json HTTP ${res.status}`);
+  const manifest = await res.json();
+  const positions = await Promise.all(
+    manifest.positions.map(async (entry) => {
+      const [dryBuf, wetBuf] = await Promise.all([
+        fetch(`${baseUrl}/${entry.dry}`).then((r) => {
+          if (!r.ok) throw new Error(`${entry.dry} HTTP ${r.status}`);
+          return r.arrayBuffer();
+        }),
+        fetch(`${baseUrl}/${entry.wet}`).then((r) => {
+          if (!r.ok) throw new Error(`${entry.wet} HTTP ${r.status}`);
+          return r.arrayBuffer();
+        })
+      ]);
+      const dry = new Float32Array(dryBuf);
+      const wet = new Float32Array(wetBuf);
+      return {
+        azimuth: entry.azimuth,
+        elevation: entry.elevation,
+        dry,
+        dryLen: dry.length >> 1,
+        wet,
+        wetLen: wet.length >> 1
+      };
+    })
+  );
+  return { sampleRate: manifest.sampleRate, positions };
+}
+function toUnit(azimuth, elevation) {
+  const az = azimuth * Math.PI / 180;
+  const el = elevation * Math.PI / 180;
+  return [Math.cos(el) * Math.sin(az), Math.cos(el) * Math.cos(az), Math.sin(el)];
+}
+function nearestPosition(set, azimuth, elevation) {
+  const [tx, ty, tz] = toUnit(azimuth, elevation);
+  let best = null;
+  let bestDot = -2;
+  for (const p of set.positions) {
+    const [x, y, z] = toUnit(p.azimuth, p.elevation);
+    const dot = tx * x + ty * y + tz * z;
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = p;
+    }
+  }
+  return best;
+}
+function resampleLinear(ir, fromRate, toRate) {
+  if (Math.abs(fromRate - toRate) < 1) return ir;
+  const ratio = fromRate / toRate;
+  const outLen = Math.round(ir.length / ratio);
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio;
+    const i0 = Math.floor(pos);
+    const frac = pos - i0;
+    const a = ir[i0] ?? 0;
+    const b = ir[Math.min(ir.length - 1, i0 + 1)] ?? 0;
+    out[i] = a + (b - a) * frac;
+  }
+  return out;
+}
+function argmaxAbs(x, limit) {
+  let idx = 0;
+  let peak = 0;
+  const n = Math.min(x.length, limit);
+  for (let i = 0; i < n; i++) {
+    const v = Math.abs(x[i]);
+    if (v > peak) {
+      peak = v;
+      idx = i;
+    }
+  }
+  return idx;
+}
+function mixIrForMode(ctx, set, raw, mode) {
+  const w = BINAURAL_MODES[mode].wet;
+  const rate = ctx.sampleRate;
+  let dryL = raw.dry.subarray(0, raw.dryLen);
+  let dryR = raw.dry.subarray(raw.dryLen);
+  let wetL = raw.wet.subarray(0, raw.wetLen);
+  let wetR = raw.wet.subarray(raw.wetLen);
+  if (Math.abs(set.sampleRate - rate) >= 1) {
+    dryL = resampleLinear(dryL, set.sampleRate, rate);
+    dryR = resampleLinear(dryR, set.sampleRate, rate);
+    wetL = resampleLinear(wetL, set.sampleRate, rate);
+    wetR = resampleLinear(wetR, set.sampleRate, rate);
+  }
+  const search = Math.min(wetL.length, Math.round(rate * 0.02));
+  const shift = argmaxAbs(wetL, search) - argmaxAbs(dryL, dryL.length);
+  const outLen = wetL.length;
+  const L = new Float32Array(outLen);
+  const R = new Float32Array(outLen);
+  for (let i = 0; i < dryL.length; i++) {
+    const j = i + shift;
+    if (j >= 0 && j < outLen) {
+      L[j] = (1 - w) * dryL[i];
+      R[j] = (1 - w) * dryR[i];
+    }
+  }
+  for (let i = 0; i < outLen; i++) {
+    L[i] = L[i] + w * wetL[i];
+    R[i] = R[i] + w * wetR[i];
+  }
+  let energy = 0;
+  for (let i = 0; i < outLen; i++) energy += L[i] * L[i] + R[i] * R[i];
+  if (energy > 0) {
+    const s = 1 / Math.sqrt(energy);
+    for (let i = 0; i < outLen; i++) {
+      L[i] = L[i] * s;
+      R[i] = R[i] * s;
+    }
+  }
+  const buf = ctx.createBuffer(2, outLen, rate);
+  buf.copyToChannel(L, 0);
+  buf.copyToChannel(R, 1);
+  return buf;
+}
+function buildBusIrs(ctx, set, layout, mode) {
+  const result = /* @__PURE__ */ new Map();
+  layout.forEach((spk, bus) => {
+    if (spk.isLfe) return;
+    const raw = nearestPosition(set, spk.azimuth, spk.elevation);
+    if (raw) result.set(bus, mixIrForMode(ctx, set, raw, mode));
+  });
+  return result;
+}
+
+// packages/renderer/src/renderer.ts
+var BM_CROSSOVER_HZ = 85;
+var LFE_LOWPASS_HZ = 120;
+var LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+var SUB_CUTOFF_HZ = 19;
+function sizeToSpread(size) {
+  return Math.min(1, (size[0] + size[1] + size[2]) / 3);
+}
+var SpatialRenderer = class {
+  ctx;
+  layout;
+  mode;
+  vbap;
+  node = null;
+  master = null;
+  postNodes = [];
+  /** 双耳路径每总线的卷积器（LFE/兜底位置为 null），切模式时只换 buffer。 */
+  convs = [];
+  sources = /* @__PURE__ */ new Map();
+  irSet = null;
+  /** 杜比 Binaural Settings 语义：虚拟音箱距离 近0.7m / 中1.2m / 远2.5m。 */
+  binauralMode = "mid";
+  onConsumedTick;
+  /** Frames actually rendered by the worklet (authoritative playhead). */
+  consumedSamples = 0;
+  constructor(ctx, options = {}) {
+    this.ctx = ctx;
+    this.mode = options.mode ?? "binaural";
+    this.layout = options.layout ?? LAYOUT_7_1_4;
+    this.vbap = new VbapSolver(this.layout);
+    if (options.binauralIrSet) this.irSet = options.binauralIrSet;
+    this.onConsumedTick = options.onConsumedTick;
+  }
+  /** Load the worklet module and build the downstream graph. */
+  async init(workletModuleUrl) {
+    await this.ctx.audioWorklet.addModule(workletModuleUrl);
+    this.master = this.ctx.createGain();
+    this.master.connect(this.ctx.destination);
+    this.node = new AudioWorkletNode(this.ctx, "sda-renderer", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [this.layout.length],
+      processorOptions: { busCount: this.layout.length }
+    });
+    this.node.port.onmessage = (e) => {
+      if (e.data?.type === "tick") {
+        this.consumedSamples = e.data.consumed;
+        this.onConsumedTick?.();
+      }
+    };
+    this.buildOutputGraph();
+  }
+  /** 注入双耳 IR 集（可在 init 后、播放前随时调用），重建双耳输出图。 */
+  setBinauralData(set) {
+    this.irSet = set;
+    if (this.mode === "binaural" && this.node) this.buildOutputGraph();
+  }
+  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）并换卷积 buffer，
+   *  同时按新参考距离重算所有源的距离增益 —— 播放中实时切换，不中断音频。 */
+  setBinauralMode(mode) {
+    if (mode === this.binauralMode) return;
+    this.binauralMode = mode;
+    if (this.mode !== "binaural") return;
+    if (this.irSet) {
+      const irs = buildBusIrs(this.ctx, this.irSet, this.layout, mode);
+      this.convs.forEach((conv, bus) => {
+        const ir = irs.get(bus);
+        if (conv && ir) conv.buffer = ir;
+      });
+    }
+    for (const state of this.sources.values()) this.applyGains(state, 4096);
+  }
+  get binauralModeName() {
+    return this.binauralMode;
+  }
+  teardownPostNodes() {
+    for (const n of this.postNodes) n.disconnect();
+    this.postNodes = [];
+    this.convs = [];
+  }
+  /** LR4（Linkwitz-Riley 四阶）滤波对：两个 Q=1/√2 的二阶 biquad 级联，
+   *  级联后分频点处 -6dB，高低通同相叠加平坦。返回 [入口, 出口]。 */
+  lr4(type, freq) {
+    const a = this.ctx.createBiquadFilter();
+    const b = this.ctx.createBiquadFilter();
+    for (const f of [a, b]) {
+      f.type = type;
+      f.frequency.value = freq;
+      f.Q.value = Math.SQRT1_2;
+    }
+    a.connect(b);
+    return [a, b];
+  }
+  buildOutputGraph() {
+    if (!this.node || !this.master) return;
+    this.teardownPostNodes();
+    const n = this.layout.length;
+    if (this.mode === "multichannel") {
+      this.node.connect(this.master);
+      return;
+    }
+    const splitter = this.ctx.createChannelSplitter(n);
+    this.node.connect(splitter);
+    const merger = this.ctx.createChannelMerger(2);
+    merger.connect(this.master);
+    const busIrs = this.mode === "binaural" && this.irSet ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode) : null;
+    let subBus = null;
+    if (this.mode === "binaural" && this.layout.some((s) => s.isLfe)) {
+      const sum = this.ctx.createGain();
+      const [subHpIn, subHpOut] = this.lr4("highpass", SUB_CUTOFF_HZ);
+      const subOut = this.ctx.createGain();
+      subOut.gain.value = 0.5;
+      sum.connect(subHpIn);
+      subHpOut.connect(subOut);
+      subOut.connect(merger, 0, 0);
+      subOut.connect(merger, 0, 1);
+      this.postNodes.push(sum, subHpIn, subHpOut, subOut);
+      subBus = sum;
+    }
+    for (let bus = 0; bus < n; bus++) {
+      const spk = this.layout[bus];
+      if (this.mode === "binaural") {
+        if (spk.isLfe) {
+          const lfeGain = this.ctx.createGain();
+          if (subBus) {
+            const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
+            splitter.connect(lpIn, bus);
+            lfeGain.gain.value = LFE_INBAND_GAIN;
+            lpOut.connect(lfeGain);
+            lfeGain.connect(subBus);
+            this.postNodes.push(lpIn, lpOut, lfeGain);
+          } else {
+            lfeGain.gain.value = 0.5;
+            splitter.connect(lfeGain, bus);
+            lfeGain.connect(merger, 0, 0);
+            lfeGain.connect(merger, 0, 1);
+            this.postNodes.push(lfeGain);
+          }
+          this.convs.push(null);
+          continue;
+        }
+        const ir = busIrs?.get(bus);
+        if (ir) {
+          const conv = this.ctx.createConvolver();
+          conv.buffer = ir;
+          conv.normalize = false;
+          const earSplit = this.ctx.createChannelSplitter(2);
+          if (subBus) {
+            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
+            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
+            splitter.connect(hpIn, bus);
+            splitter.connect(lpIn, bus);
+            hpOut.connect(conv);
+            lpOut.connect(subBus);
+            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
+          } else {
+            splitter.connect(conv, bus);
+          }
+          conv.connect(earSplit);
+          earSplit.connect(merger, 0, 0);
+          earSplit.connect(merger, 1, 1);
+          this.postNodes.push(conv, earSplit);
+          this.convs.push(conv);
+        } else {
+          const panner = this.ctx.createPanner();
+          panner.panningModel = "HRTF";
+          panner.distanceModel = "linear";
+          panner.refDistance = 1;
+          panner.maxDistance = 1;
+          panner.rolloffFactor = 0;
+          const [x, y, z] = sphericalToWebAudio(spk);
+          panner.positionX.value = x;
+          panner.positionY.value = y;
+          panner.positionZ.value = z;
+          const earSplit = this.ctx.createChannelSplitter(2);
+          if (subBus) {
+            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
+            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
+            splitter.connect(hpIn, bus);
+            splitter.connect(lpIn, bus);
+            hpOut.connect(panner);
+            lpOut.connect(subBus);
+            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
+          } else {
+            splitter.connect(panner, bus);
+          }
+          panner.connect(earSplit);
+          earSplit.connect(merger, 0, 0);
+          earSplit.connect(merger, 1, 1);
+          this.postNodes.push(panner, earSplit);
+          this.convs.push(null);
+        }
+      } else {
+        const gainL = this.ctx.createGain();
+        const gainR = this.ctx.createGain();
+        const az = spk.azimuth * Math.PI / 180;
+        gainL.gain.value = spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az - Math.PI / 2) / 2));
+        gainR.gain.value = spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az + Math.PI / 2) / 2));
+        const norm = 0.7;
+        gainL.gain.value *= norm;
+        gainR.gain.value *= norm;
+        splitter.connect(gainL, bus);
+        splitter.connect(gainR, bus);
+        gainL.connect(merger, 0, 0);
+        gainR.connect(merger, 0, 1);
+        this.postNodes.push(gainL, gainR);
+      }
+    }
+    this.postNodes.push(splitter, merger);
+  }
+  /** Register a source. Bed channels pass their speaker label; objects an event id.
+   *  重复声明同一 id（稀疏声明变化时 player 会重放整组）不重置用户静音状态。 */
+  addSource(id, opts = {}) {
+    if (!this.node) throw new Error("SpatialRenderer.init() first");
+    const wasMuted = this.sources.get(id)?.muted ?? false;
+    const state = {
+      id,
+      spread: 0,
+      position: { azimuth: 0, elevation: 0, distance: 1 },
+      gainDb: 0,
+      isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
+      muted: wasMuted
+    };
+    if (opts.bedLabel) {
+      state.position = positionForLabel(opts.bedLabel);
+    }
+    this.sources.set(id, state);
+    this.node.port.postMessage({ type: "add", id });
+    this.applyGains(state, 0);
+  }
+  /** 静音/取消静音一个源（Omniphony 式对象 mute/solo 的底层原语）。
+   *  走 2048 采样斜坡（@48k ≈ 43ms），切换无爆音。
+   *  返回 false = 源不存在（调用方可据此提示 id 不匹配）。 */
+  setSourceMuted(id, muted) {
+    const state = this.sources.get(id);
+    if (!state) {
+      console.warn(`[SDA] setSourceMuted \u65E0\u6E90 "${id}"\uFF0C\u73B0\u6709\u6E90: ${[...this.sources.keys()].join(", ") || "(\u7A7A)"}`);
+      return false;
+    }
+    if (state.muted === muted) return true;
+    state.muted = muted;
+    this.applyGains(state, 2048);
+    console.log(`[SDA] ${id} ${muted ? "\u9759\u97F3" : "\u89E3\u9664\u9759\u97F3"} \u2192 scalar ${muted ? 0 : 1}`);
+    return true;
+  }
+  removeSource(id) {
+    this.sources.delete(id);
+    this.node?.port.postMessage({ type: "remove", id });
+  }
+  /** Feed PCM for a source (transferable copy recommended). */
+  feed(id, samples) {
+    this.node?.port.postMessage({ type: "feed", id, samples }, [samples.buffer]);
+  }
+  /** Apply an object event: new position (ramped), gain, size. */
+  applyEvent(ev, rampSamples) {
+    const state = this.sources.get(`obj:${ev.id}`);
+    if (!state) return;
+    if (ev.hasPos) {
+      state.position = admToSpherical(ev.pos);
+      state.spread = sizeToSpread(ev.size);
+    }
+    state.gainDb = ev.gainDb;
+    this.applyGains(state, rampSamples || ev.rampDuration || 128);
+  }
+  /** Recompute and send a source's gain vector over the buses. */
+  applyGains(state, rampSamples) {
+    const gains = this.vbap.pan(state.position, state.spread);
+    const d = Math.max(1e-3, state.position.distance);
+    let distGain = 1;
+    let lp = 1;
+    if (d > 1) {
+      distGain = 1 / d;
+      const fc = Math.min(19e3, Math.max(6e3, 19e3 / d));
+      lp = 1 - Math.exp(-2 * Math.PI * fc / this.ctx.sampleRate);
+    }
+    let scalar = Math.pow(10, state.gainDb / 20) * distGain;
+    if (state.isLfe) {
+      gains.fill(0);
+      const lfeBus = this.layout.findIndex((s) => s.isLfe);
+      if (lfeBus >= 0) gains[lfeBus] = 1;
+      scalar = Math.pow(10, state.gainDb / 20);
+      lp = 1;
+    }
+    if (state.muted) scalar = 0;
+    this.node?.port.postMessage({
+      type: "gains",
+      id: state.id,
+      gains,
+      gain: scalar,
+      lp,
+      ramp: Math.max(1, rampSamples)
+    });
+  }
+  /** Buffered samples for a source (for buffer-level telemetry). */
+  resetBuffers() {
+    this.consumedSamples = 0;
+    this.node?.port.postMessage({ type: "reset" });
+  }
+  /** Playhead in seconds: frames the worklet actually rendered. */
+  consumedSeconds() {
+    return this.consumedSamples / this.ctx.sampleRate;
+  }
+  /** Worklet-level pause: outputs silence without consuming the ring buffers,
+   *  so resume continues from the exact sample. */
+  setPaused(paused) {
+    this.node?.port.postMessage({ type: "pause", paused });
+  }
+  /** Master output volume, 0..1 (applied perceptually: gain = v²). */
+  setVolume(v) {
+    if (this.master) this.master.gain.value = Math.max(0, Math.min(1, v)) ** 2;
+  }
+  async close() {
+    this.teardownPostNodes();
+    this.node?.disconnect();
+    this.master?.disconnect();
+    if (this.ctx.state !== "closed") await this.ctx.close();
+  }
+};
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  BINAURAL_MODES,
+  LAYOUTS,
+  LAYOUT_7_1_4,
+  SpatialRenderer,
+  VbapSolver,
+  admToSpherical,
+  buildBusIrs,
+  getBinauralIrSet,
+  isLfeLabel,
+  mixIrForMode,
+  positionForLabel,
+  sphericalToAdm,
+  sphericalToWebAudio
+});

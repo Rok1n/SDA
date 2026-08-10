@@ -63,6 +63,7 @@ export function App() {
   /** 把整组静音状态推到播放器（新建播放器后也要重放一遍）。 */
   const applyMutes = useCallback((muted: ReadonlySet<number>) => {
     const player = playerRef.current;
+    console.log(`[SDA] applyMutes: 静音集=[${[...muted].join(",")}] 面板对象=[${objectsRef.current.map((o) => o.id).join(",")}] player=${player ? `#${player.id}` : "无"}`);
     if (!player) return;
     for (const o of objectsRef.current) player.setObjectMuted(o.id, muted.has(o.id));
     // 静音集合里可能有当前文件尚未声明的 id —— 也推过去，播放器会记住
