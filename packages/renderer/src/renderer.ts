@@ -167,10 +167,15 @@ export class SpatialRenderer {
           const conv = this.ctx.createConvolver();
           conv.buffer = ir;
           conv.normalize = false;
+          // 卷积输出是立体声总线；ChannelMerger 的输入是单声道，直接 connect
+          // 会被 0.5(L+R) 降混 —— 必须用 splitter 把左右耳分开接线，
+          // 否则整个双耳路径塌成单声道（声像全挤在中间）。
+          const earSplit = this.ctx.createChannelSplitter(2);
           splitter.connect(conv, bus);
-          conv.connect(merger, 0, 0);
-          conv.connect(merger, 0, 1);
-          this.postNodes.push(conv);
+          conv.connect(earSplit);
+          earSplit.connect(merger, 0, 0);
+          earSplit.connect(merger, 1, 1);
+          this.postNodes.push(conv, earSplit);
           this.convs.push(conv);
         } else {
           // 无 IR 资产时的优雅降级：浏览器内置 HRTF。
@@ -184,10 +189,12 @@ export class SpatialRenderer {
           panner.positionX.value = x;
           panner.positionY.value = y;
           panner.positionZ.value = z;
+          const earSplit = this.ctx.createChannelSplitter(2);
           splitter.connect(panner, bus);
-          panner.connect(merger, 0, 0);
-          panner.connect(merger, 0, 1);
-          this.postNodes.push(panner);
+          panner.connect(earSplit);
+          earSplit.connect(merger, 0, 0);
+          earSplit.connect(merger, 1, 1);
+          this.postNodes.push(panner, earSplit);
           this.convs.push(null);
         }
       } else {
