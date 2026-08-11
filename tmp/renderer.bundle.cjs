@@ -26,11 +26,13 @@ __export(index_exports, {
   SpatialRenderer: () => SpatialRenderer,
   VbapSolver: () => VbapSolver,
   admToSpherical: () => admToSpherical,
+  aliasLabel: () => aliasLabel,
   buildBusIrs: () => buildBusIrs,
   detectLayoutId: () => detectLayoutId,
   getBinauralIrSet: () => getBinauralIrSet,
   isLfeLabel: () => isLfeLabel,
   mixIrForMode: () => mixIrForMode,
+  physicalChannelOrder: () => physicalChannelOrder,
   positionForLabel: () => positionForLabel,
   sphericalToAdm: () => sphericalToAdm,
   sphericalToWebAudio: () => sphericalToWebAudio
@@ -161,6 +163,37 @@ var LABEL_ALIASES = {
 function positionForLabel(label) {
   const aliased = LABEL_ALIASES[label] ?? label;
   return LABEL_POSITIONS[aliased] ?? { azimuth: 0, elevation: 0, distance: 1 };
+}
+function aliasLabel(label) {
+  return LABEL_ALIASES[label] ?? label;
+}
+function physicalChannelOrder(layout) {
+  const PRIORITY = [
+    "FrontLeft",
+    "FrontRight",
+    "Center",
+    "LFE",
+    "RearLeft",
+    "RearRight",
+    // WASAPI BL/BR 位
+    "SurroundLeft",
+    "SurroundRight",
+    "WideLeft",
+    "WideRight",
+    "TopFrontLeft",
+    "TopFrontRight",
+    "TopSideLeft",
+    "TopSideRight",
+    "TopRearLeft",
+    "TopRearRight"
+  ];
+  const order = PRIORITY.map((name) => layout.findIndex((s) => s.name === name)).filter(
+    (i) => i >= 0
+  );
+  layout.forEach((_, i) => {
+    if (!order.includes(i)) order.push(i);
+  });
+  return order;
 }
 function isLfeLabel(label) {
   const l = LABEL_ALIASES[label] ?? label;
@@ -509,6 +542,9 @@ var SpatialRenderer = class {
   convs = [];
   sources = /* @__PURE__ */ new Map();
   irSet = null;
+  /** 床扩展表（AVR 上混器语义）：床音箱总线 → 派生馈送。内容床小于所选布局时
+   *  把床填满布局 —— 侧环绕馈后环、前馈前宽；目标总线已被真实床声道占用则跳过。 */
+  expansion = /* @__PURE__ */ new Map();
   /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   binauralMode = "near";
@@ -522,6 +558,27 @@ var SpatialRenderer = class {
     this.vbap = new VbapSolver(this.layout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
+    this.buildExpansion();
+  }
+  /** 上混扩展规则（杜比 DSU / AVR 上混器的静态近似）：
+   *  - 侧环绕 → 后环 0.5（5.1 内容在 7.1+ 布局：后环不再沉默，声像略后移
+   *    恰好贴近 5.1 环绕的 ±110° 制作位）
+   *  - 前左/右 → 前宽 0.35（9.1 布局：拉开前声场宽度，中置对白不动）
+   *  顶层不做静态派生（环境声提取超出本渲染器职责）。 */
+  buildExpansion() {
+    const idx = (name) => this.layout.findIndex((s) => s.name === name);
+    const feed = (from, to, gain) => {
+      const a = idx(from);
+      const b = idx(to);
+      if (a < 0 || b < 0) return;
+      const list = this.expansion.get(a) ?? [];
+      list.push({ bus: b, gain });
+      this.expansion.set(a, list);
+    };
+    feed("SurroundLeft", "RearLeft", 0.5);
+    feed("SurroundRight", "RearRight", 0.5);
+    feed("FrontLeft", "WideLeft", 0.35);
+    feed("FrontRight", "WideRight", 0.35);
   }
   /** Load the worklet module and build the downstream graph. */
   async init(workletModuleUrl) {
@@ -588,7 +645,19 @@ var SpatialRenderer = class {
     this.teardownPostNodes();
     const n = this.layout.length;
     if (this.mode === "multichannel") {
-      this.node.connect(this.master);
+      const dest = this.ctx.destination;
+      try {
+        dest.channelCountMode = "explicit";
+        dest.channelCount = Math.max(2, Math.min(n, dest.maxChannelCount || n));
+      } catch {
+      }
+      const order = physicalChannelOrder(this.layout);
+      const splitter2 = this.ctx.createChannelSplitter(n);
+      const merger2 = this.ctx.createChannelMerger(n);
+      this.node.connect(splitter2);
+      order.forEach((bus, i) => splitter2.connect(merger2, bus, i));
+      merger2.connect(this.master);
+      this.postNodes.push(splitter2, merger2);
       return;
     }
     const splitter = this.ctx.createChannelSplitter(n);
@@ -711,14 +780,35 @@ var SpatialRenderer = class {
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
-      muted: wasMuted
+      muted: wasMuted,
+      snapBus: -1
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
+      if (!state.isLfe) {
+        const canonical = aliasLabel(opts.bedLabel);
+        state.snapBus = this.layout.findIndex((s) => s.name === canonical);
+      }
     }
     this.sources.set(id, state);
     this.node.port.postMessage({ type: "add", id });
     this.applyGains(state, 0);
+    if (state.snapBus >= 0) this.recomputeBedGains(id);
+  }
+  /** 床声道集合变化（新床声道占用/释放了扩展目标总线）→ 重推其余床声道的增益，
+   *  让上混馈送跳过/恢复被真实声道占用的总线。 */
+  recomputeBedGains(excludeId) {
+    for (const s of this.sources.values()) {
+      if (s.id !== excludeId && s.snapBus >= 0) this.applyGains(s, 512);
+    }
+  }
+  /** 其余床声道吸附占用的总线（扩展馈送要避开）。 */
+  bedOccupiedBuses(excludeId) {
+    const occ = /* @__PURE__ */ new Set();
+    for (const s of this.sources.values()) {
+      if (s.id !== excludeId && s.snapBus >= 0) occ.add(s.snapBus);
+    }
+    return occ;
   }
   /** 静音/取消静音一个源（Omniphony 式对象 mute/solo 的底层原语）。
    *  走 2048 采样斜坡（@48k ≈ 43ms），切换无爆音。
@@ -736,8 +826,10 @@ var SpatialRenderer = class {
     return true;
   }
   removeSource(id) {
+    const state = this.sources.get(id);
     this.sources.delete(id);
     this.node?.port.postMessage({ type: "remove", id });
+    if (state && state.snapBus >= 0) this.recomputeBedGains(id);
   }
   /** Feed PCM for a source (transferable copy recommended). */
   feed(id, samples) {
@@ -772,6 +864,13 @@ var SpatialRenderer = class {
       if (lfeBus >= 0) gains[lfeBus] = 1;
       scalar = Math.pow(10, state.gainDb / 20);
       lp = 1;
+    } else if (state.snapBus >= 0) {
+      gains.fill(0);
+      gains[state.snapBus] = 1;
+      const occupied = this.bedOccupiedBuses(state.id);
+      for (const e of this.expansion.get(state.snapBus) ?? []) {
+        if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
+      }
     }
     if (state.muted) scalar = 0;
     this.node?.port.postMessage({
@@ -816,11 +915,13 @@ var SpatialRenderer = class {
   SpatialRenderer,
   VbapSolver,
   admToSpherical,
+  aliasLabel,
   buildBusIrs,
   detectLayoutId,
   getBinauralIrSet,
   isLfeLabel,
   mixIrForMode,
+  physicalChannelOrder,
   positionForLabel,
   sphericalToAdm,
   sphericalToWebAudio

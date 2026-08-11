@@ -26,7 +26,14 @@
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
-import { LAYOUT_7_1_4, positionForLabel, isLfeLabel, type VirtualSpeaker } from "./layouts.js";
+import {
+  LAYOUT_7_1_4,
+  positionForLabel,
+  isLfeLabel,
+  aliasLabel,
+  physicalChannelOrder,
+  type VirtualSpeaker,
+} from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
 import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 import type { ObjectEvent } from "@sda/core";
@@ -65,6 +72,8 @@ interface SourceState {
   isLfe: boolean;
   /** 对象静音（mute/solo）：静音时标量增益乘 0，走平滑斜坡无爆音。 */
   muted: boolean;
+  /** 床声道吸附的布局音箱总线索引（-1 = 布局中无此音箱，回退 VBAP）。 */
+  snapBus: number;
   lfeBus?: number;
 }
 
@@ -80,6 +89,9 @@ export class SpatialRenderer {
   private convs: (ConvolverNode | null)[] = [];
   private sources = new Map<string, SourceState>();
   private irSet: BinauralIrSet | null = null;
+  /** 床扩展表（AVR 上混器语义）：床音箱总线 → 派生馈送。内容床小于所选布局时
+   *  把床填满布局 —— 侧环绕馈后环、前馈前宽；目标总线已被真实床声道占用则跳过。 */
+  private expansion = new Map<number, { bus: number; gain: number }[]>();
   /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
@@ -94,6 +106,28 @@ export class SpatialRenderer {
     this.vbap = new VbapSolver(this.layout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
+    this.buildExpansion();
+  }
+
+  /** 上混扩展规则（杜比 DSU / AVR 上混器的静态近似）：
+   *  - 侧环绕 → 后环 0.5（5.1 内容在 7.1+ 布局：后环不再沉默，声像略后移
+   *    恰好贴近 5.1 环绕的 ±110° 制作位）
+   *  - 前左/右 → 前宽 0.35（9.1 布局：拉开前声场宽度，中置对白不动）
+   *  顶层不做静态派生（环境声提取超出本渲染器职责）。 */
+  private buildExpansion(): void {
+    const idx = (name: string) => this.layout.findIndex((s) => s.name === name);
+    const feed = (from: string, to: string, gain: number) => {
+      const a = idx(from);
+      const b = idx(to);
+      if (a < 0 || b < 0) return;
+      const list = this.expansion.get(a) ?? [];
+      list.push({ bus: b, gain });
+      this.expansion.set(a, list);
+    };
+    feed("SurroundLeft", "RearLeft", 0.5);
+    feed("SurroundRight", "RearRight", 0.5);
+    feed("FrontLeft", "WideLeft", 0.35);
+    feed("FrontRight", "WideRight", 0.35);
   }
 
   /** Load the worklet module and build the downstream graph. */
@@ -169,7 +203,23 @@ export class SpatialRenderer {
     const n = this.layout.length;
 
     if (this.mode === "multichannel") {
-      this.node.connect(this.master);
+      // 物理声道直出：目标声道数 = 布局音箱数（受设备上限钳制），并按
+      // WASAPI/HDMI 通道掩码顺序重排总线（7.1：后环在侧环前），否则 Windows
+      // 多声道设备上侧环/后环会互换。设备能力不足时保持默认降混。
+      const dest = this.ctx.destination;
+      try {
+        dest.channelCountMode = "explicit";
+        dest.channelCount = Math.max(2, Math.min(n, dest.maxChannelCount || n));
+      } catch {
+        /* 设备不允许显式声道数：交由浏览器降混 */
+      }
+      const order = physicalChannelOrder(this.layout);
+      const splitter = this.ctx.createChannelSplitter(n);
+      const merger = this.ctx.createChannelMerger(n);
+      this.node.connect(splitter);
+      order.forEach((bus, i) => splitter.connect(merger, bus, i));
+      merger.connect(this.master);
+      this.postNodes.push(splitter, merger);
       return;
     }
 
@@ -313,13 +363,38 @@ export class SpatialRenderer {
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
       muted: wasMuted,
+      snapBus: -1,
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
+      // 床声道吸附：标签归一化后命中布局音箱 → 直送该音箱总线（物理直出语义），
+      // 不再用 VBAP 摊到相邻音箱；布局里没有这个音箱才回退 VBAP 平移。
+      if (!state.isLfe) {
+        const canonical = aliasLabel(opts.bedLabel);
+        state.snapBus = this.layout.findIndex((s) => s.name === canonical);
+      }
     }
     this.sources.set(id, state);
     this.node.port.postMessage({ type: "add", id });
     this.applyGains(state, 0);
+    if (state.snapBus >= 0) this.recomputeBedGains(id);
+  }
+
+  /** 床声道集合变化（新床声道占用/释放了扩展目标总线）→ 重推其余床声道的增益，
+   *  让上混馈送跳过/恢复被真实声道占用的总线。 */
+  private recomputeBedGains(excludeId: string): void {
+    for (const s of this.sources.values()) {
+      if (s.id !== excludeId && s.snapBus >= 0) this.applyGains(s, 512);
+    }
+  }
+
+  /** 其余床声道吸附占用的总线（扩展馈送要避开）。 */
+  private bedOccupiedBuses(excludeId: string): Set<number> {
+    const occ = new Set<number>();
+    for (const s of this.sources.values()) {
+      if (s.id !== excludeId && s.snapBus >= 0) occ.add(s.snapBus);
+    }
+    return occ;
   }
 
   /** 静音/取消静音一个源（Omniphony 式对象 mute/solo 的底层原语）。
@@ -339,8 +414,10 @@ export class SpatialRenderer {
   }
 
   removeSource(id: string): void {
+    const state = this.sources.get(id);
     this.sources.delete(id);
     this.node?.port.postMessage({ type: "remove", id });
+    if (state && state.snapBus >= 0) this.recomputeBedGains(id);
   }
 
   /** Feed PCM for a source (transferable copy recommended). */
@@ -385,6 +462,15 @@ export class SpatialRenderer {
       if (lfeBus >= 0) gains[lfeBus] = 1;
       scalar = Math.pow(10, state.gainDb / 20);
       lp = 1;
+    } else if (state.snapBus >= 0) {
+      // 床声道吸附：直送同名音箱总线（AVR direct 语义），叠加上混扩展馈送；
+      // 扩展目标总线被真实床声道占用时跳过（7.1 内容的后环不吃 5.1 式馈送）。
+      gains.fill(0);
+      gains[state.snapBus] = 1;
+      const occupied = this.bedOccupiedBuses(state.id);
+      for (const e of this.expansion.get(state.snapBus) ?? []) {
+        if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
+      }
     }
     if (state.muted) scalar = 0;
     this.node?.port.postMessage({

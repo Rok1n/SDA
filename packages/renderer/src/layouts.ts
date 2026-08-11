@@ -129,6 +129,33 @@ export function positionForLabel(label: string): Spherical {
   return LABEL_POSITIONS[aliased] ?? { azimuth: 0, elevation: 0, distance: 1 };
 }
 
+/** 归一化解码器床标签（别名表），供"床声道吸附布局音箱"按名字匹配。 */
+export function aliasLabel(label: string): string {
+  return LABEL_ALIASES[label] ?? label;
+}
+
+/** 物理声道顺序（WASAPI/HDMI 通道掩码约定）：
+ *  5.1 = FL FR C LFE SL SR；7.1 = FL FR C LFE **BL BR** SL SR（后环在侧环前），
+ *  顶层随后。返回布局总线索引按物理顺序排列的数组 —— 多声道直出时按此重排，
+ *  否则 7.1 布局的侧环/后环会在 Windows 设备上互换。 */
+export function physicalChannelOrder(layout: readonly VirtualSpeaker[]): number[] {
+  const PRIORITY = [
+    "FrontLeft", "FrontRight", "Center", "LFE",
+    "RearLeft", "RearRight", // WASAPI BL/BR 位
+    "SurroundLeft", "SurroundRight",
+    "WideLeft", "WideRight",
+    "TopFrontLeft", "TopFrontRight", "TopSideLeft", "TopSideRight",
+    "TopRearLeft", "TopRearRight",
+  ];
+  const order = PRIORITY.map((name) => layout.findIndex((s) => s.name === name)).filter(
+    (i) => i >= 0,
+  );
+  layout.forEach((_, i) => {
+    if (!order.includes(i)) order.push(i); // 表外音箱按原序附加（防御）
+  });
+  return order;
+}
+
 export function isLfeLabel(label: string): boolean {
   const l = LABEL_ALIASES[label] ?? label;
   return l === "LFE" || label === "LFE2";
