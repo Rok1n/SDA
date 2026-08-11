@@ -262,16 +262,15 @@ function ObjectDot({ obj, muted }: { obj: VisualObject; muted: boolean }) {
   // 静音对象：调暗（保留轮廓可辨识位置，区别于有声对象）
   const dotOpacity = muted ? 0.18 : 1;
   return (
-    <group ref={ref}>
-      <mesh>
-        <sphereGeometry args={[0.06, 16, 16]} />
-        {/* 静音态透明内核同样不写深度，免得切掉身后其他对象的光晕 */}
-        <meshBasicMaterial color={color} transparent={muted} opacity={dotOpacity} depthWrite={!muted} />
-      </mesh>
-      {/* 尺寸光晕：对象越大，halo 越大 */}
-      <mesh>
+    <group ref={ref} renderOrder={10}>
+      {/* 尺寸光晕是叠加层：始终画在房间墙和网格之上。 */}
+      <mesh renderOrder={10}>
         <sphereGeometry args={[0.09 + spread * 0.3, 24, 24]} />
-        <meshBasicMaterial color={color} transparent opacity={muted ? 0.05 : 0.16} depthWrite={false} />
+        <meshBasicMaterial color={color} transparent opacity={muted ? 0.05 : 0.16} depthTest={false} depthWrite={false} />
+      </mesh>
+      <mesh renderOrder={11}>
+        <sphereGeometry args={[0.06, 16, 16]} />
+        <meshBasicMaterial color={color} transparent opacity={dotOpacity} depthTest={false} depthWrite={false} />
       </mesh>
     </group>
   );
