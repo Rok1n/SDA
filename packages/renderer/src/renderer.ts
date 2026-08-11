@@ -35,7 +35,12 @@ import {
   type VirtualSpeaker,
 } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
-import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
+import {
+  BINAURAL_MODES,
+  buildBusIrs,
+  type BinauralIrSet,
+  type BinauralMode,
+} from "./hrtf.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
@@ -156,8 +161,8 @@ export class SpatialRenderer {
     if (this.mode === "binaural" && this.node) this.buildOutputGraph();
   }
 
-  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）并换卷积 buffer，
-   *  同时按新参考距离重算所有源的距离增益 —— 播放中实时切换，不中断音频。 */
+  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR），并用新监听
+   *  距离标尺平滑重推对象的环外衰减与空气吸收；播放不中断。 */
   setBinauralMode(mode: BinauralMode): void {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
@@ -441,16 +446,24 @@ export class SpatialRenderer {
   private applyGains(state: SourceState, rampSamples: number): void {
     const gains = this.vbap.pan(state.position, state.spread);
 
-    // 距离增益：ADM 距离已按房间归一化（1 = 音箱环），环内一律满增益 —
-    // 环内的对象响度差异交给混音师的 gainDb，渲染器不动。
-    // 环外（房间角落可达 √3）按苹果 inverse 定律 1/d 衰减，并施加轻度
-    // 空气吸收低通（截止 ∝ 1/d，下限 6kHz —— 保住高频瞬态，移动感不被糊掉）。
-    const d = Math.max(1e-3, state.position.distance);
+    // ADM 半径是归一化的：1 = 当前档位的虚拟音箱环。双耳模式用 Near/Mid/Far
+    // 的监听距离把它换算到米；增益仍按相对音箱环的距离计算，保证切监听档位
+    // 不会篡改混音平衡。空气吸收则按物理米数计算，故 far 会真实更闷而不只是
+    // 换了一条更湿的 BRIR。非双耳输出沿用归一化标尺，避免切输出模式改平衡。
+    const normalizedDistance = Math.max(1e-3, state.position.distance);
+    const refDistance = this.mode === "binaural"
+      ? BINAURAL_MODES[this.binauralMode].refDistance
+      : 1;
+    const physicalDistance = normalizedDistance * refDistance;
     let distGain = 1;
     let lp = 1; // worklet 一阶低通系数；1 = 直通
-    if (d > 1) {
-      distGain = 1 / d;
-      const fc = Math.min(19000, Math.max(6000, 19000 / d));
+    if (normalizedDistance > 1) {
+      // Apple inverse：ref / (ref + rolloff * (d - ref))，rolloff = 1。
+      // 代入物理距离保留公式语义；本项目以音箱环作 reference，故增益只取决于
+      // 内容相对音箱环的位置，而非用户选择的监听距离档位。
+      distGain = refDistance / (refDistance + (physicalDistance - refDistance));
+      // 物理距离决定空气吸收：近/中/远的同一 ADM 半径分别对应不同米数。
+      const fc = Math.min(19000, Math.max(6000, 19000 / physicalDistance));
       lp = 1 - Math.exp((-2 * Math.PI * fc) / this.ctx.sampleRate);
     }
 

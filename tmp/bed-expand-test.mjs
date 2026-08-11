@@ -122,6 +122,10 @@ function addBed(r, labels) {
   check(near(fl[0], 1) && near(fl[4], 0.35), `5.1→9.1.4: FL 吸附 + 馈前宽(0.35) (WL=${fl[4]})`);
   const ls = lastGains("bed:4").gains;
   check(ls[6] === 1 && ls[8] === 0.5, `5.1→9.1.4: Ls 吸附侧环 + 馈后环(0.5) (RL=${ls[8]})`);
+  r.addSource("bed:truehd-lw", { bedLabel: "Lw" });
+  const lw = lastGains("bed:truehd-lw").gains;
+  check(lw[4] === 1 && lw.every((v, i) => i === 4 || v === 0),
+    `TrueHD Lw 原生标签直接吸附前宽总线（WL=${lw[4]}）`);
 }
 
 // ---- 5b. 双耳模式：只吸附不馈送（相干拷贝会梳状滤波）----
@@ -140,7 +144,23 @@ function addBed(r, labels) {
   check(near(fl9[0], 1) && fl9[4] === 0, `双耳 5.1→9.1.4: FL 直送前左，不馈前宽（WL=${fl9[4]}）`);
 }
 
-// ---- 6. 多声道模式：destination 声道数 + WASAPI 物理顺序重排 ----
+// ---- 6. 双耳 Near/Mid/Far：保持内容相对增益，按物理监听距离加强环外空气吸收 ----
+{
+  postedToWorklet.length = 0;
+  const r = new SpatialRenderer(new FakeAudioContext(), { mode: "binaural", layout: LAYOUTS["5.1"] });
+  await r.init("mock://worklet");
+  r.addSource("obj:distance");
+  r.applyEvent({ id: "distance", pos: [0, 2, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
+  const nearMode = lastGains("obj:distance");
+  r.setBinauralMode("far");
+  const farMode = lastGains("obj:distance");
+  check(near(nearMode.gain, 0.5) && near(farMode.gain, 0.5),
+    `双耳档位：ADM 环外 d=2 的 Apple inverse 增益保持 0.5（near=${nearMode.gain}, far=${farMode.gain}）`);
+  check(farMode.lp < nearMode.lp,
+    `双耳档位：far 的物理距离更远，空气吸收更强（near lp=${nearMode.lp.toFixed(4)}, far lp=${farMode.lp.toFixed(4)}）`);
+}
+
+// ---- 7. 多声道模式：destination 声道数 + WASAPI 物理顺序重排 ----
 {
   wiring.length = 0;
   const ctx = new FakeAudioContext();
@@ -156,7 +176,7 @@ function addBed(r, labels) {
   check(ok && edges.length === 12, `多声道: 总线按 WASAPI 顺序重排（后环在侧环前）${ok ? "" : JSON.stringify(edges)}`);
 }
 
-// ---- 7. 5.1 布局多声道：顺序不变 ----
+// ---- 8. 5.1 布局多声道：顺序不变 ----
 {
   wiring.length = 0;
   const ctx = new FakeAudioContext();

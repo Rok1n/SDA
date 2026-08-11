@@ -140,6 +140,9 @@ var LABEL_ALIASES = {
   Trr: "TopRearRight",
   Lfe: "LFE",
   LFE2: "LFE",
+  // TrueHD / harletty 原生前宽标签（不可只依赖已经归一的 WideLeft/Right）。
+  Lw: "WideLeft",
+  Rw: "WideRight",
   // eac3 BedChannel Debug 全名（lfe_channel 通常单列 "LFE"，此处防御性覆盖）
   LowFrequencyEffects: "LFE",
   LowFrequencyEffects2: "LFE",
@@ -278,10 +281,32 @@ var VbapSolver = class {
         if (this.lfeMask[j]) continue;
         for (let k = j + 1; k < n; k++) {
           if (this.lfeMask[k]) continue;
+          const a = this.dirs[i];
+          const b = this.dirs[j];
+          const c = this.dirs[k];
+          const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+          const ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+          const normal = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0]
+          ];
+          const plane = normal[0] * a[0] + normal[1] * a[1] + normal[2] * a[2];
+          if (Math.abs(plane) < 1e-9) continue;
+          let hasPositive = false;
+          let hasNegative = false;
+          for (let q = 0; q < n; q++) {
+            if (q === i || q === j || q === k || this.lfeMask[q]) continue;
+            const d = this.dirs[q];
+            const side = normal[0] * d[0] + normal[1] * d[1] + normal[2] * d[2] - plane;
+            if (side > 1e-7) hasPositive = true;
+            if (side < -1e-7) hasNegative = true;
+          }
+          if (hasPositive && hasNegative) continue;
           const basis = [
-            [this.dirs[i][0], this.dirs[j][0], this.dirs[k][0]],
-            [this.dirs[i][1], this.dirs[j][1], this.dirs[k][1]],
-            [this.dirs[i][2], this.dirs[j][2], this.dirs[k][2]]
+            [a[0], b[0], c[0]],
+            [a[1], b[1], c[1]],
+            [a[2], b[2], c[2]]
           ];
           const invBasis = inv3(basis);
           if (invBasis) this.triplets.push({ speakers: [i, j, k], invBasis });
@@ -604,8 +629,8 @@ var SpatialRenderer = class {
     this.irSet = set;
     if (this.mode === "binaural" && this.node) this.buildOutputGraph();
   }
-  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）并换卷积 buffer，
-   *  同时按新参考距离重算所有源的距离增益 —— 播放中实时切换，不中断音频。 */
+  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR），并用新监听
+   *  距离标尺平滑重推对象的环外衰减与空气吸收；播放不中断。 */
   setBinauralMode(mode) {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
@@ -849,12 +874,14 @@ var SpatialRenderer = class {
   /** Recompute and send a source's gain vector over the buses. */
   applyGains(state, rampSamples) {
     const gains = this.vbap.pan(state.position, state.spread);
-    const d = Math.max(1e-3, state.position.distance);
+    const normalizedDistance = Math.max(1e-3, state.position.distance);
+    const refDistance = this.mode === "binaural" ? BINAURAL_MODES[this.binauralMode].refDistance : 1;
+    const physicalDistance = normalizedDistance * refDistance;
     let distGain = 1;
     let lp = 1;
-    if (d > 1) {
-      distGain = 1 / d;
-      const fc = Math.min(19e3, Math.max(6e3, 19e3 / d));
+    if (normalizedDistance > 1) {
+      distGain = refDistance / (refDistance + (physicalDistance - refDistance));
+      const fc = Math.min(19e3, Math.max(6e3, 19e3 / physicalDistance));
       lp = 1 - Math.exp(-2 * Math.PI * fc / this.ctx.sampleRate);
     }
     let scalar = Math.pow(10, state.gainDb / 20) * distGain;

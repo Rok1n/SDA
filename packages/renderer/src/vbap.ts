@@ -99,11 +99,38 @@ export class VbapSolver {
         if (this.lfeMask[j]) continue;
         for (let k = j + 1; k < n; k++) {
           if (this.lfeMask[k]) continue;
+          // Only retain faces of the speaker-direction convex hull. Arbitrary
+          // triplets can span the dome and route an elevated source through
+          // unrelated floor speakers.
+          const a = this.dirs[i]!;
+          const b = this.dirs[j]!;
+          const c = this.dirs[k]!;
+          const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+          const ac: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+          const normal: Vec3 = [
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+          ];
+          const plane = normal[0] * a[0] + normal[1] * a[1] + normal[2] * a[2];
+          if (Math.abs(plane) < 1e-9) continue; // Horizontal floor-ring base.
+
+          let hasPositive = false;
+          let hasNegative = false;
+          for (let q = 0; q < n; q++) {
+            if (q === i || q === j || q === k || this.lfeMask[q]) continue;
+            const d = this.dirs[q]!;
+            const side = normal[0] * d[0] + normal[1] * d[1] + normal[2] * d[2] - plane;
+            if (side > 1e-7) hasPositive = true;
+            if (side < -1e-7) hasNegative = true;
+          }
+          if (hasPositive && hasNegative) continue;
+
           // Basis columns are speaker unit vectors.
           const basis = [
-            [this.dirs[i]![0], this.dirs[j]![0], this.dirs[k]![0]],
-            [this.dirs[i]![1], this.dirs[j]![1], this.dirs[k]![1]],
-            [this.dirs[i]![2], this.dirs[j]![2], this.dirs[k]![2]],
+            [a[0], b[0], c[0]],
+            [a[1], b[1], c[1]],
+            [a[2], b[2], c[2]],
           ];
           const invBasis = inv3(basis);
           if (invBasis) this.triplets.push({ speakers: [i, j, k], invBasis });

@@ -105,6 +105,9 @@ const LABEL_ALIASES: Record<string, string> = {
   Trr: "TopRearRight",
   Lfe: "LFE",
   LFE2: "LFE",
+  // TrueHD / harletty 原生前宽标签（不可只依赖已经归一的 WideLeft/Right）。
+  Lw: "WideLeft",
+  Rw: "WideRight",
   // eac3 BedChannel Debug 全名（lfe_channel 通常单列 "LFE"，此处防御性覆盖）
   LowFrequencyEffects: "LFE",
   LowFrequencyEffects2: "LFE",

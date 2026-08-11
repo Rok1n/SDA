@@ -24,7 +24,8 @@ export type BinauralMode = "near" | "mid" | "far";
 export interface BinauralModeSpec {
   /** 湿（BRIR）混合权重，0 = 全干 HRIR，1 = 全房间。 */
   wet: number;
-  /** 虚拟音箱参考距离（米，杜比近/中/远 ≈ 0.7/1.2/2.5）。 */
+  /** 虚拟音箱监听距离（米，近/中/远 ≈ 0.7/1.2/2.5）。它定义将 ADM
+   * 归一化半径换算为物理距离的标尺；IR 的干湿比例仍单独决定外化房间感。 */
   refDistance: number;
 }
 

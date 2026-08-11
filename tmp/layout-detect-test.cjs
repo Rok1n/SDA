@@ -46,13 +46,13 @@ eq(
 eq(
   detectLayoutId(
     [
-      "FrontLeft", "Center", "FrontRight", "WideLeft", "WideRight",
+      "FrontLeft", "Center", "FrontRight", "Lw", "Rw",
       "SurroundLeft", "SurroundRight", "RearLeft", "RearRight", "LFE",
     ],
     false,
   ),
   "9.1.2",
-  "eac3 9.1 → 9.1.2",
+  "eac3 9.1（原生 Lw/Rw）→ 9.1.2",
 );
 
 // ---- eac3 JOC ----
@@ -103,9 +103,9 @@ eq(
 eq(
   detectLayoutId(
     [
-      "Left", "Center", "Right", "Lw", "Ls", "Rs", "Lrs", "Rrs",
+      "Left", "Center", "Right", "Lw", "Rw", "Ls", "Rs", "Lrs", "Rrs",
       "Ltf", "Rtf", "Ltm", "Rtm", "Ltr", "Rtr", "Lfe",
-    ].map((l) => (l === "Lw" ? "WideLeft" : l)),
+    ],
     false,
   ),
   "9.1.6",
