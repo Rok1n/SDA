@@ -17,6 +17,10 @@
   --drag-border: #4a6fa5;
   --drag-text: #8fb0e8;
   --drag-bg: rgba(12, 16, 28, 0.8);
+  --scroll-track: #0d1426;
+  --scroll-thumb: #33466e;
+  --scroll-thumb-hover: #48618f;
+  --scroll-thumb-active: #5a78ad;
   /* 迷你播放器 */
   --mp-text: #f2f6ff;
   --mp-subtext: rgba(200, 214, 246, 0.85);
@@ -66,6 +70,10 @@
   --drag-border: #6f9bd8;
   --drag-text: #3a6cb0;
   --drag-bg: rgba(242, 244, 248, 0.85);
+  --scroll-track: #e7ebf2;
+  --scroll-thumb: #aeb9cc;
+  --scroll-thumb-hover: #8999b3;
+  --scroll-thumb-active: #6f82a1;
   --mp-text: #16203a;
   --mp-subtext: rgba(40, 55, 85, 0.78);
   --mp-dim: rgba(40, 55, 85, 0.45);
@@ -107,6 +115,44 @@ body,
   color: var(--text);
   font-family: "Segoe UI", system-ui, sans-serif;
   transition: background 0.25s ease, color 0.25s ease;
+}
+
+/* Global scrollbar treatment. Electron follows the WebKit rules; Firefox uses
+   the standard color/width properties. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scroll-track);
+  border: 2px solid var(--panel);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  background: var(--scroll-thumb);
+  border: 2px solid var(--scroll-track);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: var(--scroll-thumb-active);
+}
+
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-corner {
+  display: none;
 }
 
 .app {
