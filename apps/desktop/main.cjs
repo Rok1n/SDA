@@ -28,6 +28,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      // 窗口被遮挡/失去焦点时 Chromium 会把 rAF 和定时器节流到 ~1Hz —
+      // RDP 下 detach 的 devtools 很容易盖住主窗口，表现为 3D 对象移动
+      // "很卡"、可视化更新一跳一跳。浏览器前台标签无此问题。
+      backgroundThrottling: false,
     },
   });
 

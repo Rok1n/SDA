@@ -291,6 +291,9 @@ export function ObjectView({
     <Canvas
       camera={{ position: [0, 1.3, 4.2], fov: 55 }}
       style={{ background: p.bg }}
+      // 限制像素比：Electron/RDP 常退到软件光栅化，高 DPI 下片元工作量
+      // 成倍增加是卡顿主因之一；本场景线条简单，1.5 倍以内肉眼无差。
+      dpr={[1, 1.5]}
       gl={{ antialias: true }}
     >
       <Room p={p} />
