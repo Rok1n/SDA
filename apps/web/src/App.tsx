@@ -25,6 +25,9 @@ export function App() {
   const [errors, setErrors] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
   const [paused, setPaused] = useState(false);
+  /** 暂停意图的 ref 镜像：player 还在创建中（createPlayer 未 resolve）时按暂停，
+   *  playerRef 是空的、pause() 会丢 —— play() 建好 player 后按此补发。 */
+  const pausedRef = useRef(false);
   const [volume, setVolume] = useState(1);
   const [dragOver, setDragOver] = useState(false);
   const lastFileRef = useRef<File | null>(null);
@@ -119,6 +122,7 @@ export function App() {
       setDetectedLayout(null);
       setPlaying(true);
       setPaused(false);
+      pausedRef.current = false;
       lastFileRef.current = file;
       fileNameRef.current = file.name.replace(/\.[^.]+$/, "");
       try {
@@ -126,6 +130,8 @@ export function App() {
         const player = await createPlayer(mode, layoutId);
         player.setVolume(volume);
         applyMutes(mutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
+        // 建 player 期间用户已按暂停：补发暂停意图
+        if (pausedRef.current) void player.pause();
         await player.playFile(file, "auto");
       } catch (e) {
         setErrors((prev) => [...prev, String(e)]);
@@ -158,9 +164,11 @@ export function App() {
   const togglePlay = useCallback(() => {
     const player = playerRef.current;
     if (playing && !paused) {
+      pausedRef.current = true;
       setPaused(true);
       void player?.pause();
     } else if (paused) {
+      pausedRef.current = false;
       setPaused(false);
       void player?.resume();
     } else if (lastFileRef.current) {

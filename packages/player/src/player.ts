@@ -199,6 +199,12 @@ export class SdaPlayer {
     }
     r.setVolume(this.lastVolume);
     this.renderer = r;
+    // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
+    // 不恢复的话暂停中重建会让音频自己继续响（UI 仍显示暂停，按钮看似失效）
+    if (this.pausedState) {
+      r.setPaused(true);
+      void r.ctx.suspend().catch(() => {});
+    }
     // 采样率对齐重建后：重新注入双耳 IR（原始数据有缓存，不会重复下载）
     void this.attachBinauralIrs(r);
     // 床层/对象源在新 worklet 里重新声明
@@ -250,6 +256,7 @@ export class SdaPlayer {
     this.visualTimer = null;
     this.renderer?.resetBuffers();
     // 若暂停中停止，同时解除 worklet 静音和时钟挂起，避免卡死
+    this.pausedState = false;
     this.renderer?.setPaused(false);
     void this.renderer?.ctx.resume();
     this.objects.clear();
@@ -265,8 +272,13 @@ export class SdaPlayer {
 
   /** Pause: silence the worklet (buffer-preserving) AND suspend the clock.
    *  The worklet mute alone is sufficient — its consumed counter freezes,
-   *  so the playhead stops with it. suspend() is a best-effort backup. */
+   *  so the playhead stops with it. suspend() is a best-effort backup.
+   *  暂停意图记录在 pausedState：renderer 重建（采样率对齐/布局自动检测）
+   *  或重建进行中（renderer 暂为 null）时暂停不丢失，recreateRenderer 恢复。 */
+  private pausedState = false;
+
   async pause(): Promise<void> {
+    this.pausedState = true;
     if (!this.renderer) return;
     console.log(`[SDA] player#${this.id} pause @${this.renderer.consumedSeconds().toFixed(2)}s`);
     this.renderer.setPaused(true);
@@ -278,6 +290,7 @@ export class SdaPlayer {
   }
 
   async resume(): Promise<void> {
+    this.pausedState = false;
     if (!this.renderer) return;
     console.log(`[SDA] player#${this.id} resume`);
     this.renderer.setPaused(false);
