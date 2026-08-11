@@ -184,14 +184,18 @@ KU100 的 HRIR/BRIR 已包含耳廓、头影与房间方向线索，不能用一
 “修平人头麦”。耳机补偿只能放在所有虚拟音箱双耳化并汇成最终 L/R 信号**之后**，
 校正用户耳机的回放响应，而不是改变每只虚拟音箱或 KU100 测量资产。
 
-SDA 的默认 profile 是 `无补偿`，即最终双耳 merger 到 master 的 literal bypass。只有
-同时包含以下信息的可再分发实测 profile 才能被注册：耳机型号/版本、公开或可审计的
-测量来源、目标曲线说明、左右独立 FIR、采样率和不为正的 headroom preamp。当前
-SADIE D1 运行资产没有这类可用 profile；提及的 DT990 测量不能在没有其明确曲线与
-许可的情况下被当作补偿滤波器。
+SDA 默认仍是 `无补偿`，即最终双耳 merger 到输出标定的 literal bypass。内置的
+`AirPods Pro 2（ANC，平均测量近似）` 是唯一例外：它使用 AutoEq 基于 crinacle 711
+in-ear 的 AirPods Pro 2 **ANC mode** 测量所生成的 48 kHz minimum-phase FIR，并采用
+AutoEq 十段修正建议的 `-3.4 dB` preamp。测量为单条平均响应，因此 SDA 将相同 FIR 接到
+两个独立的最终耳道卷积器；它**不是**左右独立补偿，也不保证适用于关闭 ANC、通透模式、
+不同耳塞、固件或佩戴贴合。资产来源、校验和与转换方法见
+`apps/web/public/headphone-compensation/airpods-pro-2-anc-averaged/README.md`。
 
-因此首版 UI 只显示“耳机补偿：无”。导入真实 profile 后，它才会在双耳模式显示为
-可选项；立体声和多声道输出不应用该层。
+任何补偿均位于最终双耳 merger **之后**、输出标定和 final safety compressor **之前**，
+所以不会改变每方向 HRIR/BRIR、对象/床层增益或 LFE 支路。立体声与多声道输出不会经过
+该层。只有同时包含耳机型号/版本、公开或可审计来源、目标曲线说明、左右 FIR、采样率
+和不为正 preamp 的 profile 才能被注册。
 
 ## 4. Apple 侧：移动端原生渲染可用 API（Expo 原生模块设计依据）
 

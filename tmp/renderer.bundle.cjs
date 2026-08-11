@@ -31,6 +31,7 @@ __export(index_exports, {
   buildBusIrs: () => buildBusIrs,
   detectLayoutId: () => detectLayoutId,
   getBinauralIrSet: () => getBinauralIrSet,
+  getHeadphoneCompensationBuffers: () => getHeadphoneCompensationBuffers,
   headphoneProfileById: () => headphoneProfileById,
   isLfeLabel: () => isLfeLabel,
   mixIrForMode: () => mixIrForMode,
@@ -558,7 +559,19 @@ function buildBusIrs(ctx, set, layout, mode) {
 }
 
 // packages/renderer/src/headphone-compensation.ts
-var HEADPHONE_COMPENSATION_PROFILES = [];
+var HEADPHONE_COMPENSATION_PROFILES = [
+  {
+    id: "airpods-pro-2-anc-averaged",
+    name: "AirPods Pro 2\uFF08ANC\uFF0C\u5E73\u5747\u6D4B\u91CF\u8FD1\u4F3C\uFF09",
+    source: "AutoEq crinacle 711 in-ear Apple AirPods Pro 2 (ANC mode), minimum-phase 48 kHz output",
+    target: "AutoEq in-ear target; averaged response, not independent L/R measurement",
+    sampleRate: 48e3,
+    leftFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
+    rightFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
+    preampDb: -3.4
+  }
+];
+var rawCache = /* @__PURE__ */ new Map();
 function headphoneProfileById(id) {
   if (!id) return null;
   return HEADPHONE_COMPENSATION_PROFILES.find((profile) => profile.id === id) ?? null;
@@ -573,6 +586,52 @@ function validateHeadphoneProfile(profile) {
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
   if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb \u5FC5\u987B\u4E3A 0 \u6216\u8D1F\u503C");
   return errors;
+}
+function decodeRawFir(buffer, url) {
+  if (!buffer.byteLength || buffer.byteLength % Float32Array.BYTES_PER_ELEMENT) {
+    throw new Error(`\u8033\u673A FIR \u65E0\u6548\u5B57\u8282\u957F\u5EA6: ${url}`);
+  }
+  const taps = new Float32Array(buffer);
+  if (!taps.every(Number.isFinite)) throw new Error(`\u8033\u673A FIR \u5305\u542B\u65E0\u6548 tap: ${url}`);
+  return taps;
+}
+function resampleLinear2(taps, fromRate, toRate) {
+  if (Math.abs(fromRate - toRate) < 1) return taps;
+  const ratio = fromRate / toRate;
+  const output = new Float32Array(Math.round(taps.length / ratio));
+  for (let i = 0; i < output.length; i++) {
+    const pos = i * ratio;
+    const floor = Math.floor(pos);
+    const fraction = pos - floor;
+    const a = taps[floor] ?? 0;
+    const b = taps[Math.min(taps.length - 1, floor + 1)] ?? 0;
+    output[i] = a + (b - a) * fraction;
+  }
+  return output;
+}
+async function getRawHeadphoneCompensation(profile) {
+  let request = rawCache.get(profile.id);
+  if (!request) {
+    request = Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)]).then(async ([left, right]) => {
+      if (!left.ok) throw new Error(`\u8033\u673A\u5DE6 FIR HTTP ${left.status}: ${profile.leftFirUrl}`);
+      if (!right.ok) throw new Error(`\u8033\u673A\u53F3 FIR HTTP ${right.status}: ${profile.rightFirUrl}`);
+      const [leftBuffer, rightBuffer] = await Promise.all([left.arrayBuffer(), right.arrayBuffer()]);
+      return { profile, left: decodeRawFir(leftBuffer, profile.leftFirUrl), right: decodeRawFir(rightBuffer, profile.rightFirUrl) };
+    });
+    request.catch(() => rawCache.delete(profile.id));
+    rawCache.set(profile.id, request);
+  }
+  return request;
+}
+async function getHeadphoneCompensationBuffers(ctx, profile) {
+  const raw = await getRawHeadphoneCompensation(profile);
+  const makeBuffer = (taps) => {
+    const data = resampleLinear2(taps, raw.profile.sampleRate, ctx.sampleRate);
+    const buffer = ctx.createBuffer(1, data.length, ctx.sampleRate);
+    buffer.copyToChannel(data, 0);
+    return buffer;
+  };
+  return { left: makeBuffer(raw.left), right: makeBuffer(raw.right) };
 }
 
 // packages/renderer/src/renderer.ts
@@ -615,8 +674,12 @@ var SpatialRenderer = class {
   /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   binauralMode = "near";
-  /** 最终双耳回放补偿。无可追溯实测 FIR 时必须保持 null/bypass。 */
+  /** 最终双耳回放补偿。无 profile 时是 literal bypass。 */
   headphoneProfileId = null;
+  /** 当前输出图 revision；迟到的 FIR 请求不得接回已重建的图。 */
+  outputGraphRevision = 0;
+  /** 已就绪的 context-local FIR buffers；切 profile 或重建 context 时清空。 */
+  headphoneBuffers = null;
   onConsumedTick;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
@@ -705,13 +768,15 @@ var SpatialRenderer = class {
   get binauralModeName() {
     return this.binauralMode;
   }
-  /** 仅接受注册表中带来源、目标和左右 FIR 的真实耳机测量 profile。当前没有
-   * 内置曲线，null 是最终双耳 merge → master 的 literal bypass。 */
+  /** 选择最终双耳耳机补偿。FIR 未就绪时保持 bypass；完成后只重建后级图，
+   * 不触碰 worklet、PCM 或播放头。 */
   setHeadphoneCompensation(profileId) {
     if (profileId !== null && !headphoneProfileById(profileId)) {
       throw new Error(`\u672A\u77E5\u6216\u672A\u6CE8\u518C\u7684\u8033\u673A\u8865\u507F profile: ${profileId}`);
     }
     this.headphoneProfileId = profileId;
+    this.headphoneBuffers = null;
+    this.buildOutputGraph();
   }
   get headphoneCompensationProfile() {
     return headphoneProfileById(this.headphoneProfileId);
@@ -737,6 +802,7 @@ var SpatialRenderer = class {
     return this.mode;
   }
   teardownPostNodes() {
+    this.outputGraphRevision++;
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
     this.convs = [];
@@ -777,6 +843,17 @@ var SpatialRenderer = class {
     this.buildMultichannelPath(n, createModeOutput("multichannel"));
     this.buildStereoPath(n, createModeOutput("stereo"));
     this.buildBinauralPath(n, createModeOutput("binaural"));
+    this.loadHeadphoneCompensation();
+  }
+  loadHeadphoneCompensation() {
+    const profile = headphoneProfileById(this.headphoneProfileId);
+    if (!profile || this.headphoneBuffers) return;
+    const revision = this.outputGraphRevision;
+    void getHeadphoneCompensationBuffers(this.ctx, profile).then((buffers) => {
+      if (this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
+      this.headphoneBuffers = buffers;
+      this.buildOutputGraph();
+    }).catch((error) => console.warn(`[SDA] \u8033\u673A\u8865\u507F\u52A0\u8F7D\u5931\u8D25\uFF0C\u4FDD\u6301 bypass: ${profile.id}`, error));
   }
   /** 物理声道直出固定使用最大拓扑和 WASAPI 规范顺序；未激活总线由 worklet 增益归零。 */
   buildMultichannelPath(n, output) {
@@ -887,7 +964,29 @@ var SpatialRenderer = class {
         this.convs.push(null);
       }
     }
-    merger.connect(makeup);
+    let finalBinaural = merger;
+    const profile = headphoneProfileById(this.headphoneProfileId);
+    if (profile && this.headphoneBuffers) {
+      const preamp = this.ctx.createGain();
+      preamp.gain.value = Math.pow(10, profile.preampDb / 20);
+      const earSplit = this.ctx.createChannelSplitter(2);
+      const left = this.ctx.createConvolver();
+      const right = this.ctx.createConvolver();
+      left.buffer = this.headphoneBuffers.left;
+      right.buffer = this.headphoneBuffers.right;
+      left.normalize = false;
+      right.normalize = false;
+      const earMerge = this.ctx.createChannelMerger(2);
+      merger.connect(preamp);
+      preamp.connect(earSplit);
+      earSplit.connect(left, 0);
+      earSplit.connect(right, 1);
+      left.connect(earMerge, 0, 0);
+      right.connect(earMerge, 0, 1);
+      this.postNodes.push(preamp, earSplit, left, right, earMerge);
+      finalBinaural = earMerge;
+    }
+    finalBinaural.connect(makeup);
     makeup.connect(safety);
     safety.connect(output);
     this.postNodes.push(splitter, merger, makeup, safety);
@@ -1048,6 +1147,7 @@ var SpatialRenderer = class {
   buildBusIrs,
   detectLayoutId,
   getBinauralIrSet,
+  getHeadphoneCompensationBuffers,
   headphoneProfileById,
   isLfeLabel,
   mixIrForMode,

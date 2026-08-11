@@ -34,7 +34,7 @@ import {
 } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
 import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
-import { headphoneProfileById, type HeadphoneCompensationProfile } from "./headphone-compensation.js";
+import { headphoneProfileById, getHeadphoneCompensationBuffers, type HeadphoneCompensationBuffers, type HeadphoneCompensationProfile } from "./headphone-compensation.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
@@ -111,8 +111,12 @@ export class SpatialRenderer {
   /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
-  /** 最终双耳回放补偿。无可追溯实测 FIR 时必须保持 null/bypass。 */
+  /** 最终双耳回放补偿。无 profile 时是 literal bypass。 */
   private headphoneProfileId: string | null = null;
+  /** 当前输出图 revision；迟到的 FIR 请求不得接回已重建的图。 */
+  private outputGraphRevision = 0;
+  /** 已就绪的 context-local FIR buffers；切 profile 或重建 context 时清空。 */
+  private headphoneBuffers: HeadphoneCompensationBuffers | null = null;
   private onConsumedTick?: () => void;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
@@ -210,13 +214,15 @@ export class SpatialRenderer {
     return this.binauralMode;
   }
 
-  /** 仅接受注册表中带来源、目标和左右 FIR 的真实耳机测量 profile。当前没有
-   * 内置曲线，null 是最终双耳 merge → master 的 literal bypass。 */
+  /** 选择最终双耳耳机补偿。FIR 未就绪时保持 bypass；完成后只重建后级图，
+   * 不触碰 worklet、PCM 或播放头。 */
   setHeadphoneCompensation(profileId: string | null): void {
     if (profileId !== null && !headphoneProfileById(profileId)) {
       throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
     }
     this.headphoneProfileId = profileId;
+    this.headphoneBuffers = null;
+    this.buildOutputGraph();
   }
 
   get headphoneCompensationProfile(): HeadphoneCompensationProfile | null {
@@ -248,6 +254,7 @@ export class SpatialRenderer {
   }
 
   private teardownPostNodes(): void {
+    this.outputGraphRevision++;
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
     this.convs = [];
@@ -293,6 +300,20 @@ export class SpatialRenderer {
     this.buildMultichannelPath(n, createModeOutput("multichannel"));
     this.buildStereoPath(n, createModeOutput("stereo"));
     this.buildBinauralPath(n, createModeOutput("binaural"));
+    this.loadHeadphoneCompensation();
+  }
+
+  private loadHeadphoneCompensation(): void {
+    const profile = headphoneProfileById(this.headphoneProfileId);
+    if (!profile || this.headphoneBuffers) return;
+    const revision = this.outputGraphRevision;
+    void getHeadphoneCompensationBuffers(this.ctx, profile)
+      .then((buffers) => {
+        if (this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
+        this.headphoneBuffers = buffers;
+        this.buildOutputGraph();
+      })
+      .catch((error) => console.warn(`[SDA] 耳机补偿加载失败，保持 bypass: ${profile.id}`, error));
   }
 
   /** 物理声道直出固定使用最大拓扑和 WASAPI 规范顺序；未激活总线由 worklet 增益归零。 */
@@ -408,7 +429,29 @@ export class SpatialRenderer {
         this.convs.push(null);
       }
     }
-    merger.connect(makeup);
+    let finalBinaural: AudioNode = merger;
+    const profile = headphoneProfileById(this.headphoneProfileId);
+    if (profile && this.headphoneBuffers) {
+      const preamp = this.ctx.createGain();
+      preamp.gain.value = Math.pow(10, profile.preampDb / 20);
+      const earSplit = this.ctx.createChannelSplitter(2);
+      const left = this.ctx.createConvolver();
+      const right = this.ctx.createConvolver();
+      left.buffer = this.headphoneBuffers.left;
+      right.buffer = this.headphoneBuffers.right;
+      left.normalize = false;
+      right.normalize = false;
+      const earMerge = this.ctx.createChannelMerger(2);
+      merger.connect(preamp);
+      preamp.connect(earSplit);
+      earSplit.connect(left, 0);
+      earSplit.connect(right, 1);
+      left.connect(earMerge, 0, 0);
+      right.connect(earMerge, 0, 1);
+      this.postNodes.push(preamp, earSplit, left, right, earMerge);
+      finalBinaural = earMerge;
+    }
+    finalBinaural.connect(makeup);
     makeup.connect(safety);
     safety.connect(output);
     this.postNodes.push(splitter, merger, makeup, safety);
