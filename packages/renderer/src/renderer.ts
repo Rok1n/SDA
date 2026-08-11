@@ -80,8 +80,9 @@ export class SpatialRenderer {
   private convs: (ConvolverNode | null)[] = [];
   private sources = new Map<string, SourceState>();
   private irSet: BinauralIrSet | null = null;
-  /** 杜比 Binaural Settings 语义：虚拟音箱距离 近0.7m / 中1.2m / 远2.5m。 */
-  private binauralMode: BinauralMode = "mid";
+  /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
+   *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
+  private binauralMode: BinauralMode = "near";
   private onConsumedTick?: () => void;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;

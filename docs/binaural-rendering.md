@@ -84,8 +84,8 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
    worklet 内每源一阶低通实现
 
 > 注意：harletty 解码出的事件流（OAMD）**不携带** binauralRenderMode —
-> 它只存在于 DAMF/dbmd。所以 SDA 的距离档位是全局用户选择（UI 近/中/远），
-> 播放中可实时切换（IR 重混 + 增益平滑重推，不中断音频）；
+> 它只存在于 DAMF/dbmd。所以 SDA 的距离档位是全局固定值（UI 曾暴露近/中/远，
+> 现固定"近"；引擎保留三档机制，IR 重混 + 增益平滑重推不中断音频）；
 > 若将来接入 harletty CLI 的 .atmos.metadata 文件，可按对象应用真实模式。
 
 参考：

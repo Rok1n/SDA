@@ -85,8 +85,9 @@ export class SdaPlayer {
    *  触发，并发跑 recreateRenderer 会泄漏 AudioContext —— 必须排队。 */
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
-  /** 杜比近/中/远（Binaural Settings），重建 renderer 后需恢复。 */
-  private binauralMode: BinauralMode = "mid";
+  /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
+   *  UI 固定"近"，mid/far 暂不从界面暴露。 */
+  private binauralMode: BinauralMode = "near";
   /** 被静音的对象事件 id（Omniphony 式 mute/solo）；重建 renderer 后恢复。 */
   private mutedObjects = new Set<number>();
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
