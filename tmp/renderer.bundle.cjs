@@ -578,6 +578,7 @@ function validateHeadphoneProfile(profile) {
 // packages/renderer/src/renderer.ts
 var LFE_LOWPASS_HZ = 120;
 var LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+var BINAURAL_MAKEUP_GAIN = Math.pow(10, 3 / 20);
 function sizeToSpread(size) {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
 }
@@ -720,6 +721,7 @@ var SpatialRenderer = class {
       gain.gain.linearRampToValueAtTime(target, now + duration);
     }
     this.mode = mode;
+    for (const state of this.sources.values()) this.applyGains(state, 2048);
   }
   get outputMode() {
     return this.mode;
@@ -796,10 +798,12 @@ var SpatialRenderer = class {
     merger.connect(output);
     this.postNodes.push(splitter, merger);
   }
-  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，输出占固定物理通道 0/1。 */
+  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，最终汇总后加输出标定，输出占固定物理通道 0/1。 */
   buildBinauralPath(n, output) {
     const splitter = this.ctx.createChannelSplitter(n);
     const merger = this.ctx.createChannelMerger(n);
+    const makeup = this.ctx.createGain();
+    makeup.gain.value = BINAURAL_MAKEUP_GAIN;
     this.node.connect(splitter);
     const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
     let lfeBus = null;
@@ -860,8 +864,9 @@ var SpatialRenderer = class {
         this.convs.push(null);
       }
     }
-    merger.connect(output);
-    this.postNodes.push(splitter, merger);
+    merger.connect(makeup);
+    makeup.connect(output);
+    this.postNodes.push(splitter, merger, makeup);
   }
   /** Register a source. Bed channels pass their speaker label; objects an event id.
    *  重复声明同一 id（稀疏声明变化时 player 会重放整组）不重置用户静音状态。 */

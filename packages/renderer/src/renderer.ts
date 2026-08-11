@@ -43,6 +43,8 @@ export type OutputMode = "multichannel" | "binaural" | "stereo";
 const LFE_LOWPASS_HZ = 120;
 /** LFE 带内增益：杜比监听规范 +10dB（编码侧 -10dB 录制，重放逐带补偿）。 */
 const LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+/** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
+const BINAURAL_MAKEUP_GAIN = Math.pow(10, 3 / 20);
 
 export interface RendererOptions {
   mode?: OutputMode;
@@ -224,6 +226,9 @@ export class SpatialRenderer {
       gain.gain.linearRampToValueAtTime(target, now + duration);
     }
     this.mode = mode;
+    // 床层扩展只属于物理多声道。输出模式切换后必须重推 gains，不能沿用
+    // 旧模式的前宽/后环派生馈送。
+    for (const state of this.sources.values()) this.applyGains(state, 2048);
   }
 
   get outputMode(): OutputMode {
@@ -310,10 +315,12 @@ export class SpatialRenderer {
     this.postNodes.push(splitter, merger);
   }
 
-  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，输出占固定物理通道 0/1。 */
+  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，最终汇总后加输出标定，输出占固定物理通道 0/1。 */
   private buildBinauralPath(n: number, output: GainNode): void {
     const splitter = this.ctx.createChannelSplitter(n);
     const merger = this.ctx.createChannelMerger(n);
+    const makeup = this.ctx.createGain();
+    makeup.gain.value = BINAURAL_MAKEUP_GAIN;
     this.node!.connect(splitter);
     const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
 
@@ -376,8 +383,9 @@ export class SpatialRenderer {
         this.convs.push(null);
       }
     }
-    merger.connect(output);
-    this.postNodes.push(splitter, merger);
+    merger.connect(makeup);
+    makeup.connect(output);
+    this.postNodes.push(splitter, merger, makeup);
   }
 
   /** Register a source. Bed channels pass their speaker label; objects an event id.

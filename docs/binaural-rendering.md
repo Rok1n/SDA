@@ -118,6 +118,18 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 默认 Near 只混入少量 BRIR 早期线索：后方和顶层定位需要这些外化 cue，但权重不足以让
 房间尾音掩盖对象；需要更强外化时才由显式 Mid/Far 引入更多房间反射。
 
+### 3.1 双耳输出标定
+
+KU100 IR 在运行时按左右耳**合计能量**归一化，保证方向与 Near/Mid/Far 间的相对
+响度一致；它不保证经过头部/耳廓频响后的主观响度等于未空间化立体声。SDA 因此在
+全部虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+3 dB` makeup gain，
+再进入输出模式淡化和用户 master 音量。
+
+该值是 SDA 针对当前 `-3.1 dB` 立体声 downmix 参考的保守应用级标定点，**不是**
+Dolby、Apple 或 Genelec 发布的固定双耳增益，也不是 KU100 补偿/耳机 profile。它不改
+HRIR/BRIR 资产、每方向能量归一化、LFE 的规范性 `+10 dB` 或用户音量控制。密集同相
+多总线内容仍可能超过 0 dBFS；当前实现不伪装一个压缩器为 true-peak limiter。
+
 配合每源距离处理（`renderer.ts applyGains`）：
 1. **归一化对象距离**：ADM 距离 1 是虚拟音箱环。环内维持 0 dB；环外按
    Apple inverse 定律 `gain = 1 / normalizedAdmDistance`，不会由用户切换
