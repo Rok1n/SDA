@@ -5,24 +5,21 @@
  *   AudioWorkletNode(sda-renderer, N-bus output)
  *     ├── "multichannel": → ctx.destination (N discrete channels)
  *     ├── "binaural":     → ChannelSplitter(N)
- *     │                     → 低频管理（LR4 分频 @85Hz）→ 主总线 / 低音炮总线
- *     │                     → per 主总线: ConvolverNode(stereo BRIR/HRIR mix)
- *     │                     → 低音炮总线: LFE(120Hz LP +10dB) + 各主总线低频
- *     │                       → 真力 7370A 响应（19Hz 次声滚降）→ 直送双耳
+ *     │                     → 每主总线: ConvolverNode(stereo BRIR/HRIR mix)
+ *     │                     → LFE 总线: 120Hz LP +10dB → 直送双耳
  *     │                     → ChannelMerger(2) → ctx.destination
  *     └── "stereo":       → downmix gain matrix → merger(2) → destination
  *
  * 双耳路径遵循业界标准虚拟音箱方案（杜比 BS.2127 / Apple 虚拟化 5.1）：
  * 对象先 VBAP 到固定虚拟音箱环，每个虚拟音箱与该方向的
  * 「干 HRIR + 湿 BRIR 按模式混合」的 IR 卷积求和。卷积数固定（总线数 × 2 耳），
- * 与对象数量解耦。近/中/远（杜比 Binaural Settings）= 干/湿混合比 +
- * 参考距离；苹果式 inverse 距离定律 + 空气吸收低通在源侧（worklet）施加。
+ * 与对象数量解耦。近/中/远（杜比 Binaural Settings）只控制干/湿 IR 混合；
+ * 源侧按 Apple inverse 距离定律处理环外对象。
  *
  * 监听系统仿真（真力 The Ones + 7370A）：杜比未公布各布局逐音箱 EQ（只有
- * 摆位角度、低频管理概念和 LFE 规范），可听的声音塑造来自监听音箱本身。
- * 按官网指标建模：The Ones 轴上 ±1.5dB 平直（无需补偿），GLM 默认低频管理
- * 分频 85Hz（LR4 = 两个 Q=1/√2 的二阶级联）；LFE 按 ITU-R BS.775 / 杜比规范
- * 120Hz LR4 低通 + 带内 +10dB；7370A：-6dB @19Hz 次声滚降、上限 150Hz。
+ * 摆位角度和 LFE 规范），可听的声音塑造来自监听音箱本身。LFE 按
+ * ITU-R BS.775 / 杜比规范 120Hz LR4 低通 + 带内 +10dB；它不包含主声道
+ * 的低频重定向，以保留耳机中各虚拟音箱的全频方向线索。
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
@@ -35,24 +32,15 @@ import {
   type VirtualSpeaker,
 } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
-import {
-  BINAURAL_MODES,
-  buildBusIrs,
-  type BinauralIrSet,
-  type BinauralMode,
-} from "./hrtf.js";
+import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
 
-/** 低频管理分频点：真力多声道监听常用值 85Hz（SAM 炮由 GLM 软件配置）。 */
-const BM_CROSSOVER_HZ = 85;
 /** LFE 低通：ITU-R BS.775 / 杜比规范 120Hz。 */
 const LFE_LOWPASS_HZ = 120;
 /** LFE 带内增益：杜比监听规范 +10dB（编码侧 -10dB 录制，重放逐带补偿）。 */
 const LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
-/** 真力 7370A 低频截止：-6dB @19Hz。 */
-const SUB_CUTOFF_HZ = 19;
 
 export interface RendererOptions {
   mode?: OutputMode;
@@ -161,8 +149,8 @@ export class SpatialRenderer {
     if (this.mode === "binaural" && this.node) this.buildOutputGraph();
   }
 
-  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR），并用新监听
-   *  距离标尺平滑重推对象的环外衰减与空气吸收；播放不中断。 */
+  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
+   * 制作响度不变，播放不中断。 */
   setBinauralMode(mode: BinauralMode): void {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
@@ -237,36 +225,32 @@ export class SpatialRenderer {
       ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode)
       : null;
 
-    // 低音炮总线（真力 7370A）：LFE + 各主总线经低频管理分出的低频。
-    // 低频无方向性，不卷积，直送双耳（与杜比/苹果双耳管线一致）。
-    let subBus: GainNode | null = null;
+    // LFE 总线：只承载原始 LFE。主声道在双耳中保持全频卷积，不能像物理
+    // 监听那样把它们的低频汇成单声道，否则会丢失低频方向线索并使整体发糊。
+    let lfeBus: GainNode | null = null;
     if (this.mode === "binaural" && this.layout.some((s) => s.isLfe)) {
       const sum = this.ctx.createGain();
-      // 7370A 次声滚降（-6dB @19Hz，LR4）；上限 150Hz 由 85/120Hz 低通保证。
-      const [subHpIn, subHpOut] = this.lr4("highpass", SUB_CUTOFF_HZ);
-      const subOut = this.ctx.createGain();
-      subOut.gain.value = 0.5;
-      sum.connect(subHpIn);
-      subHpOut.connect(subOut);
-      subOut.connect(merger, 0, 0);
-      subOut.connect(merger, 0, 1);
-      this.postNodes.push(sum, subHpIn, subHpOut, subOut);
-      subBus = sum;
+      const lfeOut = this.ctx.createGain();
+      lfeOut.gain.value = 0.5;
+      sum.connect(lfeOut);
+      lfeOut.connect(merger, 0, 0);
+      lfeOut.connect(merger, 0, 1);
+      this.postNodes.push(sum, lfeOut);
+      lfeBus = sum;
     }
 
     for (let bus = 0; bus < n; bus++) {
       const spk = this.layout[bus]!;
       if (this.mode === "binaural") {
         if (spk.isLfe) {
-          // LFE：ITU/杜比 120Hz LR4 低通 + 带内 +10dB，进低音炮总线。
-          // 无低音炮的布局退化为等量直送双耳。
+          // LFE：ITU/杜比 120Hz LR4 低通 + 带内 +10dB，直送双耳。
           const lfeGain = this.ctx.createGain();
-          if (subBus) {
+          if (lfeBus) {
             const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
             splitter.connect(lpIn, bus);
             lfeGain.gain.value = LFE_INBAND_GAIN;
             lpOut.connect(lfeGain);
-            lfeGain.connect(subBus);
+            lfeGain.connect(lfeBus);
             this.postNodes.push(lpIn, lpOut, lfeGain);
           } else {
             lfeGain.gain.value = 0.5;
@@ -287,19 +271,7 @@ export class SpatialRenderer {
           // 会被 0.5(L+R) 降混 —— 必须用 splitter 把左右耳分开接线，
           // 否则整个双耳路径塌成单声道（声像全挤在中间）。
           const earSplit = this.ctx.createChannelSplitter(2);
-          if (subBus) {
-            // 低频管理：主音箱 85Hz LR4 高通后进卷积（The Ones + 炮的标准
-            // 接法）；分出的低频进低音炮总线。
-            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
-            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
-            splitter.connect(hpIn, bus);
-            splitter.connect(lpIn, bus);
-            hpOut.connect(conv);
-            lpOut.connect(subBus);
-            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
-          } else {
-            splitter.connect(conv, bus);
-          }
+          splitter.connect(conv, bus);
           conv.connect(earSplit);
           earSplit.connect(merger, 0, 0);
           earSplit.connect(merger, 1, 1);
@@ -318,17 +290,7 @@ export class SpatialRenderer {
           panner.positionY.value = y;
           panner.positionZ.value = z;
           const earSplit = this.ctx.createChannelSplitter(2);
-          if (subBus) {
-            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
-            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
-            splitter.connect(hpIn, bus);
-            splitter.connect(lpIn, bus);
-            hpOut.connect(panner);
-            lpOut.connect(subBus);
-            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
-          } else {
-            splitter.connect(panner, bus);
-          }
+          splitter.connect(panner, bus);
           panner.connect(earSplit);
           earSplit.connect(merger, 0, 0);
           earSplit.connect(merger, 1, 1);
@@ -446,25 +408,14 @@ export class SpatialRenderer {
   private applyGains(state: SourceState, rampSamples: number): void {
     const gains = this.vbap.pan(state.position, state.spread);
 
-    // ADM 半径是归一化的：1 = 当前档位的虚拟音箱环。双耳模式用 Near/Mid/Far
-    // 的监听距离把它换算到米；增益仍按相对音箱环的距离计算，保证切监听档位
-    // 不会篡改混音平衡。空气吸收则按物理米数计算，故 far 会真实更闷而不只是
-    // 换了一条更湿的 BRIR。非双耳输出沿用归一化标尺，避免切输出模式改平衡。
+    // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
+    // 按 Apple inverse 距离定律衰减；不从没有明确物理米制语义的 ADM 半径
+    // 推导空气吸收，避免把正常的沉浸声对象错误低通得发闷。
     const normalizedDistance = Math.max(1e-3, state.position.distance);
-    const refDistance = this.mode === "binaural"
-      ? BINAURAL_MODES[this.binauralMode].refDistance
-      : 1;
-    const physicalDistance = normalizedDistance * refDistance;
     let distGain = 1;
-    let lp = 1; // worklet 一阶低通系数；1 = 直通
+    let lp = 1; // 保持内容高频；空气吸收需明确的物理距离元数据才可启用。
     if (normalizedDistance > 1) {
-      // Apple inverse：ref / (ref + rolloff * (d - ref))，rolloff = 1。
-      // 代入物理距离保留公式语义；本项目以音箱环作 reference，故增益只取决于
-      // 内容相对音箱环的位置，而非用户选择的监听距离档位。
-      distGain = refDistance / (refDistance + (physicalDistance - refDistance));
-      // 物理距离决定空气吸收：近/中/远的同一 ADM 半径分别对应不同米数。
-      const fc = Math.min(19000, Math.max(6000, 19000 / physicalDistance));
-      lp = 1 - Math.exp((-2 * Math.PI * fc) / this.ctx.sampleRate);
+      distGain = 1 / normalizedDistance;
     }
 
     let scalar = Math.pow(10, state.gainDb / 20) * distGain;

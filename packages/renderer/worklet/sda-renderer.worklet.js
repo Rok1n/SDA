@@ -45,8 +45,9 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           rampStep: new Float32Array(this.busCount),
           gain: 1,
           targetGain: 1,
-          // 空气吸收一阶低通（苹果/杜比远场 cue）：lpA=1 时直通，
-          // 距离越远系数越小，高频衰减越明显。
+          // Reserved per-source one-pole filter. Main-thread ADM rendering
+          // currently keeps it at lpA=1 because normalized positions are not
+          // physical distance metadata.
           lpA: 1,
           lpY: 0,
         });

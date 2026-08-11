@@ -221,15 +221,28 @@ export class VbapSolver {
     const norm = power > 0 ? 1 / Math.sqrt(power) : 0;
     for (let i = 0; i < gains.length; i++) gains[i]! *= norm;
 
-    // Spread: cross-fade toward uniform energy over non-LFE speakers.
+    // Spread remains local to the source direction. A global diffuse blend
+    // energizes every virtual speaker and makes an enlarged object lose its
+    // position after the per-bus HRTF convolutions.
     if (spread > 0) {
       const s = Math.min(1, spread);
-      const active = this.lfeMask.filter((l) => !l).length;
-      const diffuse = 1 / Math.sqrt(active);
-      for (let i = 0; i < gains.length; i++) {
-        if (this.lfeMask[i]) continue;
-        gains[i] = (1 - s) * gains[i]! + s * diffuse;
-      }
+      const nearest = this.dirs
+        .map((d, i) => ({
+          i,
+          dot: this.lfeMask[i] ? -Infinity : d[0] * p[0] + d[1] * p[1] + d[2] * p[2],
+        }))
+        .filter(({ dot }) => Number.isFinite(dot))
+        .sort((a, b) => b.dot - a.dot)
+        .slice(0, Math.min(4, this.lfeMask.filter((l) => !l).length));
+      const local = new Float32Array(this.speakerCount);
+      const diffuse = 1 / Math.sqrt(nearest.length || 1);
+      for (const { i } of nearest) local[i] = diffuse;
+      for (let i = 0; i < gains.length; i++) gains[i] = (1 - s) * gains[i]! + s * local[i]!;
+
+      let spreadPower = 0;
+      for (const g of gains) spreadPower += g * g;
+      const spreadNorm = spreadPower > 0 ? 1 / Math.sqrt(spreadPower) : 0;
+      for (let i = 0; i < gains.length; i++) gains[i]! *= spreadNorm;
     }
     return gains;
   }

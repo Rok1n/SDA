@@ -131,20 +131,25 @@ function addBed(r, labels) {
 // ---- 5b. 双耳模式：只吸附不馈送（相干拷贝会梳状滤波）----
 {
   postedToWorklet.length = 0;
+  wiring.length = 0;
   const r = new SpatialRenderer(new FakeAudioContext(), { mode: "binaural", layout: LAYOUTS["7.1.4"] });
   await r.init("mock://worklet");
   addBed(r, BED_5_1);
   const g = lastGains("bed:4").gains; // SurroundLeft
   check(g[4] === 1 && g[6] === 0 && g.every((v, i) => i === 4 || v === 0),
     `双耳 5.1→7.1.4: Ls 吸附侧环(1.0)，不馈后环（RL=${g[6]}）`);
+  wiring.length = 0;
   const r9 = new SpatialRenderer(new FakeAudioContext(), { mode: "binaural", layout: LAYOUTS["9.1.4"] });
   await r9.init("mock://worklet");
   addBed(r9, BED_5_1);
   const fl9 = lastGains("bed:0").gains;
   check(near(fl9[0], 1) && fl9[4] === 0, `双耳 5.1→9.1.4: FL 直送前左，不馈前宽（WL=${fl9[4]}）`);
+  const binauralBiquads = wiring.filter((edge) => edge.from === "biquad" || edge.to === "biquad");
+  check(binauralBiquads.length === 3,
+    `双耳: 只有 LFE 120Hz LR4 使用滤波器，主声道全频卷积（biquad 接线=${binauralBiquads.length}）`);
 }
 
-// ---- 6. 双耳 Near/Mid/Far：保持内容相对增益，按物理监听距离加强环外空气吸收 ----
+// ---- 6. 双耳 Near/Mid/Far：只重混 IR，不篡改 ADM 对象高频或相对响度 ----
 {
   postedToWorklet.length = 0;
   const r = new SpatialRenderer(new FakeAudioContext(), { mode: "binaural", layout: LAYOUTS["5.1"] });
@@ -156,8 +161,8 @@ function addBed(r, labels) {
   const farMode = lastGains("obj:distance");
   check(near(nearMode.gain, 0.5) && near(farMode.gain, 0.5),
     `双耳档位：ADM 环外 d=2 的 Apple inverse 增益保持 0.5（near=${nearMode.gain}, far=${farMode.gain}）`);
-  check(farMode.lp < nearMode.lp,
-    `双耳档位：far 的物理距离更远，空气吸收更强（near lp=${nearMode.lp.toFixed(4)}, far lp=${farMode.lp.toFixed(4)}）`);
+  check(near(nearMode.lp, 1) && near(farMode.lp, 1),
+    `双耳档位：ADM 归一化距离不擅自低通内容（near/far lp=${nearMode.lp}/${farMode.lp}）`);
 }
 
 // ---- 7. 多声道模式：destination 声道数 + WASAPI 物理顺序重排 ----

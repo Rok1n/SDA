@@ -24,15 +24,13 @@ export type BinauralMode = "near" | "mid" | "far";
 export interface BinauralModeSpec {
   /** 湿（BRIR）混合权重，0 = 全干 HRIR，1 = 全房间。 */
   wet: number;
-  /** 虚拟音箱监听距离（米，近/中/远 ≈ 0.7/1.2/2.5）。它定义将 ADM
-   * 归一化半径换算为物理距离的标尺；IR 的干湿比例仍单独决定外化房间感。 */
-  refDistance: number;
 }
 
 export const BINAURAL_MODES: Record<BinauralMode, BinauralModeSpec> = {
-  near: { wet: 0.1, refDistance: 0.7 },
-  mid: { wet: 0.3, refDistance: 1.2 },
-  far: { wet: 0.6, refDistance: 2.5 },
+  // 默认对象监听优先直达声定位；房间感只能由显式 Mid/Far 请求引入。
+  near: { wet: 0 },
+  mid: { wet: 0.2 },
+  far: { wet: 0.45 },
 };
 
 export interface HrtfManifestEntry {

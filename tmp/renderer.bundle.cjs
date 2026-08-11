@@ -390,12 +390,18 @@ var VbapSolver = class {
     for (let i = 0; i < gains.length; i++) gains[i] *= norm;
     if (spread > 0) {
       const s = Math.min(1, spread);
-      const active = this.lfeMask.filter((l) => !l).length;
-      const diffuse = 1 / Math.sqrt(active);
-      for (let i = 0; i < gains.length; i++) {
-        if (this.lfeMask[i]) continue;
-        gains[i] = (1 - s) * gains[i] + s * diffuse;
-      }
+      const nearest = this.dirs.map((d, i) => ({
+        i,
+        dot: this.lfeMask[i] ? -Infinity : d[0] * p[0] + d[1] * p[1] + d[2] * p[2]
+      })).filter(({ dot }) => Number.isFinite(dot)).sort((a, b) => b.dot - a.dot).slice(0, Math.min(4, this.lfeMask.filter((l) => !l).length));
+      const local = new Float32Array(this.speakerCount);
+      const diffuse = 1 / Math.sqrt(nearest.length || 1);
+      for (const { i } of nearest) local[i] = diffuse;
+      for (let i = 0; i < gains.length; i++) gains[i] = (1 - s) * gains[i] + s * local[i];
+      let spreadPower = 0;
+      for (const g of gains) spreadPower += g * g;
+      const spreadNorm = spreadPower > 0 ? 1 / Math.sqrt(spreadPower) : 0;
+      for (let i = 0; i < gains.length; i++) gains[i] *= spreadNorm;
     }
     return gains;
   }
@@ -403,9 +409,10 @@ var VbapSolver = class {
 
 // packages/renderer/src/hrtf.ts
 var BINAURAL_MODES = {
-  near: { wet: 0.1, refDistance: 0.7 },
-  mid: { wet: 0.3, refDistance: 1.2 },
-  far: { wet: 0.6, refDistance: 2.5 }
+  // 默认对象监听优先直达声定位；房间感只能由显式 Mid/Far 请求引入。
+  near: { wet: 0 },
+  mid: { wet: 0.2 },
+  far: { wet: 0.45 }
 };
 var setCache = /* @__PURE__ */ new Map();
 function getBinauralIrSet(baseUrl) {
@@ -548,10 +555,8 @@ function buildBusIrs(ctx, set, layout, mode) {
 }
 
 // packages/renderer/src/renderer.ts
-var BM_CROSSOVER_HZ = 85;
 var LFE_LOWPASS_HZ = 120;
 var LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
-var SUB_CUTOFF_HZ = 19;
 function sizeToSpread(size) {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
 }
@@ -629,8 +634,8 @@ var SpatialRenderer = class {
     this.irSet = set;
     if (this.mode === "binaural" && this.node) this.buildOutputGraph();
   }
-  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR），并用新监听
-   *  距离标尺平滑重推对象的环外衰减与空气吸收；播放不中断。 */
+  /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
+   * 制作响度不变，播放不中断。 */
   setBinauralMode(mode) {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
@@ -690,30 +695,28 @@ var SpatialRenderer = class {
     const merger = this.ctx.createChannelMerger(2);
     merger.connect(this.master);
     const busIrs = this.mode === "binaural" && this.irSet ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode) : null;
-    let subBus = null;
+    let lfeBus = null;
     if (this.mode === "binaural" && this.layout.some((s) => s.isLfe)) {
       const sum = this.ctx.createGain();
-      const [subHpIn, subHpOut] = this.lr4("highpass", SUB_CUTOFF_HZ);
-      const subOut = this.ctx.createGain();
-      subOut.gain.value = 0.5;
-      sum.connect(subHpIn);
-      subHpOut.connect(subOut);
-      subOut.connect(merger, 0, 0);
-      subOut.connect(merger, 0, 1);
-      this.postNodes.push(sum, subHpIn, subHpOut, subOut);
-      subBus = sum;
+      const lfeOut = this.ctx.createGain();
+      lfeOut.gain.value = 0.5;
+      sum.connect(lfeOut);
+      lfeOut.connect(merger, 0, 0);
+      lfeOut.connect(merger, 0, 1);
+      this.postNodes.push(sum, lfeOut);
+      lfeBus = sum;
     }
     for (let bus = 0; bus < n; bus++) {
       const spk = this.layout[bus];
       if (this.mode === "binaural") {
         if (spk.isLfe) {
           const lfeGain = this.ctx.createGain();
-          if (subBus) {
+          if (lfeBus) {
             const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
             splitter.connect(lpIn, bus);
             lfeGain.gain.value = LFE_INBAND_GAIN;
             lpOut.connect(lfeGain);
-            lfeGain.connect(subBus);
+            lfeGain.connect(lfeBus);
             this.postNodes.push(lpIn, lpOut, lfeGain);
           } else {
             lfeGain.gain.value = 0.5;
@@ -731,17 +734,7 @@ var SpatialRenderer = class {
           conv.buffer = ir;
           conv.normalize = false;
           const earSplit = this.ctx.createChannelSplitter(2);
-          if (subBus) {
-            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
-            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
-            splitter.connect(hpIn, bus);
-            splitter.connect(lpIn, bus);
-            hpOut.connect(conv);
-            lpOut.connect(subBus);
-            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
-          } else {
-            splitter.connect(conv, bus);
-          }
+          splitter.connect(conv, bus);
           conv.connect(earSplit);
           earSplit.connect(merger, 0, 0);
           earSplit.connect(merger, 1, 1);
@@ -759,17 +752,7 @@ var SpatialRenderer = class {
           panner.positionY.value = y;
           panner.positionZ.value = z;
           const earSplit = this.ctx.createChannelSplitter(2);
-          if (subBus) {
-            const [hpIn, hpOut] = this.lr4("highpass", BM_CROSSOVER_HZ);
-            const [lpIn, lpOut] = this.lr4("lowpass", BM_CROSSOVER_HZ);
-            splitter.connect(hpIn, bus);
-            splitter.connect(lpIn, bus);
-            hpOut.connect(panner);
-            lpOut.connect(subBus);
-            this.postNodes.push(hpIn, hpOut, lpIn, lpOut);
-          } else {
-            splitter.connect(panner, bus);
-          }
+          splitter.connect(panner, bus);
           panner.connect(earSplit);
           earSplit.connect(merger, 0, 0);
           earSplit.connect(merger, 1, 1);
@@ -875,14 +858,10 @@ var SpatialRenderer = class {
   applyGains(state, rampSamples) {
     const gains = this.vbap.pan(state.position, state.spread);
     const normalizedDistance = Math.max(1e-3, state.position.distance);
-    const refDistance = this.mode === "binaural" ? BINAURAL_MODES[this.binauralMode].refDistance : 1;
-    const physicalDistance = normalizedDistance * refDistance;
     let distGain = 1;
     let lp = 1;
     if (normalizedDistance > 1) {
-      distGain = refDistance / (refDistance + (physicalDistance - refDistance));
-      const fc = Math.min(19e3, Math.max(6e3, 19e3 / physicalDistance));
-      lp = 1 - Math.exp(-2 * Math.PI * fc / this.ctx.sampleRate);
+      distGain = 1 / normalizedDistance;
     }
     let scalar = Math.pow(10, state.gainDb / 20) * distGain;
     if (state.isLfe) {

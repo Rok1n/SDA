@@ -15,11 +15,10 @@ Dolby 渲染器与 EBU/BBC 的 BEAR（Binaural EBU ADM Renderer, Apache-2.0）�
   │      VBAP 3D (Pulkki 1997)；size/spread → 向最近扬声器群扩散
   ├─ (2) 虚拟扬声器总线: 各对象按增益求和到 N 条总线（AudioWorklet）
   │      （复杂度与对象数解耦，卷积次数恒为 N × 2 耳）
-  │      + 每源一阶低通（空气吸收，苹果/杜比远场 cue）
   ├─ (3) 双耳化: 每条总线卷积对应位置的「干 HRIR ↔ 湿 BRIR 混合」IR
   │      → ConvolverNode（FFT 卷积，浏览器原生加速）
-  ├─ (4) 距离层: 苹果 inverse 距离定律（参考距离内不衰减）+ 空气吸收低通
-  │      → Dolby near/mid/far = 干/湿混合比 + 参考距离 0.7/1.2/2.5m（见 §3）
+  ├─ (4) 距离层: 苹果 inverse 距离定律（参考距离内不衰减）
+  │      → Dolby near/mid/far = 干/湿 HRIR/BRIR 混合（见 §3）
   └─ (5) 头追(可选/v2): 旋转世界坐标→头部坐标，重算各扬声器相对方位
 ```
 
@@ -110,24 +109,26 @@ mid 用标准听音距离、含少量早期反射的 BRIR；far 用低直达声/
 `IR = (1-w)·HRIR + w·BRIR`，混合后能量归一化（近/中/远切换响度一致）。
 BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响总线。
 
-| 档位 | 湿声权重 w | 参考距离 | 听感 |
-|---|---|---|---|
-| near 近 | 0.1 | 0.7 m | 贴头、干、直接 |
-| mid 中（默认） | 0.3 | 1.2 m | 标准听音位、少量房间 |
-| far 远 | 0.6 | 2.5 m | 房间感强、直达声占比低 |
+| 档位 | 湿声权重 w | 听感 |
+|---|---:|---|
+| near 近（默认） | 0.0 | 纯 HRIR 直达声，优先对象定位与清晰度 |
+| mid 中 | 0.2 | 轻度房间感 |
+| far 远 | 0.45 | 明显外化和房间感 |
+
+默认 Near 不混入 BRIR 尾音：对象监听首先保证直达声和左右耳线索；需要更强外化时才由
+显式 Mid/Far 引入房间反射。
 
 配合每源距离处理（`renderer.ts applyGains`）：
-1. **归一化对象距离与物理标尺分离**：ADM 距离 1 是虚拟音箱环。双耳模式将它换算为
-   `physicalDistance = normalizedAdmDistance × mode.refDistance`；`refDistance` 为
-   near/mid/far 的 0.7/1.2/2.5 m。环内维持 0 dB，环外的相对响度始终按
-   Apple inverse 定律 `gain = 1 / normalizedAdmDistance`，因此切档不会擅自改变
-   已制作对象的相对平衡。
-2. **空气吸收低通**：仅环外对象参与，截止频率由上述物理距离计算；Far 的物理距离
-   更大，空气吸收更强。worklet 内每源一阶低通实现。
+1. **归一化对象距离**：ADM 距离 1 是虚拟音箱环。环内维持 0 dB；环外按
+   Apple inverse 定律 `gain = 1 / normalizedAdmDistance`，不会由用户切换
+   near/mid/far 而改变已制作对象的相对平衡。
+2. **不从 ADM 半径推导空气吸收**：OAMD 的归一化位置没有可靠的物理米制含义，
+   所以不自动低通对象。空气吸收只能在输入包含明确物理距离元数据时再启用，避免
+   将正常的沉浸声对象渲染得发闷。
 
 > 注意：harletty 解码出的事件流（OAMD）**不携带** binauralRenderMode —
 > 它只存在于 DAMF/dbmd。所以 SDA 的距离档位是全局固定值；网页 UI 目前固定
-> `near`，引擎保留三档 API，切换时会重混 IR 并平滑重推对象的距离处理，不中断音频。
+> `near`，引擎保留三档 API，切换时只重混 IR，不中断音频。
 > 若将来接入 harletty CLI 的 .atmos.metadata 文件，可按对象应用真实模式。
 
 参考：
@@ -135,54 +136,28 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 - wavinfo 的 dbmd reader（字段表）: https://github.com/iluvcapra/wavinfo
 - 《Dolby Atmos Binaural Settings Plug-in Guide》(professional.dolby.com, PDF)
 
-## 3.5 监听系统仿真：真力 The Ones + 7370A（EQ / 低频管理补偿）
+## 3.5 低频与 LFE
 
-3D 视图里的虚拟音箱是真力 The Ones 同轴系列 + 73 系列低音炮，双耳渲染
-模拟的就是这套监听系统在房间里的声音。官网实测指标：
+Genelec 的 85 Hz bass management 是**物理多声道监听**中主箱配合 73 系列低音炮
+的校准选项；它不应直接套用到耳机虚拟扬声器。把每个主声道 85 Hz 以下的内容抽出并
+汇到等量双耳的单声道总线，会抹掉主声道在低频和低中频的 HRTF/BRIR 方向线索，使
+整体变厚、变糊。
 
-| 型号 | 自由场频响 | -6dB 下限 | 说明 |
-|---|---|---|---|
-| 8331A | 58 Hz – 20 kHz (±1.5 dB) | 45 Hz | The Ones 最小 |
-| 8341A | 45 Hz – 20 kHz (±1.5 dB) | 38 Hz | The Ones 中号 |
-| 8351B | 38 Hz – 20 kHz (±1.5 dB) | 32 Hz | The Ones 最大 |
-| 7370A | 19 – 100 Hz (±3 dB) | 19 Hz / 150 Hz | 12" 低音炮 |
+SDA 双耳路径因此采用以下规则：
 
-关键结论：**The Ones 轴上响应在通带内 ±1.5 dB，本质是平的，没有可补偿的
-"每音箱 EQ"**。杜比对 5.1 / 5.1.2 / 5.1.4 / 7.1.2 / 7.1.4 / 9.1.2 / 9.1.4 /
-9.1.6 各布局也只公布**摆位角度**（ITU-R BS.775 / BS.2051，见 §2），从未公布
-逐音箱 EQ 曲线 —— 唯一成文的音箱相关 EQ 是 Dolby Atmos Enabled（向上反射）
-音箱的目标曲线，而我们的布局全部是入顶箱，不适用。
+1. **主声道全频空间化**：每个非 LFE 虚拟扬声器完整进入其方向的 HRIR/BRIR 卷积，
+   不做主声道低频重定向。
+2. **LFE 独立处理**：原始 LFE 走 LR4 低通 **120 Hz**、带内 **+10 dB**，再等量
+   直送双耳；它不参与方向卷积，也不接收主声道低频。
 
-杜比 / ITU 真正成文、且可听的两条低频规范（已实现）：
-
-1. **低频管理（bass management）**：主音箱设为 "small" 时，分频点以下的
-   低频从各主音箱剥离、重定向到低音炮重放。分频点取真力多声道监听的
-   常用值 **85 Hz**（SAM 系列炮的分频由 GLM 软件配置，并非硬件固定值）。
-   低频不可定位，低音炮信号不卷积、直送双耳。
-2. **LFE 通道规范（ITU-R BS.775 / 杜比）**：LFE 带宽限制 **120 Hz**（编码侧
-   低通），重放时施加 **带内 +10 dB** 增益（录制侧 -10 dB，换取 10 dB 余量）。
-   真力 7360A/7370A 官网的「LFE 输入电平 0 / +10 dB re. main channels」
-   开关直接印证了该约定。
-
-`renderer.ts` 双耳路径的实现（全部用 Web Audio BiquadFilter 级联成 LR4
-—— 两个 Q=1/√2 的二阶级联，分频点 -6dB、高低通同相叠加平坦）：
-
-```
-主音箱总线 → LR4 高通 @85Hz → 方向 IR 卷积 → 双耳
-           → LR4 低通 @85Hz ─┐
-LFE 总线   → LR4 低通 @120Hz → +10dB ─┤→ 低音炮总线 → LR4 高通 @19Hz
-                                      │   (7370A 次声滚降，上限 150Hz
-                                      └→  由 85/120Hz 低通保证) → 直送双耳
-```
-
-效果：每个主音箱听起来像接了炮的 The Ones（85Hz 以下交给炮），低频下潜到
-19Hz，LFE 有正确的带内响度 —— 正是真力官方推荐的多声道监听接法。
+这保留内容本来的方向信息，同时符合 LFE 的独立通道语义。若未来支持物理监听输出的
+“small speaker + subwoofer”校准，应只在 `multichannel` 输出图中实现，不进入双耳
+渲染。
 
 参考：
 - Genelec 8331A / 8341A / 8351B / 7370A 官网规格页（genelec.com）
-- Genelec GLM 校准默认分频 85 Hz（Genelec 多声道监听设置指南）
+- Genelec GLM 多声道监听设置指南（物理 bass management）
 - ITU-R BS.775-3（LFE 20–120 Hz，+10 dB 带内增益）
-- Dolby Atmos Home Theater Studio Guidelines（摆位 + 低频管理概念，无逐音箱 EQ）
 
 ## 4. Apple 侧：移动端原生渲染可用 API（Expo 原生模块设计依据）
 

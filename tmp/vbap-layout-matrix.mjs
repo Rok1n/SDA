@@ -36,5 +36,19 @@ for (const [layoutId, layout] of Object.entries(LAYOUTS)) {
     }
   }
 }
+
+// 非零 size 只能向对象附近的少数虚拟音箱扩展，不能把一个对象均匀铺到整套布局。
+for (const layoutId of ["5.1", "7.1.4", "9.1.6"]) {
+  const layout = LAYOUTS[layoutId];
+  const solver = new VbapSolver(layout);
+  const gains = solver.pan({ azimuth: 45, elevation: 35, distance: 1 }, 1);
+  const active = gains.filter((gain) => gain > 1e-5).length;
+  const energy = gains.reduce((sum, gain) => sum + gain * gain, 0);
+  const lfe = layout.findIndex((speaker) => speaker.isLfe);
+  check(active <= 4, `${layoutId}: 大尺寸对象只扩展到局部音箱（${active} 路）`);
+  check(approx(energy, 1), `${layoutId}: 大尺寸对象保持单位功率 (${energy.toFixed(6)})`);
+  check(lfe < 0 || gains[lfe] === 0, `${layoutId}: 大尺寸对象不进入 LFE 总线`);
+}
+
 console.log(failed ? `\n${failed} 项失败` : "\n全部布局 VBAP 定位通过");
 process.exit(failed ? 1 : 0);
