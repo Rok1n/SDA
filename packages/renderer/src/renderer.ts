@@ -442,14 +442,17 @@ export class SpatialRenderer {
       left.normalize = false;
       right.normalize = false;
       const earMerge = this.ctx.createChannelMerger(2);
+      const recovery = this.ctx.createGain();
+      recovery.gain.value = Math.pow(10, -profile.preampDb / 20);
       merger.connect(preamp);
       preamp.connect(earSplit);
       earSplit.connect(left, 0);
       earSplit.connect(right, 1);
       left.connect(earMerge, 0, 0);
       right.connect(earMerge, 0, 1);
-      this.postNodes.push(preamp, earSplit, left, right, earMerge);
-      finalBinaural = earMerge;
+      earMerge.connect(recovery);
+      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery);
+      finalBinaural = recovery;
     }
     finalBinaural.connect(makeup);
     makeup.connect(safety);

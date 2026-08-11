@@ -8,7 +8,9 @@
   https://github.com/jaakkopasanen/AutoEq/tree/master/results/crinacle/711%20in-ear/Apple%20AirPods%20Pro%202%20%28ANC%20mode%29
 - Measurement provenance: crinacle 711 in-ear measurement as identified by AutoEq.
 - Target: AutoEq in-ear target used by the referenced output.
-- Preamp: -3.4 dB, matching AutoEq's ten-filter headroom recommendation.
+- Preamp: -3.4 dB before FIR, matching AutoEq's ten-filter headroom recommendation.
+- Recovery: +3.4 dB after FIR restores SDA's final binaural output calibration; the
+  existing final safety compressor remains after this recovery stage.
 
 The source result is an averaged response. SDA intentionally writes identical files
 and applies them through two independent final-output convolvers. This is not an
