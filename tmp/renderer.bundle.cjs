@@ -409,8 +409,8 @@ var VbapSolver = class {
 
 // packages/renderer/src/hrtf.ts
 var BINAURAL_MODES = {
-  // 默认对象监听优先直达声定位；房间感只能由显式 Mid/Far 请求引入。
-  near: { wet: 0 },
+  // 默认只引入少量早期 BRIR 线索：帮助后方/顶层外化，又不让房间尾音掩盖对象。
+  near: { wet: 0.04 },
   mid: { wet: 0.2 },
   far: { wet: 0.45 }
 };
@@ -562,7 +562,10 @@ function sizeToSpread(size) {
 }
 var SpatialRenderer = class {
   ctx;
+  /** 当前用于 VBAP 与床层语义的布局；运行中可切换。 */
   layout;
+  /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
+  topology;
   mode;
   vbap;
   node = null;
@@ -585,6 +588,7 @@ var SpatialRenderer = class {
     this.ctx = ctx;
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
+    this.topology = LAYOUTS["9.1.6"];
     this.vbap = new VbapSolver(this.layout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
@@ -596,6 +600,7 @@ var SpatialRenderer = class {
    *  - 前左/右 → 前宽 0.35（9.1 布局：拉开前声场宽度，中置对白不动）
    *  顶层不做静态派生（环境声提取超出本渲染器职责）。 */
   buildExpansion() {
+    this.expansion.clear();
     const idx = (name) => this.layout.findIndex((s) => s.name === name);
     const feed = (from, to, gain) => {
       const a = idx(from);
@@ -610,7 +615,20 @@ var SpatialRenderer = class {
     feed("FrontLeft", "WideLeft", 0.35);
     feed("FrontRight", "WideRight", 0.35);
   }
-  /** Load the worklet module and build the downstream graph. */
+  /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头和卷积图继续
+   * 存活；所有源通过短增益斜坡迁移到固定最大总线中的新位置。 */
+  setLayout(layout) {
+    if (layout === this.layout) return;
+    this.layout = layout;
+    this.vbap = new VbapSolver(layout);
+    this.buildExpansion();
+    for (const state of this.sources.values()) {
+      if (state.bedLabel && !state.isLfe) {
+        state.snapBus = this.layout.findIndex((speaker) => speaker.name === state.bedLabel);
+      }
+      this.applyGains(state, 2048);
+    }
+  }
   async init(workletModuleUrl) {
     await this.ctx.audioWorklet.addModule(workletModuleUrl);
     this.master = this.ctx.createGain();
@@ -618,8 +636,8 @@ var SpatialRenderer = class {
     this.node = new AudioWorkletNode(this.ctx, "sda-renderer", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
-      outputChannelCount: [this.layout.length],
-      processorOptions: { busCount: this.layout.length }
+      outputChannelCount: [this.topology.length],
+      processorOptions: { busCount: this.topology.length }
     });
     this.node.port.onmessage = (e) => {
       if (e.data?.type === "tick") {
@@ -641,7 +659,7 @@ var SpatialRenderer = class {
     this.binauralMode = mode;
     if (this.mode !== "binaural") return;
     if (this.irSet) {
-      const irs = buildBusIrs(this.ctx, this.irSet, this.layout, mode);
+      const irs = buildBusIrs(this.ctx, this.irSet, this.topology, mode);
       this.convs.forEach((conv, bus) => {
         const ir = irs.get(bus);
         if (conv && ir) conv.buffer = ir;
@@ -673,7 +691,7 @@ var SpatialRenderer = class {
   buildOutputGraph() {
     if (!this.node || !this.master) return;
     this.teardownPostNodes();
-    const n = this.layout.length;
+    const n = this.topology.length;
     if (this.mode === "multichannel") {
       const dest = this.ctx.destination;
       try {
@@ -681,7 +699,7 @@ var SpatialRenderer = class {
         dest.channelCount = Math.max(2, Math.min(n, dest.maxChannelCount || n));
       } catch {
       }
-      const order = physicalChannelOrder(this.layout);
+      const order = physicalChannelOrder(this.topology);
       const splitter2 = this.ctx.createChannelSplitter(n);
       const merger2 = this.ctx.createChannelMerger(n);
       this.node.connect(splitter2);
@@ -694,9 +712,9 @@ var SpatialRenderer = class {
     this.node.connect(splitter);
     const merger = this.ctx.createChannelMerger(2);
     merger.connect(this.master);
-    const busIrs = this.mode === "binaural" && this.irSet ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode) : null;
+    const busIrs = this.mode === "binaural" && this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
     let lfeBus = null;
-    if (this.mode === "binaural" && this.layout.some((s) => s.isLfe)) {
+    if (this.mode === "binaural" && this.topology.some((s) => s.isLfe)) {
       const sum = this.ctx.createGain();
       const lfeOut = this.ctx.createGain();
       lfeOut.gain.value = 0.5;
@@ -707,7 +725,7 @@ var SpatialRenderer = class {
       lfeBus = sum;
     }
     for (let bus = 0; bus < n; bus++) {
-      const spk = this.layout[bus];
+      const spk = this.topology[bus];
       if (this.mode === "binaural") {
         if (spk.isLfe) {
           const lfeGain = this.ctx.createGain();
@@ -789,13 +807,13 @@ var SpatialRenderer = class {
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
       muted: wasMuted,
+      bedLabel: opts.bedLabel ? aliasLabel(opts.bedLabel) : void 0,
       snapBus: -1
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
       if (!state.isLfe) {
-        const canonical = aliasLabel(opts.bedLabel);
-        state.snapBus = this.layout.findIndex((s) => s.name === canonical);
+        state.snapBus = this.layout.findIndex((s) => s.name === state.bedLabel);
       }
     }
     this.sources.set(id, state);
@@ -881,10 +899,15 @@ var SpatialRenderer = class {
       }
     }
     if (state.muted) scalar = 0;
+    const topologyGains = new Float32Array(this.topology.length);
+    for (let bus = 0; bus < gains.length; bus++) {
+      const target = this.topology.findIndex((speaker) => speaker.name === this.layout[bus].name);
+      if (target >= 0) topologyGains[target] = gains[bus];
+    }
     this.node?.port.postMessage({
       type: "gains",
       id: state.id,
-      gains,
+      gains: topologyGains,
       gain: scalar,
       lp,
       ramp: Math.max(1, rampSamples)

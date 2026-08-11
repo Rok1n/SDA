@@ -27,8 +27,8 @@ export interface BinauralModeSpec {
 }
 
 export const BINAURAL_MODES: Record<BinauralMode, BinauralModeSpec> = {
-  // 默认对象监听优先直达声定位；房间感只能由显式 Mid/Far 请求引入。
-  near: { wet: 0 },
+  // 默认只引入少量早期 BRIR 线索：帮助后方/顶层外化，又不让房间尾音掩盖对象。
+  near: { wet: 0.04 },
   mid: { wet: 0.2 },
   far: { wet: 0.45 },
 };

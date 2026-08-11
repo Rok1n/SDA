@@ -90,6 +90,8 @@ export class SdaPlayer {
   private binauralMode: BinauralMode = "near";
   /** 被静音的对象事件 id（Omniphony 式 mute/solo）；重建 renderer 后恢复。 */
   private mutedObjects = new Set<number>();
+  /** 自动布局在用户手动选择后暂停，切回 Auto 时恢复。 */
+  private autoLayoutEnabled = true;
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
   private disposed = false;
@@ -135,6 +137,26 @@ export class SdaPlayer {
     } catch (e) {
       console.warn(`[SDA] player#${this.id} 双耳 IR 资产缺失，回退浏览器内置 HRTF（先跑 node scripts/build-hrtf.mjs）`, e);
     }
+  }
+
+  /** 播放中仅替换逻辑扬声器布局；不重建 AudioContext/worklet，不清 PCM 缓冲。 */
+  setLayout(layout: readonly VirtualSpeaker[], manual = true): void {
+    if (!this.initArgs) return;
+    if (manual) this.autoLayoutEnabled = false;
+    this.initArgs.layout = layout;
+    this.renderer?.setLayout(layout);
+  }
+
+  /** 恢复按当前码流信息自动选择布局。 */
+  setAutoLayout(): void {
+    const resolver = this.initArgs?.layoutResolver;
+    if (!resolver) return;
+    this.autoLayoutEnabled = true;
+    const hasDyn = this.objectChannels.size > 0;
+    const next = resolver(this.knownBedLabels, hasDyn);
+    if (next) this.setLayout(next, false);
+    this.layoutChecked = true;
+    this.layoutHadDynamics = hasDyn;
   }
 
   /** 切换杜比近/中/远（播放中实时生效）。 */
@@ -285,6 +307,7 @@ export class SdaPlayer {
     this.rateChecked = false;
     this.layoutChecked = false;
     this.layoutHadDynamics = false;
+    this.autoLayoutEnabled = true;
   }
 
   /** Pause: silence the worklet (buffer-preserving) AND suspend the clock.
@@ -444,26 +467,22 @@ export class SdaPlayer {
       }
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
 
-      // 布局自动检测（仅在 init 传入 layoutResolver 时启用）：首帧按床标签
-      // + 是否有动态对象推断布局，不一致则排队重建渲染器，本帧重新排队。
-      // 对象声明迟到的码流（对象中流才出现）会再检测一次。
+      // 自动布局只替换逻辑增益映射；worklet/PCM 缓冲和播放头保持连续。
+      // 对象声明迟到的码流同样不会再触发 AudioContext 重建。
       const resolver = this.initArgs?.layoutResolver;
       const hasDyn = this.objectChannels.size > 0;
-      if (resolver && (!this.layoutChecked || (!this.layoutHadDynamics && hasDyn))) {
+      if (this.autoLayoutEnabled && resolver && (!this.layoutChecked || (!this.layoutHadDynamics && hasDyn))) {
         this.layoutChecked = true;
         this.layoutHadDynamics = hasDyn;
         const next = resolver(frame.labels, hasDyn);
         const cur = this.initArgs?.layout;
         const same =
-          next && cur && next.length === cur.length && next.every((s, i) => s.name === cur[i].name);
+          next && cur && next.length === cur.length && next.every((s, i) => s.name === cur[i]!.name);
         if (next && !same) {
           console.log(
-            `[SDA] player#${this.id} 布局自动检测 → ${next.length} 音箱（${hasDyn ? "含动态对象" : "纯床层"}），重建渲染器`,
+            `[SDA] player#${this.id} 布局自动检测 → ${next.length} 音箱（${hasDyn ? "含动态对象" : "纯床层"}），保持播放切换`,
           );
-          this.pcmQueue.unshift(frame);
-          this.queuedSamples += frameSamples; // 上面已减过，补回
-          this.scheduleRecreate(this.sampleRate, next);
-          return;
+          this.setLayout(next, false);
         }
       }
 

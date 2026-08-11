@@ -176,6 +176,16 @@ export function App() {
     }
   }, [playing, paused, play]);
 
+  const changeLayout = useCallback((next: LayoutId | "auto") => {
+    setLayoutId(next);
+    if (next === "auto") {
+      playerRef.current?.setAutoLayout();
+      return;
+    }
+    setDetectedLayout(null);
+    playerRef.current?.setLayout(LAYOUTS[next]);
+  }, []);
+
   const changeVolume = useCallback((v: number) => {
     setVolume(v);
     playerRef.current?.setVolume(v);
@@ -204,7 +214,7 @@ export function App() {
             <option value="stereo">立体声</option>
             <option value="multichannel">多声道</option>
           </select>
-          <select value={layoutId} onChange={(e) => setLayoutId(e.target.value as LayoutId | "auto")}>
+          <select value={layoutId} onChange={(e) => changeLayout(e.target.value as LayoutId | "auto")}>
             <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>
             {(Object.keys(LAYOUTS) as LayoutId[]).map((id) => (
               <option key={id} value={id}>

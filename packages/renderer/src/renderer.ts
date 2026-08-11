@@ -25,6 +25,7 @@
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
 import {
   LAYOUT_7_1_4,
+  LAYOUTS,
   positionForLabel,
   isLfeLabel,
   aliasLabel,
@@ -65,14 +66,19 @@ interface SourceState {
   isLfe: boolean;
   /** 对象静音（mute/solo）：静音时标量增益乘 0，走平滑斜坡无爆音。 */
   muted: boolean;
-  /** 床声道吸附的布局音箱总线索引（-1 = 布局中无此音箱，回退 VBAP）。 */
+  /** 床声道的规范标签；运行时切布局时重新寻找吸附总线。 */
+  bedLabel?: string;
+  /** 床声道吸附的逻辑布局音箱索引（-1 = 布局中无此音箱，回退 VBAP）。 */
   snapBus: number;
   lfeBus?: number;
 }
 
 export class SpatialRenderer {
   readonly ctx: AudioContext;
-  readonly layout: readonly VirtualSpeaker[];
+  /** 当前用于 VBAP 与床层语义的布局；运行中可切换。 */
+  layout: readonly VirtualSpeaker[];
+  /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
+  private readonly topology: readonly VirtualSpeaker[];
   readonly mode: OutputMode;
   private vbap: VbapSolver;
   private node: AudioWorkletNode | null = null;
@@ -96,6 +102,7 @@ export class SpatialRenderer {
     this.ctx = ctx;
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
+    this.topology = LAYOUTS["9.1.6"];
     this.vbap = new VbapSolver(this.layout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
@@ -108,6 +115,7 @@ export class SpatialRenderer {
    *  - 前左/右 → 前宽 0.35（9.1 布局：拉开前声场宽度，中置对白不动）
    *  顶层不做静态派生（环境声提取超出本渲染器职责）。 */
   private buildExpansion(): void {
+    this.expansion.clear();
     const idx = (name: string) => this.layout.findIndex((s) => s.name === name);
     const feed = (from: string, to: string, gain: number) => {
       const a = idx(from);
@@ -123,7 +131,21 @@ export class SpatialRenderer {
     feed("FrontRight", "WideRight", 0.35);
   }
 
-  /** Load the worklet module and build the downstream graph. */
+  /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头和卷积图继续
+   * 存活；所有源通过短增益斜坡迁移到固定最大总线中的新位置。 */
+  setLayout(layout: readonly VirtualSpeaker[]): void {
+    if (layout === this.layout) return;
+    this.layout = layout;
+    this.vbap = new VbapSolver(layout);
+    this.buildExpansion();
+    for (const state of this.sources.values()) {
+      if (state.bedLabel && !state.isLfe) {
+        state.snapBus = this.layout.findIndex((speaker) => speaker.name === state.bedLabel);
+      }
+      this.applyGains(state, 2048);
+    }
+  }
+
   async init(workletModuleUrl: string | URL): Promise<void> {
     await this.ctx.audioWorklet.addModule(workletModuleUrl);
     this.master = this.ctx.createGain();
@@ -131,8 +153,8 @@ export class SpatialRenderer {
     this.node = new AudioWorkletNode(this.ctx, "sda-renderer", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
-      outputChannelCount: [this.layout.length],
-      processorOptions: { busCount: this.layout.length },
+      outputChannelCount: [this.topology.length],
+      processorOptions: { busCount: this.topology.length },
     });
     this.node.port.onmessage = (e: MessageEvent) => {
       if (e.data?.type === "tick") {
@@ -156,7 +178,7 @@ export class SpatialRenderer {
     this.binauralMode = mode;
     if (this.mode !== "binaural") return;
     if (this.irSet) {
-      const irs = buildBusIrs(this.ctx, this.irSet, this.layout, mode);
+      const irs = buildBusIrs(this.ctx, this.irSet, this.topology, mode);
       this.convs.forEach((conv, bus) => {
         const ir = irs.get(bus);
         if (conv && ir) conv.buffer = ir;
@@ -193,7 +215,7 @@ export class SpatialRenderer {
   private buildOutputGraph(): void {
     if (!this.node || !this.master) return;
     this.teardownPostNodes();
-    const n = this.layout.length;
+    const n = this.topology.length;
 
     if (this.mode === "multichannel") {
       // 物理声道直出：目标声道数 = 布局音箱数（受设备上限钳制），并按
@@ -206,7 +228,7 @@ export class SpatialRenderer {
       } catch {
         /* 设备不允许显式声道数：交由浏览器降混 */
       }
-      const order = physicalChannelOrder(this.layout);
+      const order = physicalChannelOrder(this.topology);
       const splitter = this.ctx.createChannelSplitter(n);
       const merger = this.ctx.createChannelMerger(n);
       this.node.connect(splitter);
@@ -222,13 +244,13 @@ export class SpatialRenderer {
     merger.connect(this.master);
 
     const busIrs = this.mode === "binaural" && this.irSet
-      ? buildBusIrs(this.ctx, this.irSet, this.layout, this.binauralMode)
+      ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode)
       : null;
 
     // LFE 总线：只承载原始 LFE。主声道在双耳中保持全频卷积，不能像物理
     // 监听那样把它们的低频汇成单声道，否则会丢失低频方向线索并使整体发糊。
     let lfeBus: GainNode | null = null;
-    if (this.mode === "binaural" && this.layout.some((s) => s.isLfe)) {
+    if (this.mode === "binaural" && this.topology.some((s) => s.isLfe)) {
       const sum = this.ctx.createGain();
       const lfeOut = this.ctx.createGain();
       lfeOut.gain.value = 0.5;
@@ -240,7 +262,7 @@ export class SpatialRenderer {
     }
 
     for (let bus = 0; bus < n; bus++) {
-      const spk = this.layout[bus]!;
+      const spk = this.topology[bus]!;
       if (this.mode === "binaural") {
         if (spk.isLfe) {
           // LFE：ITU/杜比 120Hz LR4 低通 + 带内 +10dB，直送双耳。
@@ -330,6 +352,7 @@ export class SpatialRenderer {
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
       muted: wasMuted,
+      bedLabel: opts.bedLabel ? aliasLabel(opts.bedLabel) : undefined,
       snapBus: -1,
     };
     if (opts.bedLabel) {
@@ -337,8 +360,7 @@ export class SpatialRenderer {
       // 床声道吸附：标签归一化后命中布局音箱 → 直送该音箱总线（物理直出语义），
       // 不再用 VBAP 摊到相邻音箱；布局里没有这个音箱才回退 VBAP 平移。
       if (!state.isLfe) {
-        const canonical = aliasLabel(opts.bedLabel);
-        state.snapBus = this.layout.findIndex((s) => s.name === canonical);
+        state.snapBus = this.layout.findIndex((s) => s.name === state.bedLabel);
       }
     }
     this.sources.set(id, state);
@@ -445,10 +467,17 @@ export class SpatialRenderer {
       }
     }
     if (state.muted) scalar = 0;
+    // 工作节点固定为 9.1.6 拓扑；把当前逻辑布局的增益按扬声器名字投影过去。
+    // 逻辑布局不存在的总线保持 0，切换布局仅更新这组斜坡，不触碰 PCM 缓冲。
+    const topologyGains = new Float32Array(this.topology.length);
+    for (let bus = 0; bus < gains.length; bus++) {
+      const target = this.topology.findIndex((speaker) => speaker.name === this.layout[bus]!.name);
+      if (target >= 0) topologyGains[target] = gains[bus]!;
+    }
     this.node?.port.postMessage({
       type: "gains",
       id: state.id,
-      gains,
+      gains: topologyGains,
       gain: scalar,
       lp,
       ramp: Math.max(1, rampSamples),
