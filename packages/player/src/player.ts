@@ -502,14 +502,20 @@ export class SdaPlayer {
         });
       }
 
-      // Sparse object↔channel declaration.
-      const channelToObject = new Map<number, number>();
+      // Sparse object↔channel declaration. An all-fixed frame (no Obj_ labels)
+      // is an explicit presentation transition, not an unchanged sparse frame:
+      // drop old object routes so a later bed PCM channel cannot inherit a stale
+      // moving-object binding after an invalid/missing JOC↔OAMD mapping.
+      if (!frame.labels.some((label) => label.startsWith("Obj_"))) {
+        this.objectChannels.clear();
+      }
       for (const decl of frame.objectChannels as ObjectChannelDecl[]) {
         this.objectChannels.set(decl.id, decl.channel);
         this.renderer.addSource(`obj:${decl.id}`);
         // 重新声明会重置源状态 —— 恢复静音
         if (this.mutedObjects.has(decl.id)) this.renderer.setSourceMuted(`obj:${decl.id}`, true);
       }
+      const channelToObject = new Map<number, number>();
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
 
       // 自动布局只替换逻辑增益映射；worklet/PCM 缓冲和播放头保持连续。

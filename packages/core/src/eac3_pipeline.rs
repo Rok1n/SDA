@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 
-use eac3::{CorePcmFrame, OamdElementKind, OamdPayload, ObjectPcmPushResult};
+use eac3::{BedChannel, CorePcmFrame, OamdElementKind, OamdPayload, ObjectPcmPushResult};
 
 use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline};
 
@@ -72,19 +72,63 @@ impl Eac3Pipeline {
 
         let core = pcm.core;
         let object_count = pcm.object_channels.len();
-        let dynamics = pcm
-            .oamd_payloads
-            .first()
-            .map_or(0, |(oamd, _)| dynamic_object_count(oamd, object_count));
-        // 全动态 JOC 呈现：核心床层是完整混音（对象内容已烘焙在内，供 JOC
-        // 处理器重建用）。若把它也输出，床层会照着对象再完整放一遍 ——
-        // 静音/独奏对象自然听不出变化。harletty 原话："The fullband core bed
-        // is used as JOC input, so exposing it here would double-count the
-        // final mix." → 此时只输出 LFE + 对象通道。
-        // 混合呈现（含床成员对象）暂保留核心床层，避免床成员内容丢失。
-        let full_dynamic = dynamics > 0 && dynamics == object_count;
+        let Some((oamd, _)) = pcm.oamd_payloads.first() else {
+            // JOC without OAMD has no provable object-id/channel mapping.
+            // Keep the decoded core as a fixed bed instead of routing audio to
+            // guessed moving objects.
+            let object_channels = self.sparse_declare(Vec::new());
+            return bed_frame("eac3", core, Vec::new(), object_channels, sample_pos, &[]);
+        };
 
-        let mut channels: Vec<Vec<f32>> = if full_dynamic { Vec::new() } else { core.fullband_channels.clone() };
+        // Pure-bed JOC is a separate presentation: reconstructed slots are bed
+        // channels, not Obj_* sources. The core fullband is not emitted here;
+        // JOC reconstructs the non-LFE bed members and the core carries LFE.
+        if oamd.dynamic_objects == 0 {
+            let Some(bed_labels) = pure_bed_labels(oamd, object_count) else {
+                let object_channels = self.sparse_declare(Vec::new());
+                return bed_frame("eac3", core, Vec::new(), object_channels, sample_pos, &[]);
+            };
+            let mut channels = Vec::new();
+            let mut labels = Vec::new();
+            if let Some(lfe) = &core.lfe_channel {
+                channels.push(lfe.clone());
+                labels.push("LFE".to_string());
+            }
+            for (obj, label) in pcm.object_channels.iter().zip(bed_labels) {
+                channels.push(obj.clone());
+                labels.push(format!("{label:?}"));
+            }
+            let object_channels = self.sparse_declare(Vec::new());
+            return FrameData {
+                codec: "eac3",
+                sample_rate: core.sample_rate,
+                sample_pos,
+                channels,
+                labels,
+                ramp_duration: 0,
+                events: Vec::new(),
+                object_channels,
+            };
+        }
+
+        let Some(dynamic_range) = dynamic_object_range(oamd, object_count) else {
+            // A malformed or incomplete OAMD/JOC object table must not be
+            // partially mapped: a partial map can bind speech to another
+            // object's trajectory. Fall back to the fixed core bed.
+            let object_channels = self.sparse_declare(Vec::new());
+            return bed_frame("eac3", core, Vec::new(), object_channels, sample_pos, &[]);
+        };
+        let dynamics = dynamic_range.len();
+
+        // JOC output is dynamic-only: slot j corresponds to OAMD object
+        // bed_or_isf_objects + j. A presentation with bed/ISF members must keep
+        // the core fullband bed; only B=0 is the duplicate-free all-object path.
+        let full_dynamic = oamd.bed_or_isf_objects == 0;
+        let mut channels: Vec<Vec<f32>> = if full_dynamic {
+            Vec::new()
+        } else {
+            core.fullband_channels.clone()
+        };
         let mut labels: Vec<String> = if full_dynamic {
             Vec::new()
         } else {
@@ -98,24 +142,14 @@ impl Eac3Pipeline {
             labels.push("LFE".to_string());
         }
         let obj_channel_base = channels.len();
-        for (k, obj) in pcm.object_channels.iter().enumerate() {
+        for (dynamic_idx, obj) in pcm.object_channels.iter().enumerate() {
             channels.push(obj.clone());
-            labels.push(format!("Obj_{}", 10 + k));
+            labels.push(format!("Obj_{}", 10 + dynamic_idx));
         }
 
-        let (events, object_channels) = match pcm.oamd_payloads.first() {
-            Some((oamd, _)) => {
-                let events = extract_events(oamd, sample_pos, object_count);
-                let decl: Vec<ObjectChannelDecl> = (0..dynamics)
-                    .map(|k| ObjectChannelDecl {
-                        id: (10 + k) as u32,
-                        channel: (obj_channel_base + k) as u32,
-                    })
-                    .collect();
-                (events, self.sparse_declare(decl))
-            }
-            None => (Vec::new(), Vec::new()),
-        };
+        let events = extract_events(oamd, sample_pos, dynamics);
+        let decl = dynamic_object_declarations(dynamic_range, obj_channel_base);
+        let object_channels = self.sparse_declare(decl);
 
         FrameData {
             codec: "eac3",
@@ -164,15 +198,59 @@ impl Pipeline for Eac3Pipeline {
     }
 }
 
+fn dynamic_object_range(
+    oamd: &OamdPayload,
+    object_channel_count: usize,
+) -> Option<std::ops::Range<usize>> {
+    // JOC exposes only dynamic slots. OAMD keeps the complete object table, so
+    // its dynamic suffix must have exactly the same length as the JOC output.
+    let dynamic_count = oamd.object_count.saturating_sub(oamd.bed_or_isf_objects);
+    (oamd.dynamic_objects == dynamic_count && dynamic_count == object_channel_count)
+        .then_some(0..dynamic_count)
+}
+
 fn dynamic_object_count(oamd: &OamdPayload, object_channel_count: usize) -> usize {
-    oamd
-        .object_count
-        .saturating_sub(oamd.bed_or_isf_objects)
-        .min(object_channel_count)
+    dynamic_object_range(oamd, object_channel_count).map_or(0, |range| range.len())
+}
+
+fn pure_bed_labels(oamd: &OamdPayload, object_channel_count: usize) -> Option<Vec<BedChannel>> {
+    if oamd.dynamic_objects != 0 || oamd.object_count != oamd.bed_or_isf_objects {
+        return None;
+    }
+    let labels: Vec<BedChannel> = oamd
+        .bed_assignment
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|channel| {
+            !matches!(
+                channel,
+                BedChannel::LowFrequencyEffects | BedChannel::LowFrequencyEffects2
+            )
+        })
+        .collect();
+    (labels.len() == object_channel_count).then_some(labels)
+}
+
+fn dynamic_object_declarations(
+    dynamic_range: std::ops::Range<usize>,
+    object_channel_base: usize,
+) -> Vec<ObjectChannelDecl> {
+    dynamic_range
+        .enumerate()
+        .map(|(dynamic_idx, _slot)| ObjectChannelDecl {
+            id: (10 + dynamic_idx) as u32,
+            channel: (object_channel_base + dynamic_idx) as u32,
+        })
+        .collect()
 }
 
 /// Port of `bridge/src/metadata.rs::extract_eac3_events`.
-fn extract_events(oamd: &OamdPayload, base_sample_pos: u64, object_channel_count: usize) -> Vec<ObjectEvent> {
+fn extract_events(
+    oamd: &OamdPayload,
+    base_sample_pos: u64,
+    object_channel_count: usize,
+) -> Vec<ObjectEvent> {
     let dynamic_objects = dynamic_object_count(oamd, object_channel_count);
     let mut events = Vec::with_capacity(dynamic_objects);
 
@@ -247,6 +325,117 @@ fn extract_events(oamd: &OamdPayload, base_sample_pos: u64, object_channel_count
 }
 
 /// Shared bed-frame construction (also used by the plain PCM fallback).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_slots_match_oamd_suffix_count() {
+        let range = dynamic_object_range(
+            &OamdPayload {
+                version: 0,
+                object_count: 5,
+                alternate_object_present: false,
+                element_count: 0,
+                beds: 2,
+                bed_instances: 1,
+                bed_or_isf_objects: 2,
+                dynamic_objects: 3,
+                isf_in_use: false,
+                isf_index: None,
+                bed_assignment: Vec::new(),
+                elements: Vec::new(),
+            },
+            3,
+        );
+        assert_eq!(range, Some(0..3));
+        assert_eq!(
+            dynamic_object_declarations(range.expect("dynamic range"), 1),
+            vec![
+                ObjectChannelDecl { id: 10, channel: 1 },
+                ObjectChannelDecl { id: 11, channel: 2 },
+                ObjectChannelDecl { id: 12, channel: 3 },
+            ],
+        );
+    }
+
+    #[test]
+    fn mixed_dynamic_slots_declare_after_core_bed_prefix() {
+        let range = dynamic_object_range(
+            &OamdPayload {
+                version: 0,
+                object_count: 3,
+                alternate_object_present: false,
+                element_count: 0,
+                beds: 1,
+                bed_instances: 1,
+                bed_or_isf_objects: 1,
+                dynamic_objects: 2,
+                isf_in_use: false,
+                isf_index: None,
+                bed_assignment: Vec::new(),
+                elements: Vec::new(),
+            },
+            2,
+        )
+        .expect("JOC dynamic slots");
+        assert_eq!(range, 0..2);
+        assert_eq!(
+            dynamic_object_declarations(range, 6),
+            vec![
+                ObjectChannelDecl { id: 10, channel: 6 },
+                ObjectChannelDecl { id: 11, channel: 7 },
+            ],
+        );
+    }
+
+    #[test]
+    fn dynamic_slots_reject_count_mismatch() {
+        let range = dynamic_object_range(
+            &OamdPayload {
+                version: 0,
+                object_count: 5,
+                alternate_object_present: false,
+                element_count: 0,
+                beds: 3,
+                bed_instances: 1,
+                bed_or_isf_objects: 3,
+                dynamic_objects: 2,
+                isf_in_use: false,
+                isf_index: None,
+                bed_assignment: Vec::new(),
+                elements: Vec::new(),
+            },
+            4,
+        );
+        assert_eq!(range, None);
+        assert!(dynamic_object_declarations(0..0, 2).is_empty());
+    }
+
+    #[test]
+    fn no_dynamic_slots_when_all_pcm_slots_are_bed_or_isf() {
+        let range = dynamic_object_range(
+            &OamdPayload {
+                version: 0,
+                object_count: 2,
+                alternate_object_present: false,
+                element_count: 0,
+                beds: 2,
+                bed_instances: 1,
+                bed_or_isf_objects: 2,
+                dynamic_objects: 0,
+                isf_in_use: false,
+                isf_index: None,
+                bed_assignment: Vec::new(),
+                elements: Vec::new(),
+            },
+            2,
+        );
+        assert_eq!(range, None);
+        assert!(dynamic_object_declarations(0..0, 1).is_empty());
+    }
+}
+
 fn bed_frame(
     codec: &'static str,
     core: CorePcmFrame,
