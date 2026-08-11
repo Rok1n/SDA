@@ -173,46 +173,63 @@ export class SdaPlayer {
   }
 
   /** 排队重建 renderer（采样率对齐 / 布局自动检测可能在同一帧同时触发，
-   *  并发跑 recreateRenderer 会泄漏 AudioContext —— 必须串行）。 */
+   *  并发跑 recreateRenderer 会泄漏 AudioContext —— 必须串行）。
+   *  recreatePending 期间 pumpPcm 停止喂入：喂给旧 worklet 的帧随旧
+   *  AudioContext 关闭整段丢失，攒在队列里才能无损切换。 */
+  private recreatePending = 0;
+
   private scheduleRecreate(sampleRate: number, layout?: readonly VirtualSpeaker[]): void {
     if (layout && this.initArgs) this.initArgs.layout = layout;
-    this.recreateChain = this.recreateChain.then(() => this.recreateRenderer(sampleRate));
+    this.recreatePending++;
+    this.recreateChain = this.recreateChain
+      .then(() => this.recreateRenderer(sampleRate))
+      .catch((e) => console.warn(`[SDA] player#${this.id} renderer 重建失败`, e));
   }
 
   private async recreateRenderer(sampleRate: number): Promise<void> {
-    const { mode, workletUrl, layout } = this.initArgs!;
-    const old = this.renderer;
-    this.renderer = null; // pump/feed 暂停，帧在队列里堆积
-    await old?.close();
-    let ctx: AudioContext;
     try {
-      ctx = new AudioContext({ latencyHint: "playback", sampleRate });
-    } catch {
-      // 设备不接受该采样率：退回默认速率（仍会变速，但优于无声）
-      ctx = new AudioContext({ latencyHint: "playback" });
+      const { mode, workletUrl, layout } = this.initArgs!;
+      const old = this.renderer;
+      this.renderer = null; // pump/feed 暂停，帧在队列里堆积
+      await old?.close();
+      let ctx: AudioContext;
+      try {
+        ctx = new AudioContext({ latencyHint: "playback", sampleRate });
+      } catch {
+        // 设备不接受该采样率：退回默认速率（仍会变速，但优于无声）
+        ctx = new AudioContext({ latencyHint: "playback" });
+      }
+      const r = new SpatialRenderer(ctx, { mode, layout, onConsumedTick: () => this.pumpPcm() });
+      await r.init(workletUrl);
+      if (this.disposed) {
+        await r.close();
+        return;
+      }
+      r.setVolume(this.lastVolume);
+      this.renderer = r;
+      // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
+      // 不恢复的话暂停中重建会让音频自己继续响（UI 仍显示暂停，按钮看似失效）
+      if (this.pausedState) {
+        r.setPaused(true);
+        void r.ctx.suspend().catch(() => {});
+      }
+      // 采样率对齐重建后：重新注入双耳 IR（原始数据有缓存，不会重复下载）
+      void this.attachBinauralIrs(r);
+      // 床层/对象源在新 worklet 里重新声明
+      this.knownBedLabels = [];
+      for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);
+      // 恢复静音状态（addSource 重置源状态）
+      for (const id of this.mutedObjects) r.setSourceMuted(`obj:${id}`, true);
+    } finally {
+      this.recreatePending--;
+      if (this.recreatePending === 0) {
+        // 新 worklet 的 consumed 从 0 起计，fedSamples 同步归零 —— 否则
+        // fedBufferedSeconds 虚高 TARGET 秒，pump 停摆数秒（表现为开播卡死）。
+        // 此刻才喂入的帧全部来自队列，播放内容无损。
+        this.fedSamples = 0;
+        this.pumpPcm();
+      }
     }
-    const r = new SpatialRenderer(ctx, { mode, layout, onConsumedTick: () => this.pumpPcm() });
-    await r.init(workletUrl);
-    if (this.disposed) {
-      await r.close();
-      return;
-    }
-    r.setVolume(this.lastVolume);
-    this.renderer = r;
-    // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
-    // 不恢复的话暂停中重建会让音频自己继续响（UI 仍显示暂停，按钮看似失效）
-    if (this.pausedState) {
-      r.setPaused(true);
-      void r.ctx.suspend().catch(() => {});
-    }
-    // 采样率对齐重建后：重新注入双耳 IR（原始数据有缓存，不会重复下载）
-    void this.attachBinauralIrs(r);
-    // 床层/对象源在新 worklet 里重新声明
-    this.knownBedLabels = [];
-    for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);
-    // 恢复静音状态（addSource 重置源状态）
-    for (const id of this.mutedObjects) r.setSourceMuted(`obj:${id}`, true);
-    this.pumpPcm();
   }
 
   get audioContext(): AudioContext | null {
@@ -332,8 +349,10 @@ export class SdaPlayer {
   // ---- internals ----
 
   private async pace(): Promise<void> {
-    if (!this.renderer) return;
-    while (this.aheadSeconds() > TARGET_AHEAD_SECONDS) {
+    // renderer 为 null（重建中）也要继续节流：queuedSamples 仍在累计，
+    // 否则整个文件会在重建窗口内灌进 worker 解码（帧随即因 renderer 缺席堆积，
+    // 缓冲爆炸）。disposed 时退出避免死等。
+    while (!this.disposed && this.aheadSeconds() > TARGET_AHEAD_SECONDS) {
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -368,7 +387,10 @@ export class SdaPlayer {
   }
 
   private handleFrame(frame: DecodedFrameData): void {
-    if (!this.renderer) return;
+    // 注意：renderer 为 null（重建窗口中）也不能 return —— 帧必须照样排队，
+    // 否则窗口内解码的帧被静默丢弃（采样率对齐重建 + pace 同时失灵时，
+    // 整个文件会在窗口内解完扔光 → 提前 onEnded，卡在第几秒）。
+    // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
 
     // Raw elementary streams never fire the demuxer's onTrack — derive the
@@ -394,7 +416,7 @@ export class SdaPlayer {
 
   /** 把队列里的帧泵入 worklet 环形缓冲，保持喂入量领先播放头 ~TARGET 秒。 */
   private pumpPcm(): void {
-    if (!this.renderer) return;
+    if (!this.renderer || this.recreatePending > 0) return;
     while (this.pcmQueue.length > 0 && this.fedBufferedSeconds() <= TARGET_AHEAD_SECONDS) {
       const frame = this.pcmQueue.shift()!;
       // 注意：必须先取帧长再 feed —— feed 会转移（detach）ArrayBuffer，
