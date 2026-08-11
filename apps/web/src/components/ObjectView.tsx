@@ -149,15 +149,17 @@ function Room({ p }: { p: Palette }) {
         <planeGeometry args={[ROOM * 2, ROOM * 2]} />
         <meshBasicMaterial color={p.floor} transparent opacity={0.45} depthWrite={false} />
       </mesh>
-      {/* 两面实体侧墙（-x / -z），半透明，不挡对象 */}
+      {/* 两面实体侧墙（-x / -z），半透明，不挡对象。
+          depthWrite=false 是关键：透明墙若写深度，按对象中心排序的透明队列里
+          墙先画时会把其后绘制的对象光晕沿墙面直线切掉一块（遮挡假象）。 */}
       <mesh rotation={[0, Math.PI / 2, 0]} position={[-ROOM + 0.001, WALL_MID_Y, 0]}>
         <planeGeometry args={[ROOM * 2, WALL_H]} />
-        <meshBasicMaterial color={p.wallSide} transparent opacity={0.75} />
+        <meshBasicMaterial color={p.wallSide} transparent opacity={0.75} depthWrite={false} />
       </mesh>
       {/* 正面墙（听者朝向，-z）颜色稍亮以示区分 */}
       <mesh position={[0, WALL_MID_Y, -ROOM + 0.001]}>
         <planeGeometry args={[ROOM * 2, WALL_H]} />
-        <meshBasicMaterial color={p.wallFront} transparent opacity={0.85} />
+        <meshBasicMaterial color={p.wallFront} transparent opacity={0.85} depthWrite={false} />
       </mesh>
       {/* 墙面参考网格（4 × WALL_H，压扁局部高度轴） */}
       <gridHelper
@@ -263,7 +265,8 @@ function ObjectDot({ obj, muted }: { obj: VisualObject; muted: boolean }) {
     <group ref={ref}>
       <mesh>
         <sphereGeometry args={[0.06, 16, 16]} />
-        <meshBasicMaterial color={color} transparent={muted} opacity={dotOpacity} />
+        {/* 静音态透明内核同样不写深度，免得切掉身后其他对象的光晕 */}
+        <meshBasicMaterial color={color} transparent={muted} opacity={dotOpacity} depthWrite={!muted} />
       </mesh>
       {/* 尺寸光晕：对象越大，halo 越大 */}
       <mesh>
