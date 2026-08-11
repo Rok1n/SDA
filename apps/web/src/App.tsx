@@ -12,8 +12,11 @@ import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 
+const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
+
 export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
+  const [playerReady, setPlayerReady] = useState<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
   /** "auto" = 按码流内容自动检测（床标签 + 是否有动态对象）。 */
   const [layoutId, setLayoutId] = useState<LayoutId | "auto">("auto");
@@ -62,7 +65,7 @@ export function App() {
       });
       if (lid === "auto") {
         // 自动布局：先以 7.1.4 兜底初始化，首帧到达后按码流内容重建渲染器
-        await player.init(m, workletUrl, LAYOUTS["7.1.4"], "/hrtf", (labels, hasDynamics) => {
+        await player.init(m, workletUrl, LAYOUTS["7.1.4"], assetUrl("hrtf"), (labels, hasDynamics) => {
           const id = detectLayoutId(labels, hasDynamics);
           setDetectedLayout(id);
           return LAYOUTS[id];
@@ -71,16 +74,29 @@ export function App() {
         await player.init(m, workletUrl, LAYOUTS[lid]);
       }
       playerRef.current = player;
+      setPlayerReady(player);
       return player;
     },
     [],
   );
 
-  useEffect(() => () => void playerRef.current?.dispose(), []);
+  useEffect(
+    () => () => {
+      void playerRef.current?.dispose();
+      setPlayerReady(null);
+    },
+    [],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  /** 动态对象全部静音时，独立的 LFE 床声道也必须一起静音。 */
+  const allObjectsMuted = objects.length > 0 && objects.every((object) => mutedIds.has(object.id));
+  useEffect(() => {
+    playerReady?.setLfeMuted(allObjectsMuted);
+  }, [playerReady, allObjectsMuted]);
 
   /** 把整组静音状态推到播放器（新建播放器后也要重放一遍）。 */
   const applyMutes = useCallback((muted: ReadonlySet<number>) => {
@@ -163,7 +179,7 @@ export function App() {
   /** Demo: harletty 的 1.5s JOC 测试矢量 ×20 拼接（E-AC-3 按同步帧
    *  自同步，拼接即合法长流）→ 30s 15 对象 Atmos 演示。 */
   const playDemo = useCallback(async () => {
-    const blob = await (await fetch("/demo-joc.ec3")).blob();
+    const blob = await (await fetch(assetUrl("demo-joc.ec3"))).blob();
     await play(new File([blob], "demo-joc.ec3"));
   }, [play]);
 

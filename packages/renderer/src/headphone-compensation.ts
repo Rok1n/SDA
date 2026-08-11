@@ -39,8 +39,8 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     source: "AutoEq crinacle 711 in-ear Apple AirPods Pro 2 (ANC mode), minimum-phase 48 kHz output",
     target: "AutoEq in-ear target; averaged response, not independent L/R measurement",
     sampleRate: 48000,
-    leftFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
-    rightFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
+    leftFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
+    rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
     preampDb: -3.4,
   },
 ];
@@ -119,7 +119,7 @@ export async function getHeadphoneCompensationBuffers(
   const makeBuffer = (taps: Float32Array) => {
     const data = resampleLinear(taps, raw.profile.sampleRate, ctx.sampleRate);
     const buffer = ctx.createBuffer(1, data.length, ctx.sampleRate);
-    buffer.copyToChannel(data, 0);
+    buffer.copyToChannel(data as Float32Array<ArrayBuffer>, 0);
     return buffer;
   };
   return { left: makeBuffer(raw.left), right: makeBuffer(raw.right) };

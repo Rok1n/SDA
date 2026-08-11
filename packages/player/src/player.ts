@@ -97,6 +97,8 @@ export class SdaPlayer {
   private binauralMode: BinauralMode = "near";
   /** 被静音的对象事件 id（Omniphony 式 mute/solo）；重建 renderer 后恢复。 */
   private mutedObjects = new Set<number>();
+  /** 独立 LFE 床声道的静音状态，renderer 重建后恢复。 */
+  private lfeMuted = false;
   /** 自动布局在用户手动选择后暂停，切回 Auto 时恢复。 */
   private autoLayoutEnabled = true;
   /** 仅真实测量曲线可选；当前 registry 为空，null = 最终输出 literal bypass。 */
@@ -217,6 +219,12 @@ export class SdaPlayer {
     }
   }
 
+  /** 静音/恢复独立 LFE 床声道；状态会跨 renderer 重建保留。 */
+  setLfeMuted(muted: boolean): void {
+    this.lfeMuted = muted;
+    this.renderer?.setLfeMuted(muted);
+  }
+
   /** 码流采样率与 AudioContext 不一致时（如 48k 码流 vs 44.1k 声卡）
    *  重建 AudioContext —— 否则按错误速率播放 = 变慢/降调。
    *  只在音轨发现/首帧时调用一次，此时环形缓冲还没喂数据，切换无损。 */
@@ -264,6 +272,7 @@ export class SdaPlayer {
       }
       r.setVolume(this.lastVolume);
       r.setHeadphoneCompensation(this.headphoneCompensationProfileId);
+      r.setLfeMuted(this.lfeMuted);
       this.renderer = r;
       // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
       // 不恢复的话暂停中重建会让音频自己继续响（UI 仍显示暂停，按钮看似失效）
@@ -554,6 +563,8 @@ export class SdaPlayer {
   private checkEnded(): void {
     if (this.ended && this.pcmQueue.length === 0 && this.fedBufferedSeconds() <= 0.2) {
       this.ended = false;
+      if (this.visualTimer) clearInterval(this.visualTimer);
+      this.visualTimer = null;
       this.cb.onEnded?.();
     }
   }

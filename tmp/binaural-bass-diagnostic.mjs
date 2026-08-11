@@ -7,7 +7,8 @@ const hrtfDir = "apps/web/public/hrtf";
 const SAMPLE_RATE = 48000;
 const LOW_BAND_HZ = [80, 250];
 const LFE_LOWPASS_HZ = 120;
-const LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+// Headphone binaural output intentionally does not apply the +10 dB speaker-room LFE trim.
+const LFE_INBAND_GAIN = 1;
 const LFE_EAR_GAIN = 0.5;
 
 function readF32(file) {
@@ -51,8 +52,8 @@ check(Math.abs(rightIld) > 1 && Math.abs(leftIld) > 1 && rightIld * leftIld < 0,
   `镜像虚拟音箱在 ${LOW_BAND_HZ.join("-")}Hz 保留相反耳间主导（${rightIld.toFixed(2)} / ${leftIld.toFixed(2)}dB）`);
 
 const lfeEarGain = LFE_INBAND_GAIN * LFE_EAR_GAIN;
-check(Math.abs(lfeEarGain - (Math.pow(10, 10 / 20) * 0.5)) < 1e-12,
-  `LFE 两耳静态增益严格相等（每耳 ${(20 * Math.log10(lfeEarGain)).toFixed(2)}dB）`);
+check(Math.abs(lfeEarGain - 0.5) < 1e-12,
+  `LFE 两耳静态增益严格相等（每耳 ${(20 * Math.log10(lfeEarGain)).toFixed(2)}dB，已移除 +10dB 耳机补偿）`);
 check(Math.abs(lr4Magnitude(LFE_LOWPASS_HZ) - 0.5) < 1e-12,
   `LFE LR4 在 ${LFE_LOWPASS_HZ}Hz 为 -6.02dB`);
 check(db(lr4Magnitude(240) ** 2) < -20,

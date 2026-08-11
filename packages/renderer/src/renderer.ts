@@ -6,7 +6,7 @@
  *     ├── "multichannel": → ctx.destination (N discrete channels)
  *     ├── "binaural":     → ChannelSplitter(N)
  *     │                     → 每主总线: ConvolverNode(stereo BRIR/HRIR mix)
- *     │                     → LFE 总线: 120Hz LP +10dB → 直送双耳
+ *     │                     → LFE 总线: 120Hz LP（耳机路径不额外 +10dB）→ 直送双耳
  *     │                     → ChannelMerger(2) → ctx.destination
  *     └── "stereo":       → downmix gain matrix → merger(2) → destination
  *
@@ -17,9 +17,8 @@
  * 源侧按 Apple inverse 距离定律处理环外对象。
  *
  * 监听系统仿真（真力 The Ones + 7370A）：杜比未公布各布局逐音箱 EQ（只有
- * 摆位角度和 LFE 规范），可听的声音塑造来自监听音箱本身。LFE 按
- * ITU-R BS.775 / 杜比规范 120Hz LR4 低通 + 带内 +10dB；它不包含主声道
- * 的低频重定向，以保留耳机中各虚拟音箱的全频方向线索。
+ * 摆位角度和 LFE 规范）。双耳耳机路径只保留 120Hz LR4 低通，不套用音箱
+ * 回放的 +10dB LFE 补偿，也不包含主声道的低频重定向。
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
@@ -41,8 +40,8 @@ export type OutputMode = "multichannel" | "binaural" | "stereo";
 
 /** LFE 低通：ITU-R BS.775 / 杜比规范 120Hz。 */
 const LFE_LOWPASS_HZ = 120;
-/** LFE 带内增益：杜比监听规范 +10dB（编码侧 -10dB 录制，重放逐带补偿）。 */
-const LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+/** 双耳耳机路径不套用影院/音箱的 LFE +10dB 回放补偿，避免底鼓过量。 */
+const BINAURAL_LFE_INBAND_GAIN = 1;
 /** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
 const BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
 /** 最终双耳总和的防削波保护：仅峰值重叠时介入，不改变单个虚拟音箱的空间平衡。 */
@@ -51,7 +50,7 @@ const BINAURAL_SAFETY_KNEE_DB = 0;
 const BINAURAL_SAFETY_RATIO = 4;
 const BINAURAL_SAFETY_ATTACK_S = 0.003;
 const BINAURAL_SAFETY_RELEASE_S = 0.15;
-/** LFE 在 +10dB 规范恢复后单独约束峰值，避免其驱动最终全频 safety compressor。 */
+/** LFE 单独约束峰值，避免底鼓等低频驱动最终全频 safety compressor。 */
 const BINAURAL_LFE_PEAK_THRESHOLD_DB = -3;
 const BINAURAL_LFE_PEAK_KNEE_DB = 0;
 const BINAURAL_LFE_PEAK_RATIO = 8;
@@ -104,6 +103,8 @@ export class SpatialRenderer {
   /** 双耳路径每总线的卷积器（LFE/兜底位置为 null），切模式时只换 buffer。 */
   private convs: (ConvolverNode | null)[] = [];
   private sources = new Map<string, SourceState>();
+  /** 独立 LFE 床声道的静音状态；与动态对象静音分开存储。 */
+  private lfeMuted = false;
   private irSet: BinauralIrSet | null = null;
   /** 床扩展表（AVR 上混器语义）：床音箱总线 → 派生馈送。内容床小于所选布局时
    *  把床填满布局 —— 侧环绕馈后环、前馈前宽；目标总线已被真实床声道占用则跳过。 */
@@ -389,7 +390,7 @@ export class SpatialRenderer {
         if (lfeBus) {
           const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
           splitter.connect(lpIn, bus);
-          lfeGain.gain.value = LFE_INBAND_GAIN;
+          lfeGain.gain.value = BINAURAL_LFE_INBAND_GAIN;
           lpOut.connect(lfeGain);
           lfeGain.connect(lfeBus);
           this.postNodes.push(lpIn, lpOut, lfeGain);
@@ -522,6 +523,14 @@ export class SpatialRenderer {
     return true;
   }
 
+  /** 静音/恢复所有独立 LFE 床声道；状态会应用到迟到注册的 LFE 源。 */
+  setLfeMuted(muted: boolean): void {
+    this.lfeMuted = muted;
+    for (const state of this.sources.values()) {
+      if (state.isLfe) this.applyGains(state, 2048);
+    }
+  }
+
   removeSource(id: string): void {
     const state = this.sources.get(id);
     this.sources.delete(id);
@@ -567,6 +576,7 @@ export class SpatialRenderer {
       const lfeBus = this.layout.findIndex((s) => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
       scalar = Math.pow(10, state.gainDb / 20);
+      if (this.lfeMuted) scalar = 0;
       lp = 1;
     } else if (state.snapBus >= 0) {
       // 床声道吸附：直送同名音箱总线（AVR direct 语义）。
