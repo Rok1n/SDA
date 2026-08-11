@@ -89,6 +89,17 @@ const LABEL_ALIASES: Record<string, string> = {
   Rtf: "TopFrontRight",
   Ltr: "TopRearLeft",
   Rtr: "TopRearRight",
+  // 顶侧（TrueHD 常写作 Ltm/Rtm "top middle"，ADM 写作 Tsl/Tsr）
+  Lts: "TopSideLeft",
+  Rts: "TopSideRight",
+  Ltm: "TopSideLeft",
+  Rtm: "TopSideRight",
+  Tsl: "TopSideLeft",
+  Tsr: "TopSideRight",
+  Tfl: "TopFrontLeft",
+  Tfr: "TopFrontRight",
+  Trl: "TopRearLeft",
+  Trr: "TopRearRight",
   Lfe: "LFE",
   LFE2: "LFE",
   // eac3/dca BedChannel variants
@@ -112,4 +123,37 @@ export function positionForLabel(label: string): Spherical {
 
 export function isLfeLabel(label: string): boolean {
   return label === "LFE" || label === "Lfe" || label === "LFE2";
+}
+
+/** 从码流床标签 + 是否有动态对象推断最合适的虚拟扬声器布局。
+ *  规则（杜比双耳惯例）：
+ *  - 有动态对象 → 至少 7.1.4（杜比双耳渲染的标准中间层；床本身更大则跟上床）
+ *  - 纯声道内容 → 能装下全部床音箱的最小布局
+ *  无顶箱的 7.1/9.1 内容映射到同床的 .2 变体（顶层音箱闲置，声学上等价）。 */
+export function detectLayoutId(labels: readonly string[], hasDynamics: boolean): LayoutId {
+  const names = new Set(
+    labels
+      .filter((l) => !isLfeLabel(l) && !l.startsWith("Obj_"))
+      .map((l) => LABEL_ALIASES[l] ?? l),
+  );
+  const has = (...ns: string[]) => ns.some((n) => names.has(n));
+
+  let base: 5 | 7 | 9 = 5;
+  if (has("WideLeft", "WideRight")) base = 9;
+  else if (has("RearLeft", "RearRight")) base = 7;
+
+  let tops: 0 | 2 | 4 | 6 = 0;
+  if (has("TopSideLeft", "TopSideRight")) tops = 6;
+  else if (has("TopRearLeft", "TopRearRight")) tops = 4;
+  else if (has("TopFrontLeft", "TopFrontRight")) tops = 2;
+
+  if (hasDynamics) {
+    if (base < 7) base = 7;
+    if (tops < 4) tops = 4;
+  }
+  if (tops === 0) return base === 5 ? "5.1" : base === 7 ? "7.1.2" : "9.1.2";
+  const id = `${base}.1.${tops}` as LayoutId;
+  if (id in LAYOUTS) return id;
+  // 非法组合（如 5.1.6）：顶层收窄到该床存在的最大档
+  return (base === 9 ? "9.1.4" : `${base}.1.4`) as LayoutId;
 }

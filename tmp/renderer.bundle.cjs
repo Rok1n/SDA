@@ -27,6 +27,7 @@ __export(index_exports, {
   VbapSolver: () => VbapSolver,
   admToSpherical: () => admToSpherical,
   buildBusIrs: () => buildBusIrs,
+  detectLayoutId: () => detectLayoutId,
   getBinauralIrSet: () => getBinauralIrSet,
   isLfeLabel: () => isLfeLabel,
   mixIrForMode: () => mixIrForMode,
@@ -121,6 +122,17 @@ var LABEL_ALIASES = {
   Rtf: "TopFrontRight",
   Ltr: "TopRearLeft",
   Rtr: "TopRearRight",
+  // 顶侧（TrueHD 常写作 Ltm/Rtm "top middle"，ADM 写作 Tsl/Tsr）
+  Lts: "TopSideLeft",
+  Rts: "TopSideRight",
+  Ltm: "TopSideLeft",
+  Rtm: "TopSideRight",
+  Tsl: "TopSideLeft",
+  Tsr: "TopSideRight",
+  Tfl: "TopFrontLeft",
+  Tfr: "TopFrontRight",
+  Trl: "TopRearLeft",
+  Trr: "TopRearRight",
   Lfe: "LFE",
   LFE2: "LFE",
   // eac3/dca BedChannel variants
@@ -143,6 +155,27 @@ function positionForLabel(label) {
 }
 function isLfeLabel(label) {
   return label === "LFE" || label === "Lfe" || label === "LFE2";
+}
+function detectLayoutId(labels, hasDynamics) {
+  const names = new Set(
+    labels.filter((l) => !isLfeLabel(l) && !l.startsWith("Obj_")).map((l) => LABEL_ALIASES[l] ?? l)
+  );
+  const has = (...ns) => ns.some((n) => names.has(n));
+  let base = 5;
+  if (has("WideLeft", "WideRight")) base = 9;
+  else if (has("RearLeft", "RearRight")) base = 7;
+  let tops = 0;
+  if (has("TopSideLeft", "TopSideRight")) tops = 6;
+  else if (has("TopRearLeft", "TopRearRight")) tops = 4;
+  else if (has("TopFrontLeft", "TopFrontRight")) tops = 2;
+  if (hasDynamics) {
+    if (base < 7) base = 7;
+    if (tops < 4) tops = 4;
+  }
+  if (tops === 0) return base === 5 ? "5.1" : base === 7 ? "7.1.2" : "9.1.2";
+  const id = `${base}.1.${tops}`;
+  if (id in LAYOUTS) return id;
+  return base === 9 ? "9.1.4" : `${base}.1.4`;
 }
 
 // packages/renderer/src/vbap.ts
@@ -773,6 +806,7 @@ var SpatialRenderer = class {
   VbapSolver,
   admToSpherical,
   buildBusIrs,
+  detectLayoutId,
   getBinauralIrSet,
   isLfeLabel,
   mixIrForMode,

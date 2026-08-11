@@ -33,6 +33,12 @@ export interface PlayerCallbacks {
   onEnded?: () => void;
 }
 
+/** 按码流内容推断渲染布局（自动布局模式）。返回 null = 保持当前布局。 */
+export type LayoutResolver = (
+  bedLabels: readonly string[],
+  hasDynamics: boolean,
+) => readonly VirtualSpeaker[] | null;
+
 const TARGET_AHEAD_SECONDS = 2;
 const CHUNK_SIZE = 1 << 20; // 1 MiB reads
 
@@ -64,7 +70,20 @@ export class SdaPlayer {
   private visualTimer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
   /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
-  private initArgs: { mode: OutputMode; workletUrl: string | URL; layout?: readonly VirtualSpeaker[]; binauralBaseUrl: string } | null = null;
+  private initArgs: {
+    mode: OutputMode;
+    workletUrl: string | URL;
+    layout?: readonly VirtualSpeaker[];
+    binauralBaseUrl: string;
+    layoutResolver?: LayoutResolver;
+  } | null = null;
+  /** 是否已按码流内容做过布局自动检测（每次播放只检测一次）。 */
+  private layoutChecked = false;
+  /** 上次布局检测时是否已有动态对象（对象迟到的码流允许再检测一次）。 */
+  private layoutHadDynamics = false;
+  /** renderer 重建串行链：采样率对齐与布局自动检测可能在同一帧同时
+   *  触发，并发跑 recreateRenderer 会泄漏 AudioContext —— 必须排队。 */
+  private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
   /** 杜比近/中/远（Binaural Settings），重建 renderer 后需恢复。 */
   private binauralMode: BinauralMode = "mid";
@@ -81,14 +100,14 @@ export class SdaPlayer {
     this.worker.onmessage = (e) => this.onWorkerMessage(e.data);
   }
 
-  async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[], binauralBaseUrl = "/hrtf"): Promise<void> {
+  async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[], binauralBaseUrl = "/hrtf", layoutResolver?: LayoutResolver): Promise<void> {
     console.log(`[SDA] player#${this.id} init (active=#${SdaPlayer.active?.id ?? "-"})`);
     if (SdaPlayer.active && SdaPlayer.active !== this) {
       console.warn(`[SDA] player#${this.id} 强制销毁泄漏的 player#${SdaPlayer.active.id}`);
       void SdaPlayer.active.dispose();
     }
     SdaPlayer.active = this;
-    this.initArgs = { mode, workletUrl, layout, binauralBaseUrl };
+    this.initArgs = { mode, workletUrl, layout, binauralBaseUrl, layoutResolver };
     const ctx = new AudioContext({ latencyHint: "playback" });
     this.renderer = new SpatialRenderer(ctx, {
       mode,
@@ -149,7 +168,14 @@ export class SdaPlayer {
     if (!Number.isFinite(rate) || rate <= 0) return;
     if (Math.abs(this.renderer.ctx.sampleRate - rate) < 1) return;
     console.log(`[SDA] player#${this.id} 采样率不匹配：ctx=${this.renderer.ctx.sampleRate} 码流=${rate}，重建 AudioContext`);
-    void this.recreateRenderer(rate);
+    this.scheduleRecreate(rate);
+  }
+
+  /** 排队重建 renderer（采样率对齐 / 布局自动检测可能在同一帧同时触发，
+   *  并发跑 recreateRenderer 会泄漏 AudioContext —— 必须串行）。 */
+  private scheduleRecreate(sampleRate: number, layout?: readonly VirtualSpeaker[]): void {
+    if (layout && this.initArgs) this.initArgs.layout = layout;
+    this.recreateChain = this.recreateChain.then(() => this.recreateRenderer(sampleRate));
   }
 
   private async recreateRenderer(sampleRate: number): Promise<void> {
@@ -232,6 +258,8 @@ export class SdaPlayer {
     this.queuedSamples = 0;
     this.containerDurationSec = null;
     this.rateChecked = false;
+    this.layoutChecked = false;
+    this.layoutHadDynamics = false;
   }
 
   /** Pause: silence the worklet (buffer-preserving) AND suspend the clock.
@@ -379,6 +407,29 @@ export class SdaPlayer {
         if (this.mutedObjects.has(decl.id)) this.renderer.setSourceMuted(`obj:${decl.id}`, true);
       }
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
+
+      // 布局自动检测（仅在 init 传入 layoutResolver 时启用）：首帧按床标签
+      // + 是否有动态对象推断布局，不一致则排队重建渲染器，本帧重新排队。
+      // 对象声明迟到的码流（对象中流才出现）会再检测一次。
+      const resolver = this.initArgs?.layoutResolver;
+      const hasDyn = this.objectChannels.size > 0;
+      if (resolver && (!this.layoutChecked || (!this.layoutHadDynamics && hasDyn))) {
+        this.layoutChecked = true;
+        this.layoutHadDynamics = hasDyn;
+        const next = resolver(frame.labels, hasDyn);
+        const cur = this.initArgs?.layout;
+        const same =
+          next && cur && next.length === cur.length && next.every((s, i) => s.name === cur[i].name);
+        if (next && !same) {
+          console.log(
+            `[SDA] player#${this.id} 布局自动检测 → ${next.length} 音箱（${hasDyn ? "含动态对象" : "纯床层"}），重建渲染器`,
+          );
+          this.pcmQueue.unshift(frame);
+          this.queuedSamples += frameSamples; // 上面已减过，补回
+          this.scheduleRecreate(this.sampleRate, next);
+          return;
+        }
+      }
 
       // Feed PCM: object channels go to their obj: source, the rest are beds.
       frame.channels.forEach((samples, ch) => {

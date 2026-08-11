@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SdaPlayer, type VisualObject } from "@sda/player";
-import { LAYOUTS, type BinauralMode, type LayoutId, type OutputMode } from "@sda/renderer";
+import { LAYOUTS, detectLayoutId, type BinauralMode, type LayoutId, type OutputMode } from "@sda/renderer";
 // @ts-ignore — plain JS asset served by Vite
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
@@ -10,7 +10,10 @@ export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
   const [mode, setMode] = useState<OutputMode>("binaural");
   const [binauralMode, setBinauralModeState] = useState<BinauralMode>("mid");
-  const [layoutId, setLayoutId] = useState<LayoutId>("7.1.4");
+  /** "auto" = 按码流内容自动检测（床标签 + 是否有动态对象）。 */
+  const [layoutId, setLayoutId] = useState<LayoutId | "auto">("auto");
+  /** 自动模式下首帧检测出的布局（用于界面回显 + 3D 视图）。 */
+  const [detectedLayout, setDetectedLayout] = useState<LayoutId | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [objects, setObjects] = useState<VisualObject[]>([]);
@@ -32,7 +35,7 @@ export function App() {
   const fileNameRef = useRef<string | null>(null);
 
   const createPlayer = useCallback(
-    async (m: OutputMode, lid: LayoutId) => {
+    async (m: OutputMode, lid: LayoutId | "auto") => {
       await playerRef.current?.dispose();
       const player = new SdaPlayer({
         onTrack: (t) => setTrack({ ...t, title: t.title ?? fileNameRef.current ?? undefined }),
@@ -47,7 +50,16 @@ export function App() {
         onError: (m) => setErrors((prev) => [...prev.slice(-19), m]),
         onEnded: () => setPlaying(false),
       });
-      await player.init(m, workletUrl, LAYOUTS[lid]);
+      if (lid === "auto") {
+        // 自动布局：先以 7.1.4 兜底初始化，首帧到达后按码流内容重建渲染器
+        await player.init(m, workletUrl, LAYOUTS["7.1.4"], "/hrtf", (labels, hasDynamics) => {
+          const id = detectLayoutId(labels, hasDynamics);
+          setDetectedLayout(id);
+          return LAYOUTS[id];
+        });
+      } else {
+        await player.init(m, workletUrl, LAYOUTS[lid]);
+      }
       playerRef.current = player;
       return player;
     },
@@ -105,6 +117,7 @@ export function App() {
       setObjects([]);
       setPosition(0);
       setDuration(0);
+      setDetectedLayout(null);
       setPlaying(true);
       setPaused(false);
       lastFileRef.current = file;
@@ -201,7 +214,8 @@ export function App() {
               <option value="far">距离：远</option>
             </select>
           )}
-          <select value={layoutId} onChange={(e) => setLayoutId(e.target.value as LayoutId)}>
+          <select value={layoutId} onChange={(e) => setLayoutId(e.target.value as LayoutId | "auto")}>
+            <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>
             {(Object.keys(LAYOUTS) as LayoutId[]).map((id) => (
               <option key={id} value={id}>
                 布局 {id}
@@ -234,7 +248,7 @@ export function App() {
 
       <main>
         <section className="view">
-          <ObjectView objects={objects} layout={LAYOUTS[layoutId]} theme={theme} mutedIds={mutedIds} />
+          <ObjectView objects={objects} layout={LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId]} theme={theme} mutedIds={mutedIds} />
           <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
           <MiniPlayer
             track={track}
