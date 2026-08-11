@@ -121,9 +121,10 @@ impl Eac3Pipeline {
         let dynamics = dynamic_range.len();
 
         // JOC output is dynamic-only: slot j corresponds to OAMD object
-        // bed_or_isf_objects + j. A presentation with bed/ISF members must keep
-        // the core fullband bed; only B=0 is the duplicate-free all-object path.
-        let full_dynamic = oamd.bed_or_isf_objects == 0;
+        // bed_or_isf_objects + j. A core fullband bed is needed only when the
+        // OAMD presentation has a real non-LFE bed/ISF member. LFE is already
+        // carried by CorePcmFrame::lfe_channel and must not force mixed mode.
+        let full_dynamic = !has_fixed_bed_members(oamd);
         let mut channels: Vec<Vec<f32>> = if full_dynamic {
             Vec::new()
         } else {
@@ -211,6 +212,16 @@ fn dynamic_object_range(
 
 fn dynamic_object_count(oamd: &OamdPayload, object_channel_count: usize) -> usize {
     dynamic_object_range(oamd, object_channel_count).map_or(0, |range| range.len())
+}
+
+fn has_fixed_bed_members(oamd: &OamdPayload) -> bool {
+    oamd.isf_in_use
+        || oamd.bed_assignment.iter().flatten().any(|channel| {
+            !matches!(
+                channel,
+                BedChannel::LowFrequencyEffects | BedChannel::LowFrequencyEffects2
+            )
+        })
 }
 
 fn pure_bed_labels(oamd: &OamdPayload, object_channel_count: usize) -> Option<Vec<BedChannel>> {
@@ -328,6 +339,44 @@ fn extract_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lfe_only_bed_does_not_force_mixed_presentation() {
+        let oamd = OamdPayload {
+            version: 0,
+            object_count: 16,
+            alternate_object_present: false,
+            element_count: 1,
+            beds: 1,
+            bed_instances: 1,
+            bed_or_isf_objects: 1,
+            dynamic_objects: 15,
+            isf_in_use: false,
+            isf_index: None,
+            bed_assignment: vec![vec![BedChannel::LowFrequencyEffects]],
+            elements: Vec::new(),
+        };
+        assert!(!has_fixed_bed_members(&oamd));
+    }
+
+    #[test]
+    fn non_lfe_bed_forces_mixed_presentation() {
+        let oamd = OamdPayload {
+            version: 0,
+            object_count: 3,
+            alternate_object_present: false,
+            element_count: 1,
+            beds: 1,
+            bed_instances: 1,
+            bed_or_isf_objects: 1,
+            dynamic_objects: 2,
+            isf_in_use: false,
+            isf_index: None,
+            bed_assignment: vec![vec![BedChannel::FrontLeft]],
+            elements: Vec::new(),
+        };
+        assert!(has_fixed_bed_members(&oamd));
+    }
 
     #[test]
     fn dynamic_slots_match_oamd_suffix_count() {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SdaPlayer, type VisualObject } from "@sda/player";
+import { SdaPlayer, nextSoloMuteSet, type VisualObject } from "@sda/player";
 import {
   HEADPHONE_COMPENSATION_PROFILES,
   LAYOUTS,
@@ -98,14 +98,21 @@ export function App() {
     playerReady?.setLfeMuted(allObjectsMuted);
   }, [playerReady, allObjectsMuted]);
 
+  // React state and worker frames are asynchronous. Keep the player's durable
+  // mute set synchronized whenever either the active player or the UI set changes.
+  useEffect(() => {
+    playerReady?.syncObjectMutes(mutedIds);
+  }, [playerReady, mutedIds]);
+
   /** 把整组静音状态推到播放器（新建播放器后也要重放一遍）。 */
   const applyMutes = useCallback((muted: ReadonlySet<number>) => {
     const player = playerRef.current;
-    console.log(`[SDA] applyMutes: 静音集=[${[...muted].join(",")}] 面板对象=[${objectsRef.current.map((o) => o.id).join(",")}] player=${player ? `#${player.id}` : "无"}`);
-    if (!player) return;
-    for (const o of objectsRef.current) player.setObjectMuted(o.id, muted.has(o.id));
-    // 静音集合里可能有当前文件尚未声明的 id —— 也推过去，播放器会记住
-    for (const id of muted) player.setObjectMuted(id, true);
+    console.log(
+      `[SDA] applyMutes: 静音集=[${[...muted].join(",")}] 面板对象=[${objectsRef.current
+        .map((o) => o.id)
+        .join(",")}] player=${player ? `#${player.id}` : "无"}`,
+    );
+    player?.syncObjectMutes(muted);
   }, []);
 
   const toggleMute = useCallback(
@@ -128,18 +135,22 @@ export function App() {
 
   const toggleSolo = useCallback(
     (id: number) => {
-      const next = new Set<number>();
-      if (soloTarget !== id) for (const o of objects) if (o.id !== id) next.add(o.id);
+      const next = nextSoloMuteSet(
+        objects.map((object) => object.id),
+        mutedIds,
+        id,
+      );
       setMutedIds(next);
       applyMutes(next);
     },
-    [objects, soloTarget, applyMutes],
+    [objects, mutedIds, applyMutes],
   );
 
   const play = useCallback(
     async (file: File) => {
       setErrors([]);
       setTrack(null);
+      objectsRef.current = [];
       setObjects([]);
       setPosition(0);
       setDuration(0);

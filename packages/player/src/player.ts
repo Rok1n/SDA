@@ -22,6 +22,7 @@ import {
   type VirtualSpeaker,
 } from "@sda/renderer";
 import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent } from "@sda/core";
+import { placeholderVisualObject, visualObjectFromEvent } from "./control.js";
 
 export interface VisualObject {
   id: number;
@@ -203,19 +204,23 @@ export class SdaPlayer {
   }
 
   /** 静音/取消静音一个对象（Omniphony 式 per-object mute 原语；
-   *  solo 由 UI 层用"mute 其他全部"组合实现）。对象尚未声明时
-   *  只记录状态，声明到达/渲染器重建时自动生效。 */
+   * solo 由 UI 层用“mute 其他全部”组合实现）。对象尚未声明时只记录状态，
+   * 声源声明到达/renderer 重建时自动应用。 */
   setObjectMuted(objectId: number, muted: boolean): void {
     if (muted) this.mutedObjects.add(objectId);
     else this.mutedObjects.delete(objectId);
-    const r = this.renderer;
-    if (!r) return;
-    // 已声明的对象必须命中声源；未命中说明 id 链路断了，告诉用户而不是静默吞掉。
-    // （未声明的对象属正常 —— 状态已记录，声明到达时会应用。）
-    if (this.objectChannels.has(objectId) && !r.setSourceMuted(`obj:${objectId}`, muted)) {
+    if (!this.renderer || !this.objectChannels.has(objectId)) return;
+    if (!this.renderer.setSourceMuted(`obj:${objectId}`, muted)) {
       this.cb.onError?.(`静音未命中：obj:${objectId} 已声明但渲染器无此声源`);
-    } else if (!this.objectChannels.has(objectId)) {
-      r.setSourceMuted(`obj:${objectId}`, muted); // 记录用；无源时 renderer 打 warn
+    }
+  }
+
+  /** 原子同步整组对象静音状态，避免 React state、首帧声明和 renderer
+   * 初始化之间的时序竞争。未声明对象只保存在 mutedObjects，等声明到达时应用。 */
+  syncObjectMutes(mutedIds: ReadonlySet<number>): void {
+    this.mutedObjects = new Set(mutedIds);
+    for (const id of this.objectChannels.keys()) {
+      if (this.renderer) this.renderer.setSourceMuted(`obj:${id}`, mutedIds.has(id));
     }
   }
 
@@ -345,6 +350,7 @@ export class SdaPlayer {
     void this.renderer?.ctx.resume();
     this.objects.clear();
     this.objectChannels.clear();
+    this.emitVisual();
     this.fedSamples = 0;
     this.pcmQueue = [];
     this.queuedSamples = 0;
@@ -506,14 +512,42 @@ export class SdaPlayer {
       // is an explicit presentation transition, not an unchanged sparse frame:
       // drop old object routes so a later bed PCM channel cannot inherit a stale
       // moving-object binding after an invalid/missing JOC↔OAMD mapping.
-      if (!frame.labels.some((label) => label.startsWith("Obj_"))) {
+      const hasObjectLabels = frame.labels.some((label) => label.startsWith("Obj_"));
+      let visualChanged = false;
+      if (!hasObjectLabels) {
         this.objectChannels.clear();
+        if (this.objects.size > 0) {
+          this.objects.clear();
+          visualChanged = true;
+        }
       }
-      for (const decl of frame.objectChannels as ObjectChannelDecl[]) {
-        this.objectChannels.set(decl.id, decl.channel);
-        this.renderer.addSource(`obj:${decl.id}`);
-        // 重新声明会重置源状态 —— 恢复静音
-        if (this.mutedObjects.has(decl.id)) this.renderer.setSourceMuted(`obj:${decl.id}`, true);
+
+      const declarations = frame.objectChannels as ObjectChannelDecl[];
+      if (declarations.length > 0) {
+        // A non-empty sparse declaration is the complete replacement mapping,
+        // not a patch. Replacing it prevents stale IDs/channels after a track
+        // change or a presentation switch.
+        this.objectChannels.clear();
+        const declaredIds = new Set<number>();
+        for (const decl of declarations) {
+          declaredIds.add(decl.id);
+          this.objectChannels.set(decl.id, decl.channel);
+          this.renderer.addSource(`obj:${decl.id}`);
+          // 重新声明会重置源状态 —— 恢复静音
+          this.renderer.setSourceMuted(`obj:${decl.id}`, this.mutedObjects.has(decl.id));
+          if (!this.objects.has(decl.id)) {
+            // OAMD events may arrive in a later frame. Expose the object now so
+            // the first opened file does not appear to have no objects.
+            this.objects.set(decl.id, placeholderVisualObject(decl.id));
+            visualChanged = true;
+          }
+        }
+        for (const id of this.objects.keys()) {
+          if (!declaredIds.has(id)) {
+            this.objects.delete(id);
+            visualChanged = true;
+          }
+        }
       }
       const channelToObject = new Map<number, number>();
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
@@ -546,16 +580,12 @@ export class SdaPlayer {
       // Object events → renderer gains + visualization state.
       for (const ev of frame.events as ObjectEvent[]) {
         this.renderer.applyEvent(ev, ev.rampDuration || 128);
-        this.objects.set(ev.id, {
-          id: ev.id,
-          pos: ev.pos,
-          hasPos: ev.hasPos,
-          size: ev.size,
-          gainDb: ev.gainDb,
-        });
+        this.objects.set(ev.id, visualObjectFromEvent(ev));
+        visualChanged = true;
       }
 
       this.fedSamples += frameSamples;
+      if (visualChanged) this.emitVisual();
     }
     this.checkEnded();
   }
