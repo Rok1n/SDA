@@ -175,7 +175,7 @@ function addBed(r, labels) {
   await r.init("mock://worklet");
   check(ctx.destination.channelCount === 12 && ctx.destination.channelCountMode === "explicit",
     `多声道: 固定最大拓扑受设备上限钳制为 12 ch（实际 ${ctx.destination.channelCount}/${ctx.destination.channelCountMode}）`);
-  const edges = wiring.filter((w) => typeof w.out === "number" && typeof w.in === "number");
+  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge16" && typeof w.out === "number" && typeof w.in === "number");
   const expect = [[0, 0], [1, 1], [2, 2], [3, 3], [8, 4], [9, 5], [6, 6], [7, 7], [4, 8], [5, 9], [10, 10], [11, 11], [12, 12], [13, 13], [14, 14], [15, 15]];
   const ok = expect.every(([bus, inp]) => edges.some((e) => e.out === bus && e.in === inp));
   check(ok && edges.length === 16, `多声道: 固定 9.1.6 总线按 WASAPI 顺序重排${ok ? "" : JSON.stringify(edges)}`);
@@ -188,7 +188,7 @@ function addBed(r, labels) {
   const r = new SpatialRenderer(ctx, { mode: "multichannel", layout: LAYOUTS["5.1"] });
   await r.init("mock://worklet");
   check(ctx.destination.channelCount === 12, `多声道 5.1: 固定最大拓扑受 12ch 设备上限钳制`);
-  const edges = wiring.filter((w) => typeof w.out === "number" && typeof w.in === "number");
+  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge16" && typeof w.out === "number" && typeof w.in === "number");
   check(edges.length === 16, `多声道 5.1: 固定物理总线完整接线，未用声道由零增益静音`);
 }
 

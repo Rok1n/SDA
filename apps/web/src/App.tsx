@@ -185,6 +185,11 @@ export function App() {
     }
   }, [playing, paused, play]);
 
+  const changeOutputMode = useCallback((next: OutputMode) => {
+    playerRef.current?.setOutputMode(next);
+    setMode(next);
+  }, []);
+
   const changeLayout = useCallback((next: LayoutId | "auto") => {
     setLayoutId(next);
     if (next === "auto") {
@@ -224,7 +229,7 @@ export function App() {
       <header>
         <h1>SDA · 空间音频解码器</h1>
         <div className="controls">
-          <select value={mode} onChange={(e) => setMode(e.target.value as OutputMode)}>
+          <select value={mode} onChange={(e) => changeOutputMode(e.target.value as OutputMode)}>
             <option value="binaural">双耳 (耳机 HRTF)</option>
             <option value="stereo">立体声</option>
             <option value="multichannel">多声道</option>

@@ -137,9 +137,10 @@ export class SdaPlayer {
    *  浏览器内置 HRTF（PannerNode），播放不受影响。原始数据跨 AudioContext
    *  缓存，采样率对齐重建时不会重复下载。 */
   private async attachBinauralIrs(r: SpatialRenderer): Promise<void> {
-    if (this.initArgs?.mode !== "binaural") return;
     try {
-      const set = await getBinauralIrSet(this.initArgs.binauralBaseUrl);
+      const baseUrl = this.initArgs?.binauralBaseUrl;
+      if (!baseUrl) return;
+      const set = await getBinauralIrSet(baseUrl);
       if (this.disposed || this.renderer !== r) return;
       r.setBinauralData(set);
       r.setBinauralMode(this.binauralMode);
@@ -167,6 +168,17 @@ export class SdaPlayer {
     if (next) this.setLayout(next, false);
     this.layoutChecked = true;
     this.layoutHadDynamics = hasDyn;
+  }
+
+  /** 播放中实时交叉淡化最终输出模式，保留 decoder/worklet/PCM 与所有 source 状态。 */
+  setOutputMode(mode: OutputMode): void {
+    if (!this.initArgs) return;
+    this.initArgs.mode = mode;
+    this.renderer?.setOutputMode(mode);
+  }
+
+  get outputMode(): OutputMode | null {
+    return this.renderer?.outputMode ?? this.initArgs?.mode ?? null;
   }
 
   /** 切换杜比近/中/远（播放中实时生效）。 */

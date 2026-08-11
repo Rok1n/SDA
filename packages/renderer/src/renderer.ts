@@ -80,7 +80,9 @@ export class SpatialRenderer {
   layout: readonly VirtualSpeaker[];
   /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
   private readonly topology: readonly VirtualSpeaker[];
-  readonly mode: OutputMode;
+  mode: OutputMode;
+  /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
+  private modeGains = new Map<OutputMode, GainNode>();
   private vbap: VbapSolver;
   private node: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
@@ -168,10 +170,10 @@ export class SpatialRenderer {
     this.buildOutputGraph();
   }
 
-  /** 注入双耳 IR 集（可在 init 后、播放前随时调用），重建双耳输出图。 */
+  /** 注入双耳 IR 集；双耳路径常驻，即使当前未选双耳也立即更新，便于实时切回。 */
   setBinauralData(set: BinauralIrSet): void {
     this.irSet = set;
-    if (this.mode === "binaural" && this.node) this.buildOutputGraph();
+    if (this.node) this.buildOutputGraph();
   }
 
   /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
@@ -179,7 +181,6 @@ export class SpatialRenderer {
   setBinauralMode(mode: BinauralMode): void {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
-    if (this.mode !== "binaural") return;
     if (this.irSet) {
       const irs = buildBusIrs(this.ctx, this.irSet, this.topology, mode);
       this.convs.forEach((conv, bus) => {
@@ -208,10 +209,32 @@ export class SpatialRenderer {
     return headphoneProfileById(this.headphoneProfileId);
   }
 
+  /** 实时切换最终输出模式。三条后级图保持常驻，worklet/PCM/播放头不重建。 */
+  setOutputMode(mode: OutputMode): void {
+    if (mode === this.mode || !this.modeGains.size) {
+      this.mode = mode;
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const duration = 0.05;
+    for (const [id, gain] of this.modeGains) {
+      const target = id === mode ? 1 : 0;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(target, now + duration);
+    }
+    this.mode = mode;
+  }
+
+  get outputMode(): OutputMode {
+    return this.mode;
+  }
+
   private teardownPostNodes(): void {
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
     this.convs = [];
+    this.modeGains.clear();
   }
 
   /** LR4（Linkwitz-Riley 四阶）滤波对：两个 Q=1/√2 的二阶 biquad 级联，
@@ -232,41 +255,70 @@ export class SpatialRenderer {
     if (!this.node || !this.master) return;
     this.teardownPostNodes();
     const n = this.topology.length;
-
-    if (this.mode === "multichannel") {
-      // 物理声道直出：目标声道数 = 布局音箱数（受设备上限钳制），并按
-      // WASAPI/HDMI 通道掩码顺序重排总线（7.1：后环在侧环前），否则 Windows
-      // 多声道设备上侧环/后环会互换。设备能力不足时保持默认降混。
-      const dest = this.ctx.destination;
-      try {
-        dest.channelCountMode = "explicit";
-        dest.channelCount = Math.max(2, Math.min(n, dest.maxChannelCount || n));
-      } catch {
-        /* 设备不允许显式声道数：交由浏览器降混 */
-      }
-      const order = physicalChannelOrder(this.topology);
-      const splitter = this.ctx.createChannelSplitter(n);
-      const merger = this.ctx.createChannelMerger(n);
-      this.node.connect(splitter);
-      order.forEach((bus, i) => splitter.connect(merger, bus, i));
-      merger.connect(this.master);
-      this.postNodes.push(splitter, merger);
-      return;
+    const master = this.master;
+    const dest = this.ctx.destination;
+    try {
+      dest.channelCountMode = "explicit";
+      dest.channelCount = Math.max(2, Math.min(n, dest.maxChannelCount || n));
+    } catch {
+      /* 设备不允许显式声道数：交由浏览器默认降混 */
     }
 
+    const createModeOutput = (mode: OutputMode) => {
+      const gain = this.ctx.createGain();
+      gain.gain.value = mode === this.mode ? 1 : 0;
+      gain.connect(master);
+      this.modeGains.set(mode, gain);
+      this.postNodes.push(gain);
+      return gain;
+    };
+
+    this.buildMultichannelPath(n, createModeOutput("multichannel"));
+    this.buildStereoPath(n, createModeOutput("stereo"));
+    this.buildBinauralPath(n, createModeOutput("binaural"));
+  }
+
+  /** 物理声道直出固定使用最大拓扑和 WASAPI 规范顺序；未激活总线由 worklet 增益归零。 */
+  private buildMultichannelPath(n: number, output: GainNode): void {
     const splitter = this.ctx.createChannelSplitter(n);
-    this.node.connect(splitter);
-    const merger = this.ctx.createChannelMerger(2);
-    merger.connect(this.master);
+    const merger = this.ctx.createChannelMerger(n);
+    this.node!.connect(splitter);
+    physicalChannelOrder(this.topology).forEach((bus, i) => splitter.connect(merger, bus, i));
+    merger.connect(output);
+    this.postNodes.push(splitter, merger);
+  }
 
-    const busIrs = this.mode === "binaural" && this.irSet
-      ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode)
-      : null;
+  /** 常驻立体声 downmix，输出只占固定物理通道 0/1。 */
+  private buildStereoPath(n: number, output: GainNode): void {
+    const splitter = this.ctx.createChannelSplitter(n);
+    const merger = this.ctx.createChannelMerger(n);
+    this.node!.connect(splitter);
+    for (let bus = 0; bus < n; bus++) {
+      const spk = this.topology[bus]!;
+      const gainL = this.ctx.createGain();
+      const gainR = this.ctx.createGain();
+      const az = (spk.azimuth * Math.PI) / 180;
+      gainL.gain.value = (spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az - Math.PI / 2) / 2))) * 0.7;
+      gainR.gain.value = (spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az + Math.PI / 2) / 2))) * 0.7;
+      splitter.connect(gainL, bus);
+      splitter.connect(gainR, bus);
+      gainL.connect(merger, 0, 0);
+      gainR.connect(merger, 0, 1);
+      this.postNodes.push(gainL, gainR);
+    }
+    merger.connect(output);
+    this.postNodes.push(splitter, merger);
+  }
 
-    // LFE 总线：只承载原始 LFE。主声道在双耳中保持全频卷积，不能像物理
-    // 监听那样把它们的低频汇成单声道，否则会丢失低频方向线索并使整体发糊。
+  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，输出占固定物理通道 0/1。 */
+  private buildBinauralPath(n: number, output: GainNode): void {
+    const splitter = this.ctx.createChannelSplitter(n);
+    const merger = this.ctx.createChannelMerger(n);
+    this.node!.connect(splitter);
+    const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
+
     let lfeBus: GainNode | null = null;
-    if (this.mode === "binaural" && this.topology.some((s) => s.isLfe)) {
+    if (this.topology.some((speaker) => speaker.isLfe)) {
       const sum = this.ctx.createGain();
       const lfeOut = this.ctx.createGain();
       lfeOut.gain.value = 0.5;
@@ -279,80 +331,52 @@ export class SpatialRenderer {
 
     for (let bus = 0; bus < n; bus++) {
       const spk = this.topology[bus]!;
-      if (this.mode === "binaural") {
-        if (spk.isLfe) {
-          // LFE：ITU/杜比 120Hz LR4 低通 + 带内 +10dB，直送双耳。
-          const lfeGain = this.ctx.createGain();
-          if (lfeBus) {
-            const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
-            splitter.connect(lpIn, bus);
-            lfeGain.gain.value = LFE_INBAND_GAIN;
-            lpOut.connect(lfeGain);
-            lfeGain.connect(lfeBus);
-            this.postNodes.push(lpIn, lpOut, lfeGain);
-          } else {
-            lfeGain.gain.value = 0.5;
-            splitter.connect(lfeGain, bus);
-            lfeGain.connect(merger, 0, 0);
-            lfeGain.connect(merger, 0, 1);
-            this.postNodes.push(lfeGain);
-          }
-          this.convs.push(null);
-          continue;
+      if (spk.isLfe) {
+        const lfeGain = this.ctx.createGain();
+        if (lfeBus) {
+          const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
+          splitter.connect(lpIn, bus);
+          lfeGain.gain.value = LFE_INBAND_GAIN;
+          lpOut.connect(lfeGain);
+          lfeGain.connect(lfeBus);
+          this.postNodes.push(lpIn, lpOut, lfeGain);
         }
-        const ir = busIrs?.get(bus);
-        if (ir) {
-          const conv = this.ctx.createConvolver();
-          conv.buffer = ir;
-          conv.normalize = false;
-          // 卷积输出是立体声总线；ChannelMerger 的输入是单声道，直接 connect
-          // 会被 0.5(L+R) 降混 —— 必须用 splitter 把左右耳分开接线，
-          // 否则整个双耳路径塌成单声道（声像全挤在中间）。
-          const earSplit = this.ctx.createChannelSplitter(2);
-          splitter.connect(conv, bus);
-          conv.connect(earSplit);
-          earSplit.connect(merger, 0, 0);
-          earSplit.connect(merger, 1, 1);
-          this.postNodes.push(conv, earSplit);
-          this.convs.push(conv);
-        } else {
-          // 无 IR 资产时的优雅降级：浏览器内置 HRTF。
-          const panner = this.ctx.createPanner();
-          panner.panningModel = "HRTF";
-          panner.distanceModel = "linear";
-          panner.refDistance = 1;
-          panner.maxDistance = 1;
-          panner.rolloffFactor = 0;
-          const [x, y, z] = sphericalToWebAudio(spk);
-          panner.positionX.value = x;
-          panner.positionY.value = y;
-          panner.positionZ.value = z;
-          const earSplit = this.ctx.createChannelSplitter(2);
-          splitter.connect(panner, bus);
-          panner.connect(earSplit);
-          earSplit.connect(merger, 0, 0);
-          earSplit.connect(merger, 1, 1);
-          this.postNodes.push(panner, earSplit);
-          this.convs.push(null);
-        }
+        this.convs.push(null);
+        continue;
+      }
+      const ir = busIrs?.get(bus);
+      if (ir) {
+        const conv = this.ctx.createConvolver();
+        conv.buffer = ir;
+        conv.normalize = false;
+        const earSplit = this.ctx.createChannelSplitter(2);
+        splitter.connect(conv, bus);
+        conv.connect(earSplit);
+        earSplit.connect(merger, 0, 0);
+        earSplit.connect(merger, 1, 1);
+        this.postNodes.push(conv, earSplit);
+        this.convs.push(conv);
       } else {
-        // "stereo": cheap downmix — weight by speaker direction.
-        const gainL = this.ctx.createGain();
-        const gainR = this.ctx.createGain();
-        const az = (spk.azimuth * Math.PI) / 180;
-        // Equal-power-ish: front-center content goes to both, sides dominate one.
-        gainL.gain.value = spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az - Math.PI / 2) / 2));
-        gainR.gain.value = spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az + Math.PI / 2) / 2));
-        const norm = 0.7;
-        gainL.gain.value *= norm;
-        gainR.gain.value *= norm;
-        splitter.connect(gainL, bus);
-        splitter.connect(gainR, bus);
-        gainL.connect(merger, 0, 0);
-        gainR.connect(merger, 0, 1);
-        this.postNodes.push(gainL, gainR);
+        const panner = this.ctx.createPanner();
+        panner.panningModel = "HRTF";
+        panner.distanceModel = "linear";
+        panner.refDistance = 1;
+        panner.maxDistance = 1;
+        panner.rolloffFactor = 0;
+        const [x, y, z] = sphericalToWebAudio(spk);
+        panner.positionX.value = x;
+        panner.positionY.value = y;
+        panner.positionZ.value = z;
+        const earSplit = this.ctx.createChannelSplitter(2);
+        splitter.connect(panner, bus);
+        panner.connect(earSplit);
+        earSplit.connect(merger, 0, 0);
+        earSplit.connect(merger, 1, 1);
+        this.postNodes.push(panner, earSplit);
+        this.convs.push(null);
       }
     }
+    merger.connect(output);
     this.postNodes.push(splitter, merger);
   }
 
