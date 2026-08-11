@@ -22,6 +22,7 @@ function fakeNode() {
   return {
     connect() {}, disconnect() {}, start() {}, stop() {},
     gain: fakeParam(), frequency: fakeParam(), Q: fakeParam(),
+    threshold: fakeParam(), knee: fakeParam(), ratio: fakeParam(), attack: fakeParam(), release: fakeParam(),
     pan: fakeParam(), positionX: fakeParam(), positionY: fakeParam(), positionZ: fakeParam(),
     orientationX: fakeParam(), orientationY: fakeParam(), orientationZ: fakeParam(),
     buffer: null, type: "", channelCount: 0, channelCountMode: "", channelInterpretation: "",

@@ -19,6 +19,7 @@ function fakeNode(tag) {
     connect(to, out, inn) { wiring.push({ from: this._tag, to: to?._tag, out, in: inn }); },
     disconnect() {}, start() {}, stop() {},
     gain: fakeParam(), frequency: fakeParam(), Q: fakeParam(),
+    threshold: fakeParam(), knee: fakeParam(), ratio: fakeParam(), attack: fakeParam(), release: fakeParam(),
     pan: fakeParam(), positionX: fakeParam(), positionY: fakeParam(), positionZ: fakeParam(),
     orientationX: fakeParam(), orientationY: fakeParam(), orientationZ: fakeParam(),
     buffer: null, type: "", channelCount: 0, channelCountMode: "", channelInterpretation: "",
@@ -46,6 +47,7 @@ class FakeAudioContext {
   createBiquadFilter() { return fakeNode("biquad"); }
   createConvolver() { return fakeNode("conv"); }
   createPanner() { return fakeNode("panner"); }
+  createDynamicsCompressor() { return fakeNode("compressor"); }
   createChannelSplitter(n) { return fakeNode(`split${n}`); }
   createChannelMerger(n) { return fakeNode(`merge${n}`); }
   createBuffer(ch, len, sr) { return { numberOfChannels: ch, length: len, sampleRate: sr, getChannelData: () => new Float32Array(len), copyToChannel() {} }; }

@@ -44,7 +44,19 @@ const LFE_LOWPASS_HZ = 120;
 /** LFE 带内增益：杜比监听规范 +10dB（编码侧 -10dB 录制，重放逐带补偿）。 */
 const LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
 /** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
-const BINAURAL_MAKEUP_GAIN = Math.pow(10, 3 / 20);
+const BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
+/** 最终双耳总和的防削波保护：仅峰值重叠时介入，不改变单个虚拟音箱的空间平衡。 */
+const BINAURAL_SAFETY_THRESHOLD_DB = -1;
+const BINAURAL_SAFETY_KNEE_DB = 0;
+const BINAURAL_SAFETY_RATIO = 4;
+const BINAURAL_SAFETY_ATTACK_S = 0.003;
+const BINAURAL_SAFETY_RELEASE_S = 0.15;
+/** LFE 在 +10dB 规范恢复后单独约束峰值，避免其驱动最终全频 safety compressor。 */
+const BINAURAL_LFE_PEAK_THRESHOLD_DB = -3;
+const BINAURAL_LFE_PEAK_KNEE_DB = 0;
+const BINAURAL_LFE_PEAK_RATIO = 8;
+const BINAURAL_LFE_PEAK_ATTACK_S = 0.003;
+const BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
 
 export interface RendererOptions {
   mode?: OutputMode;
@@ -315,24 +327,37 @@ export class SpatialRenderer {
     this.postNodes.push(splitter, merger);
   }
 
-  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，最终汇总后加输出标定，输出占固定物理通道 0/1。 */
+  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，最终汇总后加输出标定和峰值保护，输出占固定物理通道 0/1。 */
   private buildBinauralPath(n: number, output: GainNode): void {
     const splitter = this.ctx.createChannelSplitter(n);
     const merger = this.ctx.createChannelMerger(n);
     const makeup = this.ctx.createGain();
     makeup.gain.value = BINAURAL_MAKEUP_GAIN;
+    const safety = this.ctx.createDynamicsCompressor();
+    safety.threshold.value = BINAURAL_SAFETY_THRESHOLD_DB;
+    safety.knee.value = BINAURAL_SAFETY_KNEE_DB;
+    safety.ratio.value = BINAURAL_SAFETY_RATIO;
+    safety.attack.value = BINAURAL_SAFETY_ATTACK_S;
+    safety.release.value = BINAURAL_SAFETY_RELEASE_S;
     this.node!.connect(splitter);
     const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
 
     let lfeBus: GainNode | null = null;
     if (this.topology.some((speaker) => speaker.isLfe)) {
       const sum = this.ctx.createGain();
+      const lfePeak = this.ctx.createDynamicsCompressor();
+      lfePeak.threshold.value = BINAURAL_LFE_PEAK_THRESHOLD_DB;
+      lfePeak.knee.value = BINAURAL_LFE_PEAK_KNEE_DB;
+      lfePeak.ratio.value = BINAURAL_LFE_PEAK_RATIO;
+      lfePeak.attack.value = BINAURAL_LFE_PEAK_ATTACK_S;
+      lfePeak.release.value = BINAURAL_LFE_PEAK_RELEASE_S;
       const lfeOut = this.ctx.createGain();
       lfeOut.gain.value = 0.5;
-      sum.connect(lfeOut);
+      sum.connect(lfePeak);
+      lfePeak.connect(lfeOut);
       lfeOut.connect(merger, 0, 0);
       lfeOut.connect(merger, 0, 1);
-      this.postNodes.push(sum, lfeOut);
+      this.postNodes.push(sum, lfePeak, lfeOut);
       lfeBus = sum;
     }
 
@@ -384,8 +409,9 @@ export class SpatialRenderer {
       }
     }
     merger.connect(makeup);
-    makeup.connect(output);
-    this.postNodes.push(splitter, merger, makeup);
+    makeup.connect(safety);
+    safety.connect(output);
+    this.postNodes.push(splitter, merger, makeup, safety);
   }
 
   /** Register a source. Bed channels pass their speaker label; objects an event id.

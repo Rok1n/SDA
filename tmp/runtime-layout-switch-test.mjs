@@ -14,6 +14,7 @@ function node(tag) {
     _tag: tag,
     connect() {}, disconnect() {}, start() {}, stop() {},
     gain: param(), frequency: param(), Q: param(),
+    threshold: param(), knee: param(), ratio: param(), attack: param(), release: param(),
     positionX: param(), positionY: param(), positionZ: param(),
     channelCount: 0, channelCountMode: "", channelInterpretation: "", maxChannelCount: 16,
   };
@@ -38,6 +39,7 @@ class FakeAudioContext {
   createBiquadFilter() { return node("biquad"); }
   createConvolver() { return node("conv"); }
   createPanner() { return node("panner"); }
+  createDynamicsCompressor() { return node("safety-compressor"); }
   createChannelSplitter(n) { return node(`split${n}`); }
   createChannelMerger(n) { return node(`merge${n}`); }
   createBuffer(_, length) { return { copyToChannel() {}, length }; }

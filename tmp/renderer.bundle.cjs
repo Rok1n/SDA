@@ -578,7 +578,17 @@ function validateHeadphoneProfile(profile) {
 // packages/renderer/src/renderer.ts
 var LFE_LOWPASS_HZ = 120;
 var LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
-var BINAURAL_MAKEUP_GAIN = Math.pow(10, 3 / 20);
+var BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
+var BINAURAL_SAFETY_THRESHOLD_DB = -1;
+var BINAURAL_SAFETY_KNEE_DB = 0;
+var BINAURAL_SAFETY_RATIO = 4;
+var BINAURAL_SAFETY_ATTACK_S = 3e-3;
+var BINAURAL_SAFETY_RELEASE_S = 0.15;
+var BINAURAL_LFE_PEAK_THRESHOLD_DB = -3;
+var BINAURAL_LFE_PEAK_KNEE_DB = 0;
+var BINAURAL_LFE_PEAK_RATIO = 8;
+var BINAURAL_LFE_PEAK_ATTACK_S = 3e-3;
+var BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
 function sizeToSpread(size) {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
 }
@@ -798,23 +808,36 @@ var SpatialRenderer = class {
     merger.connect(output);
     this.postNodes.push(splitter, merger);
   }
-  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，最终汇总后加输出标定，输出占固定物理通道 0/1。 */
+  /** 常驻双耳图：每条虚拟音箱总线只卷积一次，最终汇总后加输出标定和峰值保护，输出占固定物理通道 0/1。 */
   buildBinauralPath(n, output) {
     const splitter = this.ctx.createChannelSplitter(n);
     const merger = this.ctx.createChannelMerger(n);
     const makeup = this.ctx.createGain();
     makeup.gain.value = BINAURAL_MAKEUP_GAIN;
+    const safety = this.ctx.createDynamicsCompressor();
+    safety.threshold.value = BINAURAL_SAFETY_THRESHOLD_DB;
+    safety.knee.value = BINAURAL_SAFETY_KNEE_DB;
+    safety.ratio.value = BINAURAL_SAFETY_RATIO;
+    safety.attack.value = BINAURAL_SAFETY_ATTACK_S;
+    safety.release.value = BINAURAL_SAFETY_RELEASE_S;
     this.node.connect(splitter);
     const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
     let lfeBus = null;
     if (this.topology.some((speaker) => speaker.isLfe)) {
       const sum = this.ctx.createGain();
+      const lfePeak = this.ctx.createDynamicsCompressor();
+      lfePeak.threshold.value = BINAURAL_LFE_PEAK_THRESHOLD_DB;
+      lfePeak.knee.value = BINAURAL_LFE_PEAK_KNEE_DB;
+      lfePeak.ratio.value = BINAURAL_LFE_PEAK_RATIO;
+      lfePeak.attack.value = BINAURAL_LFE_PEAK_ATTACK_S;
+      lfePeak.release.value = BINAURAL_LFE_PEAK_RELEASE_S;
       const lfeOut = this.ctx.createGain();
       lfeOut.gain.value = 0.5;
-      sum.connect(lfeOut);
+      sum.connect(lfePeak);
+      lfePeak.connect(lfeOut);
       lfeOut.connect(merger, 0, 0);
       lfeOut.connect(merger, 0, 1);
-      this.postNodes.push(sum, lfeOut);
+      this.postNodes.push(sum, lfePeak, lfeOut);
       lfeBus = sum;
     }
     for (let bus = 0; bus < n; bus++) {
@@ -865,8 +888,9 @@ var SpatialRenderer = class {
       }
     }
     merger.connect(makeup);
-    makeup.connect(output);
-    this.postNodes.push(splitter, merger, makeup);
+    makeup.connect(safety);
+    safety.connect(output);
+    this.postNodes.push(splitter, merger, makeup, safety);
   }
   /** Register a source. Bed channels pass their speaker label; objects an event id.
    *  重复声明同一 id（稀疏声明变化时 player 会重放整组）不重置用户静音状态。 */

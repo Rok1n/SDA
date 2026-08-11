@@ -21,6 +21,7 @@ function node(tag) {
     connect(to, out, input) { wiring.push({ from: tag, to: to?._tag, out, input }); },
     disconnect() {}, start() {}, stop() {},
     gain: param(), frequency: param(), Q: param(),
+    threshold: param(), knee: param(), ratio: param(), attack: param(), release: param(),
     positionX: param(), positionY: param(), positionZ: param(),
     channelCount: 0, channelCountMode: "", channelInterpretation: "", maxChannelCount: 16,
   };
@@ -41,12 +42,14 @@ class FakeAudioContext {
     this.currentTime = 1;
     this.state = "running";
     this.destination = node("destination");
+    this.compressorCount = 0;
     this.audioWorklet = { addModule: async () => {} };
   }
   createGain() { return node("gain"); }
   createBiquadFilter() { return node("biquad"); }
   createConvolver() { return node("conv"); }
   createPanner() { return node("panner"); }
+  createDynamicsCompressor() { return node(`compressor-${this.compressorCount++}`); }
   createChannelSplitter(n) { return node(`split${n}`); }
   createChannelMerger(n) { return node(`merge${n}`); }
   createBuffer(_, length) { return { copyToChannel() {}, length }; }
@@ -89,7 +92,14 @@ for (const mode of ["stereo", "multichannel", "binaural"]) {
 const modePathOutputs = wiring.filter((edge) => edge.to === "gain").length;
 check(modePathOutputs >= 3, `三条常驻输出路径已连接到独立 mode gain（${modePathOutputs}）`);
 const makeup = wiring.find((edge) => edge.from === "merge16" && edge.to === "gain");
-check(!!makeup, "双耳最终 merger 后存在独立 makeup gain 节点");
+const lfePeak = wiring.find((edge) => edge.from === "gain" && edge.to === "compressor-0");
+const lfeEarSplit = wiring.find((edge) => edge.from === "compressor-0" && edge.to === "gain");
+const safety = wiring.find((edge) => edge.from === "gain" && edge.to === "compressor-1");
+const binauralOutput = wiring.find((edge) => edge.from === "compressor-1" && edge.to === "gain");
+check(!!makeup, "双耳最终 merger 后存在独立 +6dB makeup gain 节点");
+check(!!lfePeak && !!lfeEarSplit, "LFE +10dB 后先经独立 peak compressor，再等量分送双耳");
+check(!!safety && !!binauralOutput, "双耳 makeup 后接最终 safety compressor，再进入 mode gain");
+check(wiring.filter((edge) => edge.to?.startsWith("compressor-")).length === 2, "只有 LFE 支路与最终双耳总和经过 compressor");
 check(ctx.destination.channelCount === 16, `初始化一次固定最大设备通道数（${ctx.destination.channelCount}）`);
 
 console.log(failed ? `\n${failed} 项失败` : "\n播放中输出模式切换通过");

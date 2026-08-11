@@ -122,13 +122,18 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 
 KU100 IR 在运行时按左右耳**合计能量**归一化，保证方向与 Near/Mid/Far 间的相对
 响度一致；它不保证经过头部/耳廓频响后的主观响度等于未空间化立体声。SDA 因此在
-全部虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+3 dB` makeup gain，
-再进入输出模式淡化和用户 master 音量。
+全部虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+6 dB` makeup gain，
+再经过最终双耳 safety compressor，最后进入输出模式淡化和用户 master 音量。
 
-该值是 SDA 针对当前 `-3.1 dB` 立体声 downmix 参考的保守应用级标定点，**不是**
-Dolby、Apple 或 Genelec 发布的固定双耳增益，也不是 KU100 补偿/耳机 profile。它不改
-HRIR/BRIR 资产、每方向能量归一化、LFE 的规范性 `+10 dB` 或用户音量控制。密集同相
-多总线内容仍可能超过 0 dBFS；当前实现不伪装一个压缩器为 true-peak limiter。
+该值是 SDA 针对 AirPods/耳机主观响度的应用级标定点，**不是** Dolby、Apple 或
+Genelec 发布的固定双耳增益，也不是 KU100 补偿/耳机 profile。它不改 HRIR/BRIR
+资产、每方向能量归一化、LFE 的规范性 `+10 dB` 或用户音量控制。
+
+`+6 dB` 缩小了多总线同相峰值的余量，因此输出图只在最终 L/R 总和后放置一个保守的
+Web Audio `DynamicsCompressorNode`（`-1 dBFS` threshold、`4:1` ratio、`3 ms`
+attack、`150 ms` release）。它是防削波 safety compressor，**不是** true-peak limiter；
+低于阈值的正常节目不会发生 gain reduction，方向 IR、每对象增益与空间平衡都在其前级
+保持不变；密集同相总和、LFE 或高峰值瞬态接近输出峰值时才可能产生轻微 gain reduction。
 
 配合每源距离处理（`renderer.ts applyGains`）：
 1. **归一化对象距离**：ADM 距离 1 是虚拟音箱环。环内维持 0 dB；环外按
@@ -159,8 +164,10 @@ SDA 双耳路径因此采用以下规则：
 
 1. **主声道全频空间化**：每个非 LFE 虚拟扬声器完整进入其方向的 HRIR/BRIR 卷积，
    不做主声道低频重定向。
-2. **LFE 独立处理**：原始 LFE 走 LR4 低通 **120 Hz**、带内 **+10 dB**，再等量
-   直送双耳；它不参与方向卷积，也不接收主声道低频。
+2. **LFE 独立处理**：原始 LFE 走 LR4 低通 **120 Hz**、带内 **+10 dB**，再经仅作用于
+   LFE 支路的 peak compressor 后等量直送双耳；它不参与方向卷积，也不接收主声道低频。
+   该节点只约束会主导最终双耳 safety compressor 的 LFE 瞬态，避免低频驱动全频 gain
+   reduction 而掩盖低中频和方向线索；它不是 true-peak limiter，也不替代 LFE 的规范增益。
 
 这保留内容本来的方向信息，同时符合 LFE 的独立通道语义。若未来支持物理监听输出的
 “small speaker + subwoofer”校准，应只在 `multichannel` 输出图中实现，不进入双耳
