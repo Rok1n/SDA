@@ -260,12 +260,30 @@ for (const [az, el] of TARGETS) {
   const wetName = nameFor(az, el, "wet");
   writeFileSync(join(OUT_DIR, dryName), Buffer.from(trimIr(dry.L, dry.R, DRY_TAPS, 16).buffer));
   writeFileSync(join(OUT_DIR, wetName), Buffer.from(trimIr(wet.L, wet.R, WET_TAPS, 32).buffer));
-  positions.push({ azimuth: az, elevation: el, dry: dryName, wet: wetName });
+  positions.push({
+    azimuth: az,
+    elevation: el,
+    dry: dryName,
+    wet: wetName,
+    measurement: {
+      dryAzimuth: dry.az,
+      dryElevation: dry.el,
+      wetAzimuth: wet.az,
+      wetElevation: wet.el,
+      flipAzimuth: FLIP_AZ,
+    },
+  });
   console.log(`az${az} el${el}  dry←(${dry.az},${dry.el})  wet←(${wet.az},${wet.el})`);
 }
 
 writeFileSync(
   join(OUT_DIR, "hrtf-set.json"),
-  JSON.stringify({ sampleRate, source: "SADIE II D1 KU100 (University of York, Apache-2.0)", positions }, null, 2),
+  JSON.stringify({
+    sampleRate,
+    source: "SADIE II D1 KU100 (University of York, Apache-2.0)",
+    azimuthConvention: "target + = left (ADM/ITU); source flip recorded per position",
+    processing: { dryTaps: DRY_TAPS, wetTaps: WET_TAPS, peakNormalized: true },
+    positions,
+  }, null, 2),
 );
 console.log(`\n完成：${positions.length} 个方向 → ${OUT_DIR}`);
