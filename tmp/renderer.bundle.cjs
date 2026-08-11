@@ -867,9 +867,11 @@ var SpatialRenderer = class {
     } else if (state.snapBus >= 0) {
       gains.fill(0);
       gains[state.snapBus] = 1;
-      const occupied = this.bedOccupiedBuses(state.id);
-      for (const e of this.expansion.get(state.snapBus) ?? []) {
-        if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
+      if (this.mode === "multichannel") {
+        const occupied = this.bedOccupiedBuses(state.id);
+        for (const e of this.expansion.get(state.snapBus) ?? []) {
+          if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
+        }
       }
     }
     if (state.muted) scalar = 0;

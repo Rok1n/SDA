@@ -463,13 +463,21 @@ export class SpatialRenderer {
       scalar = Math.pow(10, state.gainDb / 20);
       lp = 1;
     } else if (state.snapBus >= 0) {
-      // 床声道吸附：直送同名音箱总线（AVR direct 语义），叠加上混扩展馈送；
-      // 扩展目标总线被真实床声道占用时跳过（7.1 内容的后环不吃 5.1 式馈送）。
+      // 床声道吸附：直送同名音箱总线（AVR direct 语义）。
+      // 上混扩展馈送仅用于多声道物理输出 —— 物理后环在真实房间里被房间
+      // 反射去相关，听着是"填满"；而双耳/立体声里馈送是相干拷贝
+      // （BRIR(100°) + 0.5·BRIR(140°) 在鼓膜处同相叠加），梳状滤波 + 声像
+      // 向中间涂抹，整个声场挤成一团。AVR 上混器对派生声道做去相关，
+      // 虚拟音箱域没有这个环节 —— 也不需要有：吸附已把床放到混音师
+      // 本来的位置。扩展目标总线被真实床声道占用时跳过（7.1 内容的
+      // 后环不吃 5.1 式馈送）。
       gains.fill(0);
       gains[state.snapBus] = 1;
-      const occupied = this.bedOccupiedBuses(state.id);
-      for (const e of this.expansion.get(state.snapBus) ?? []) {
-        if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
+      if (this.mode === "multichannel") {
+        const occupied = this.bedOccupiedBuses(state.id);
+        for (const e of this.expansion.get(state.snapBus) ?? []) {
+          if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
+        }
       }
     }
     if (state.muted) scalar = 0;
