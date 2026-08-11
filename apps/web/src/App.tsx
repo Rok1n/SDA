@@ -147,7 +147,8 @@ export function App() {
     [play],
   );
 
-  /** Demo: bundled E-AC-3 JOC (Atmos) test vector from the harletty repo. */
+  /** Demo: harletty 的 1.5s JOC 测试矢量 ×20 拼接（E-AC-3 按同步帧
+   *  自同步，拼接即合法长流）→ 30s 15 对象 Atmos 演示。 */
   const playDemo = useCallback(async () => {
     const blob = await (await fetch("/demo-joc.ec3")).blob();
     await play(new File([blob], "demo-joc.ec3"));
