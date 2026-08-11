@@ -21,6 +21,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var index_exports = {};
 __export(index_exports, {
   BINAURAL_MODES: () => BINAURAL_MODES,
+  HEADPHONE_COMPENSATION_PROFILES: () => HEADPHONE_COMPENSATION_PROFILES,
   LAYOUTS: () => LAYOUTS,
   LAYOUT_7_1_4: () => LAYOUT_7_1_4,
   SpatialRenderer: () => SpatialRenderer,
@@ -30,12 +31,14 @@ __export(index_exports, {
   buildBusIrs: () => buildBusIrs,
   detectLayoutId: () => detectLayoutId,
   getBinauralIrSet: () => getBinauralIrSet,
+  headphoneProfileById: () => headphoneProfileById,
   isLfeLabel: () => isLfeLabel,
   mixIrForMode: () => mixIrForMode,
   physicalChannelOrder: () => physicalChannelOrder,
   positionForLabel: () => positionForLabel,
   sphericalToAdm: () => sphericalToAdm,
-  sphericalToWebAudio: () => sphericalToWebAudio
+  sphericalToWebAudio: () => sphericalToWebAudio,
+  validateHeadphoneProfile: () => validateHeadphoneProfile
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -554,6 +557,24 @@ function buildBusIrs(ctx, set, layout, mode) {
   return result;
 }
 
+// packages/renderer/src/headphone-compensation.ts
+var HEADPHONE_COMPENSATION_PROFILES = [];
+function headphoneProfileById(id) {
+  if (!id) return null;
+  return HEADPHONE_COMPENSATION_PROFILES.find((profile) => profile.id === id) ?? null;
+}
+function validateHeadphoneProfile(profile) {
+  const errors = [];
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(profile.id)) errors.push("id \u5FC5\u987B\u662F\u5C0F\u5199 slug");
+  if (!profile.name.trim()) errors.push("\u7F3A\u5C11\u8033\u673A\u578B\u53F7\u540D\u79F0");
+  if (!profile.source.trim()) errors.push("\u7F3A\u5C11\u6D4B\u91CF\u6765\u6E90");
+  if (!profile.target.trim()) errors.push("\u7F3A\u5C11\u76EE\u6807\u66F2\u7EBF\u8BF4\u660E");
+  if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("\u91C7\u6837\u7387\u65E0\u6548");
+  if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
+  if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb \u5FC5\u987B\u4E3A 0 \u6216\u8D1F\u503C");
+  return errors;
+}
+
 // packages/renderer/src/renderer.ts
 var LFE_LOWPASS_HZ = 120;
 var LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
@@ -581,6 +602,8 @@ var SpatialRenderer = class {
   /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   binauralMode = "near";
+  /** 最终双耳回放补偿。无可追溯实测 FIR 时必须保持 null/bypass。 */
+  headphoneProfileId = null;
   onConsumedTick;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
@@ -669,6 +692,17 @@ var SpatialRenderer = class {
   }
   get binauralModeName() {
     return this.binauralMode;
+  }
+  /** 仅接受注册表中带来源、目标和左右 FIR 的真实耳机测量 profile。当前没有
+   * 内置曲线，null 是最终双耳 merge → master 的 literal bypass。 */
+  setHeadphoneCompensation(profileId) {
+    if (profileId !== null && !headphoneProfileById(profileId)) {
+      throw new Error(`\u672A\u77E5\u6216\u672A\u6CE8\u518C\u7684\u8033\u673A\u8865\u507F profile: ${profileId}`);
+    }
+    this.headphoneProfileId = profileId;
+  }
+  get headphoneCompensationProfile() {
+    return headphoneProfileById(this.headphoneProfileId);
   }
   teardownPostNodes() {
     for (const n of this.postNodes) n.disconnect();
@@ -941,6 +975,7 @@ var SpatialRenderer = class {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   BINAURAL_MODES,
+  HEADPHONE_COMPENSATION_PROFILES,
   LAYOUTS,
   LAYOUT_7_1_4,
   SpatialRenderer,
@@ -950,10 +985,12 @@ var SpatialRenderer = class {
   buildBusIrs,
   detectLayoutId,
   getBinauralIrSet,
+  headphoneProfileById,
   isLfeLabel,
   mixIrForMode,
   physicalChannelOrder,
   positionForLabel,
   sphericalToAdm,
-  sphericalToWebAudio
+  sphericalToWebAudio,
+  validateHeadphoneProfile
 });

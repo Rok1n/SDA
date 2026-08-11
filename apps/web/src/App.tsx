@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SdaPlayer, type VisualObject } from "@sda/player";
-import { LAYOUTS, detectLayoutId, type LayoutId, type OutputMode } from "@sda/renderer";
+import {
+  HEADPHONE_COMPENSATION_PROFILES,
+  LAYOUTS,
+  detectLayoutId,
+  type LayoutId,
+  type OutputMode,
+} from "@sda/renderer";
 // @ts-ignore — plain JS asset served by Vite
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
@@ -29,6 +35,8 @@ export function App() {
    *  playerRef 是空的、pause() 会丢 —— play() 建好 player 后按此补发。 */
   const pausedRef = useRef(false);
   const [volume, setVolume] = useState(1);
+  /** null = 不改写 KU100 空间化后的最终双耳信号。 */
+  const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const lastFileRef = useRef<File | null>(null);
   /** 静音推送回调用的最新对象列表（避免闭包拿旧 state）。 */
@@ -129,6 +137,7 @@ export function App() {
         // Always rebuild with the currently selected output mode and layout.
         const player = await createPlayer(mode, layoutId);
         player.setVolume(volume);
+        player.setHeadphoneCompensation(headphoneProfileId);
         applyMutes(mutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
@@ -138,7 +147,7 @@ export function App() {
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume, applyMutes, mutedIds],
+    [createPlayer, mode, layoutId, volume, headphoneProfileId, applyMutes, mutedIds],
   );
 
   const onDrop = useCallback(
@@ -191,6 +200,12 @@ export function App() {
     playerRef.current?.setVolume(v);
   }, []);
 
+  const changeHeadphoneCompensation = useCallback((id: string) => {
+    const next = id || null;
+    setHeadphoneProfileId(next);
+    playerRef.current?.setHeadphoneCompensation(next);
+  }, []);
+
   const replay = useCallback(() => {
     const file = lastFileRef.current;
     if (file) void play(file);
@@ -220,6 +235,17 @@ export function App() {
               <option key={id} value={id}>
                 布局 {id}
               </option>
+            ))}
+          </select>
+          <select
+            value={headphoneProfileId ?? ""}
+            disabled={mode !== "binaural"}
+            title={mode === "binaural" ? "仅显示带来源与实测左右 FIR 的耳机补偿曲线" : "耳机补偿仅用于双耳输出"}
+            onChange={(e) => changeHeadphoneCompensation(e.target.value)}
+          >
+            <option value="">耳机补偿：无</option>
+            {HEADPHONE_COMPENSATION_PROFILES.map((profile) => (
+              <option key={profile.id} value={profile.id}>{profile.name}</option>
             ))}
           </select>
           <button

@@ -34,6 +34,7 @@ import {
 } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
 import { buildBusIrs, type BinauralIrSet, type BinauralMode } from "./hrtf.js";
+import { headphoneProfileById, type HeadphoneCompensationProfile } from "./headphone-compensation.js";
 import type { ObjectEvent } from "@sda/core";
 
 export type OutputMode = "multichannel" | "binaural" | "stereo";
@@ -94,6 +95,8 @@ export class SpatialRenderer {
   /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
    *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
+  /** 最终双耳回放补偿。无可追溯实测 FIR 时必须保持 null/bypass。 */
+  private headphoneProfileId: string | null = null;
   private onConsumedTick?: () => void;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
@@ -190,6 +193,19 @@ export class SpatialRenderer {
 
   get binauralModeName(): BinauralMode {
     return this.binauralMode;
+  }
+
+  /** 仅接受注册表中带来源、目标和左右 FIR 的真实耳机测量 profile。当前没有
+   * 内置曲线，null 是最终双耳 merge → master 的 literal bypass。 */
+  setHeadphoneCompensation(profileId: string | null): void {
+    if (profileId !== null && !headphoneProfileById(profileId)) {
+      throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
+    }
+    this.headphoneProfileId = profileId;
+  }
+
+  get headphoneCompensationProfile(): HeadphoneCompensationProfile | null {
+    return headphoneProfileById(this.headphoneProfileId);
   }
 
   private teardownPostNodes(): void {

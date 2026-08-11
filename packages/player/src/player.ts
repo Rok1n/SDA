@@ -13,7 +13,14 @@
  * The player paces pushes so the renderer stays ~TARGET_AHEAD_SECONDS ahead.
  */
 
-import { SpatialRenderer, getBinauralIrSet, type BinauralMode, type OutputMode, type VirtualSpeaker } from "@sda/renderer";
+import {
+  SpatialRenderer,
+  getBinauralIrSet,
+  headphoneProfileById,
+  type BinauralMode,
+  type OutputMode,
+  type VirtualSpeaker,
+} from "@sda/renderer";
 import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent } from "@sda/core";
 
 export interface VisualObject {
@@ -92,6 +99,8 @@ export class SdaPlayer {
   private mutedObjects = new Set<number>();
   /** 自动布局在用户手动选择后暂停，切回 Auto 时恢复。 */
   private autoLayoutEnabled = true;
+  /** 仅真实测量曲线可选；当前 registry 为空，null = 最终输出 literal bypass。 */
+  private headphoneProfileId: string | null = null;
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
   private disposed = false;
@@ -118,6 +127,7 @@ export class SdaPlayer {
       onConsumedTick: () => this.pumpPcm(),
     });
     await this.renderer.init(workletUrl);
+    this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
     void this.attachBinauralIrs(this.renderer);
     this.worker.postMessage({ type: "init" });
     await this.ready;
@@ -163,6 +173,19 @@ export class SdaPlayer {
   setBinauralMode(mode: BinauralMode): void {
     this.binauralMode = mode;
     this.renderer?.setBinauralMode(mode);
+  }
+
+  /** 设置最终双耳耳机补偿。profile 必须来自 renderer 注册的真实测量曲线。 */
+  setHeadphoneCompensation(profileId: string | null): void {
+    if (profileId !== null && !headphoneProfileById(profileId)) {
+      throw new Error(`未知或未注册的耳机补偿 profile: ${profileId}`);
+    }
+    this.headphoneProfileId = profileId;
+    this.renderer?.setHeadphoneCompensation(profileId);
+  }
+
+  get headphoneCompensationProfileId(): string | null {
+    return this.headphoneProfileId;
   }
 
   /** 静音/取消静音一个对象（Omniphony 式 per-object mute 原语；
@@ -228,6 +251,7 @@ export class SdaPlayer {
         return;
       }
       r.setVolume(this.lastVolume);
+      r.setHeadphoneCompensation(this.headphoneCompensationProfileId);
       this.renderer = r;
       // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
       // 不恢复的话暂停中重建会让音频自己继续响（UI 仍显示暂停，按钮看似失效）
