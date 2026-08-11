@@ -73,9 +73,12 @@ export type LayoutId = keyof typeof LAYOUTS;
  *  → virtual speaker position. Unknown labels fall back to front.
  *  取全部布局的并集，床标签在任何布局下都有位置（不在当前布局的音箱
  *  会由 VBAP 平移到最近的音箱上）。 */
-const LABEL_POSITIONS: Record<string, Spherical> = Object.fromEntries(
-  [...LAYOUTS["9.1.6"]].map((s) => [s.name, s]),
-);
+const LABEL_POSITIONS: Record<string, Spherical> = {
+  ...Object.fromEntries([...LAYOUTS["9.1.6"]].map((s) => [s.name, s])),
+  // 6.1 后中置（eac3 channel_mode 4/5、dependent chanmap Cs 位）：正后方 180°，
+  // 不属于任何布局的音箱，渲染时由 VBAP 平移到后环/环绕对之间。
+  RearCenter: { azimuth: 180, elevation: 0, distance: 1 },
+};
 
 const LABEL_ALIASES: Record<string, string> = {
   // truehd ChannelLabel variants
@@ -102,18 +105,23 @@ const LABEL_ALIASES: Record<string, string> = {
   Trr: "TopRearRight",
   Lfe: "LFE",
   LFE2: "LFE",
+  // eac3 BedChannel Debug 全名（lfe_channel 通常单列 "LFE"，此处防御性覆盖）
+  LowFrequencyEffects: "LFE",
+  LowFrequencyEffects2: "LFE",
   // eac3/dca BedChannel variants
   SurroundLeftRear: "RearLeft",
   SurroundRightRear: "RearRight",
   RearLeftSurround: "RearLeft",
   RearRightSurround: "RearRight",
+  TopSurroundLeft: "TopSideLeft", // eac3 BedChannel::TopSurround* = 顶侧
+  TopSurroundRight: "TopSideRight",
   TopLeft: "TopFrontLeft",
   TopRight: "TopFrontRight",
   WideLeft: "WideLeft", // 9.1 前宽 ±60°
   WideRight: "WideRight",
   TopCenter: "TopFrontLeft",
-  CenterSurround: "RearLeft",
-  RearCenter: "RearLeft",
+  CenterSurround: "RearCenter",
+  RearCenter: "RearCenter",
 };
 
 export function positionForLabel(label: string): Spherical {
@@ -122,7 +130,8 @@ export function positionForLabel(label: string): Spherical {
 }
 
 export function isLfeLabel(label: string): boolean {
-  return label === "LFE" || label === "Lfe" || label === "LFE2";
+  const l = LABEL_ALIASES[label] ?? label;
+  return l === "LFE" || label === "LFE2";
 }
 
 /** 从码流床标签 + 是否有动态对象推断最合适的虚拟扬声器布局。
@@ -140,7 +149,8 @@ export function detectLayoutId(labels: readonly string[], hasDynamics: boolean):
 
   let base: 5 | 7 | 9 = 5;
   if (has("WideLeft", "WideRight")) base = 9;
-  else if (has("RearLeft", "RearRight")) base = 7;
+  // 6.1 的后中置（RearCenter）也按 7.1 床渲染 —— 由后环对合成正后方声像
+  else if (has("RearLeft", "RearRight") || names.has("RearCenter")) base = 7;
 
   let tops: 0 | 2 | 4 | 6 = 0;
   if (has("TopSideLeft", "TopSideRight")) tops = 6;

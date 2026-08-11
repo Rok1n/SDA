@@ -107,9 +107,12 @@ var LAYOUTS = {
   "9.1.4": [...BED_9_1, ...TOP_FRONT, ...TOP_REAR],
   "9.1.6": [...BED_9_1, ...TOP_FRONT, ...TOP_SIDE, ...TOP_REAR]
 };
-var LABEL_POSITIONS = Object.fromEntries(
-  [...LAYOUTS["9.1.6"]].map((s) => [s.name, s])
-);
+var LABEL_POSITIONS = {
+  ...Object.fromEntries([...LAYOUTS["9.1.6"]].map((s) => [s.name, s])),
+  // 6.1 后中置（eac3 channel_mode 4/5、dependent chanmap Cs 位）：正后方 180°，
+  // 不属于任何布局的音箱，渲染时由 VBAP 平移到后环/环绕对之间。
+  RearCenter: { azimuth: 180, elevation: 0, distance: 1 }
+};
 var LABEL_ALIASES = {
   // truehd ChannelLabel variants
   Left: "FrontLeft",
@@ -135,26 +138,33 @@ var LABEL_ALIASES = {
   Trr: "TopRearRight",
   Lfe: "LFE",
   LFE2: "LFE",
+  // eac3 BedChannel Debug 全名（lfe_channel 通常单列 "LFE"，此处防御性覆盖）
+  LowFrequencyEffects: "LFE",
+  LowFrequencyEffects2: "LFE",
   // eac3/dca BedChannel variants
   SurroundLeftRear: "RearLeft",
   SurroundRightRear: "RearRight",
   RearLeftSurround: "RearLeft",
   RearRightSurround: "RearRight",
+  TopSurroundLeft: "TopSideLeft",
+  // eac3 BedChannel::TopSurround* = 顶侧
+  TopSurroundRight: "TopSideRight",
   TopLeft: "TopFrontLeft",
   TopRight: "TopFrontRight",
   WideLeft: "WideLeft",
   // 9.1 前宽 ±60°
   WideRight: "WideRight",
   TopCenter: "TopFrontLeft",
-  CenterSurround: "RearLeft",
-  RearCenter: "RearLeft"
+  CenterSurround: "RearCenter",
+  RearCenter: "RearCenter"
 };
 function positionForLabel(label) {
   const aliased = LABEL_ALIASES[label] ?? label;
   return LABEL_POSITIONS[aliased] ?? { azimuth: 0, elevation: 0, distance: 1 };
 }
 function isLfeLabel(label) {
-  return label === "LFE" || label === "Lfe" || label === "LFE2";
+  const l = LABEL_ALIASES[label] ?? label;
+  return l === "LFE" || label === "LFE2";
 }
 function detectLayoutId(labels, hasDynamics) {
   const names = new Set(
@@ -163,7 +173,7 @@ function detectLayoutId(labels, hasDynamics) {
   const has = (...ns) => ns.some((n) => names.has(n));
   let base = 5;
   if (has("WideLeft", "WideRight")) base = 9;
-  else if (has("RearLeft", "RearRight")) base = 7;
+  else if (has("RearLeft", "RearRight") || names.has("RearCenter")) base = 7;
   let tops = 0;
   if (has("TopSideLeft", "TopSideRight")) tops = 6;
   else if (has("TopRearLeft", "TopRearRight")) tops = 4;
@@ -499,8 +509,9 @@ var SpatialRenderer = class {
   convs = [];
   sources = /* @__PURE__ */ new Map();
   irSet = null;
-  /** 杜比 Binaural Settings 语义：虚拟音箱距离 近0.7m / 中1.2m / 远2.5m。 */
-  binauralMode = "mid";
+  /** 杜比 Binaural Settings 语义：虚拟音箱参考距离。UI 固定"近"（0.7m）；
+   *  mid/far 机制保留在引擎内，暂不从界面暴露。 */
+  binauralMode = "near";
   onConsumedTick;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
