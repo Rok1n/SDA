@@ -559,17 +559,7 @@ function buildBusIrs(ctx, set, layout, mode) {
 }
 
 // packages/renderer/src/headphone-compensation.ts
-var HEADPHONE_COMPENSATION_PROFILES = [
-  {
-    id: "airpods-pro-2-anc-averaged",
-    name: "AirPods Pro 2\uFF08ANC\uFF0C\u5E73\u5747\u6D4B\u91CF\u8FD1\u4F3C\uFF09",
-    source: "AutoEq crinacle 711 in-ear Apple AirPods Pro 2 (ANC mode), minimum-phase 48 kHz output",
-    target: "AutoEq in-ear target; averaged response, not independent L/R measurement",
-    sampleRate: 48e3,
-    leftFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
-    rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32"
-  }
-];
+var HEADPHONE_COMPENSATION_PROFILES = [];
 var rawCache = /* @__PURE__ */ new Map();
 function headphoneProfileById(id) {
   if (!id) return null;
@@ -581,6 +571,8 @@ function validateHeadphoneProfile(profile) {
   if (!profile.name.trim()) errors.push("\u7F3A\u5C11\u8033\u673A\u578B\u53F7\u540D\u79F0");
   if (!profile.source.trim()) errors.push("\u7F3A\u5C11\u6D4B\u91CF\u6765\u6E90");
   if (!profile.target.trim()) errors.push("\u7F3A\u5C11\u76EE\u6807\u66F2\u7EBF\u8BF4\u660E");
+  if (!profile.leftMeasurement.trim() || !profile.rightMeasurement.trim()) errors.push("\u5FC5\u987B\u63D0\u4F9B\u72EC\u7ACB\u5DE6\u53F3\u6D4B\u91CF\u6765\u6E90");
+  if (!profile.balanceEvidence.trim()) errors.push("\u7F3A\u5C11\u6D4B\u91CF\u72B6\u6001\u6216\u901A\u9053\u6620\u5C04/\u5E73\u8861\u8BC1\u660E");
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("\u91C7\u6837\u7387\u65E0\u6548");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
   return errors;

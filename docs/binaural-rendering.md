@@ -184,26 +184,15 @@ KU100 的 HRIR/BRIR 已包含耳廓、头影与房间方向线索，不能用一
 “修平人头麦”。耳机补偿只能放在所有虚拟音箱双耳化并汇成最终 L/R 信号**之后**，
 校正用户耳机的回放响应，而不是改变每只虚拟音箱或 KU100 测量资产。
 
-SDA 默认仍是 `无补偿`，即最终双耳 merger 到输出标定的 literal bypass。内置的
-`AirPods Pro 2（ANC，平均测量近似）` 是唯一例外：它使用 AutoEq 基于 crinacle 711
-in-ear 的 AirPods Pro 2 **ANC mode** 测量所生成的 48 kHz minimum-phase FIR。SDA 将
-同一份平均测量 FIR 分别接到两个独立的最终耳道卷积器（`normalize = false`）。FIR 在资产
-构建时以 `250 Hz–2 kHz`、1 Hz 步进、`sum(|H(f)|²/f) / sum(1/f)` 的 pink-weighted
-reference power 归一化为 0 dB；当前 scalar 为 `1.6936370538`（`+4.576406934 dB`）。
-该离线 scalar 保留完整相对 EQ 曲线与相位，避免选择补偿后核心节目频段整体变小。运行时只
-应用归一化后的 L/R FIR，不添加 profile preamp、recovery、响度匹配、压缩器或 limiter，
-然后直接进入所有双耳输出共同的 `+6 dB` makeup 与 final safety compressor。归一化 FIR
-在约 `5106 Hz` 的峰值为 `+4.378713 dB`，高峰值内容仍可能触发共享 final safety。
-它**不是**左右独立补偿，也不保证适用于关闭 ANC、通透模式、不同耳塞、固件或佩戴贴合。
-归一化参考带不保证每个节目严格等响，但 SDA 不会再在 runtime 用 profile 级增益或动态
-处理去改写该 EQ。资产来源、
-校验和与转换方法见
-`apps/web/public/headphone-compensation/airpods-pro-2-anc-averaged/README.md`。
+SDA 默认且当前唯一 profile 是 `无补偿`，即最终双耳 merger 到输出标定的 literal
+bypass。此前的 `AirPods Pro 2（ANC，平均测量近似）` 已撤回：它没有独立左右耳原始
+测量或针对 KU100 双耳 programme 的 balance 验证，尽管 FIR 文件可以写成相同，仍可能按
+节目左右频谱差异改变主观声像中心，不能被作为可靠的耳机补偿发布。
 
-任何补偿均位于最终双耳 merger **之后**、输出标定和 final safety compressor **之前**，
-所以不会改变每方向 HRIR/BRIR、对象/床层增益或 LFE 支路。立体声与多声道输出不会经过
-该层。只有同时包含耳机型号/版本、公开或可审计来源、目标曲线说明、左右 FIR 和采样率的
-profile 才能被注册。
+未来 profile 必须同时包含：耳机型号/版本、公开或可审计来源、目标曲线说明、**独立的
+left/right 原始测量来源**、夹具与 ANC/耳塞/固件/贴合状态、已验证的左右通道映射和平衡
+证明、左右 FIR 与采样率。合格 profile 仍只位于最终双耳 merger 后的独立 L/R FIR；它不
+改变每方向 HRIR/BRIR、对象/床层增益或 LFE 支路，立体声和多声道输出也不会经过该层。
 
 ## 4. Apple 侧：移动端原生渲染可用 API（Expo 原生模块设计依据）
 

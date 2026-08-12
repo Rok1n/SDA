@@ -12,8 +12,8 @@ eval(source);
 
 const ceiling = Math.pow(10, -0.1 / 20);
 const guard = new PeakGuard({ processorOptions: { ceilingDb: -0.1 } });
-const left = new Float32Array([0.25, ceiling * 1.5, 0.25, -ceiling * 1.5]);
-const right = new Float32Array([-0.5, 0.4, -0.3, 0.2]);
+const left = new Float32Array([0.25, ceiling * 1.5, 0.25, -ceiling * 1.5, 0.37]);
+const right = new Float32Array([-0.5, 0.4, -0.3, 0.2, 0.37]);
 const outLeft = new Float32Array(left.length);
 const outRight = new Float32Array(right.length);
 guard.process([[left, right]], [[outLeft, outRight]]);
@@ -24,8 +24,10 @@ function check(condition, text) {
   console.log(`${condition ? "PASS" : "FAIL"}  ${text}`);
 }
 
-check(outLeft[0] === left[0] && outLeft[2] === left[2] && outRight.every((value, i) => value === right[i]),
+check(outLeft[0] === left[0] && outLeft[2] === left[2] && outRight.slice(0, 4).every((value, i) => value === right[i]),
   "ceiling 内样本逐样本不变，左右不交叉");
+check(outLeft[4] === outRight[4] && outLeft[4] === left[4],
+  "相等的左右参考样本保持严格平衡");
 check(Math.abs(outLeft[1] - ceiling) < 1e-7 && Math.abs(outLeft[3] + ceiling) < 1e-7,
   "超过 ceiling 的正负样本被独立限制到 -0.1dBFS");
 check(outLeft[2] === left[2], "峰值后的普通样本立即恢复，不存在 release ducking");

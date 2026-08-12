@@ -1,4 +1,5 @@
-// Headless runtime test: averaged FIR applies only to final binaural L/R output.
+// Headless runtime test: without a qualified profile, binaural output is literal
+// FIR bypass while the shared emergency guard remains persistent.
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -51,8 +52,6 @@ class FakeAudioContext {
   async close() { this.state = "closed"; }
 }
 
-const fir = new Float32Array([1, 0, 0, 0]);
-globalThis.fetch = async (url) => ({ ok: true, status: 200, arrayBuffer: async () => fir.buffer.slice(0) });
 const { LAYOUTS, SpatialRenderer } = await import(pathToFileURL(bundle).href);
 let failed = 0;
 function check(condition, text) {
@@ -64,27 +63,20 @@ const ctx = new FakeAudioContext();
 const renderer = new SpatialRenderer(ctx, { mode: "binaural", layout: LAYOUTS["7.1.4"] });
 await renderer.init("mock://worklet");
 const initialWorklets = worklets;
-check(ctx.convolverCount === 0, "无 profile 时 fallback 双耳图没有校正 FIR convolver");
-renderer.setHeadphoneCompensation("airpods-pro-2-anc-averaged");
-await new Promise((resolve) => setTimeout(resolve, 0));
-check(worklets === initialWorklets, "加载 profile 不重建 worklet");
-check(ctx.convolverCount === 2, "平均 profile 建立两个独立最终耳道 FIR convolver");
-const leftInput = wiring.find((edge) => edge.to === "profile-conv-0" && edge.out === 0);
-const rightInput = wiring.find((edge) => edge.to === "profile-conv-1" && edge.out === 1);
-const leftOutput = wiring.find((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("merge2-") && edge.input === 0);
-const rightOutput = wiring.find((edge) => edge.from === "profile-conv-1" && edge.to === leftOutput?.to && edge.input === 1);
-const makeup = leftOutput && wiring.find((edge) => edge.from === leftOutput.to && edge.to?.startsWith("gain-"));
-const guard = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to === "sda-final-peak-guard");
-check(!!leftInput && !!rightInput && !!leftOutput && !!rightOutput, "左右 FIR 保持通道身份，不交叉馈送");
-check(!!makeup && !!guard, "FIR merger 直接进入共享全局 makeup 与 emergency peak guard");
-check(wiring.filter((edge) => edge.from === leftOutput?.to && edge.to?.startsWith("compressor-")).length === 0,
-  "profile FIR 后不创建独立 compressor 或 limiter");
-check(initialWorklets === 2 && wiring.some((edge) => edge.to === "sda-final-peak-guard"),
-  "AirPods 与 bypass 复用同一个常驻最终 emergency peak guard");
-renderer.setHeadphoneCompensation(null);
-await new Promise((resolve) => setTimeout(resolve, 0));
-check(worklets === initialWorklets, "切回 bypass 不重建 worklet");
-check(renderer.headphoneCompensationProfile === null, "切回 bypass 清除已选 profile");
+const guardInput = wiring.find((edge) => edge.to === "sda-final-peak-guard" && edge.from?.startsWith("gain-"));
+const makeupInput = guardInput && wiring.find((edge) => edge.to === guardInput.from && edge.from?.startsWith("merge"));
+check(initialWorklets === 2, "初始化只有 source renderer + shared emergency guard 两个常驻 worklet");
+check(ctx.convolverCount === 0, "无合格 profile 时不创建最终耳机 FIR convolver");
+check(!!guardInput && !!makeupInput, "最终 L/R merger 直接进入共享 makeup 与 emergency guard");
+check(ctx.compressorCount === 1, "无 profile 时只有 LFE 使用 DynamicsCompressor");
+let rejected = false;
+try {
+  renderer.setHeadphoneCompensation("airpods-pro-2-anc-averaged");
+} catch {
+  rejected = true;
+}
+check(rejected && worklets === initialWorklets && ctx.convolverCount === 0,
+  "撤回或未知 profile 被拒绝，保持 literal bypass 且不重建 worklet");
 
-console.log(failed ? `\n${failed} 项失败` : "\n耳机补偿运行时接线通过");
+console.log(failed ? `\n${failed} 项失败` : "\n耳机补偿 bypass 运行时接线通过");
 process.exit(failed ? 1 : 0);

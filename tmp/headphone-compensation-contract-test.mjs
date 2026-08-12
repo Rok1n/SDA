@@ -1,10 +1,8 @@
-// Headless contract test for the built-in AirPods Pro 2 ANC averaged profile.
-import { readFileSync } from "node:fs";
+// Headless contract test: built-ins require auditable independent L/R balance.
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const bundle = path.join(root, "tmp/renderer.bundle.cjs");
+const bundle = path.join(path.dirname(fileURLToPath(import.meta.url)), "renderer.bundle.cjs");
 const {
   HEADPHONE_COMPENSATION_PROFILES,
   headphoneProfileById,
@@ -17,35 +15,26 @@ function check(condition, text) {
   console.log(`${condition ? "PASS" : "FAIL"}  ${text}`);
 }
 
-const profile = headphoneProfileById("airpods-pro-2-anc-averaged");
-check(HEADPHONE_COMPENSATION_PROFILES.length === 1, "内置一个明确标注的平均近似 profile");
-check(!!profile && profile.name.includes("平均测量近似"), "AirPods Pro 2 profile 明确标注平均近似");
-check(profile?.sampleRate === 48000 && !("preampDb" in (profile ?? {})) && !("postFirLoudnessTrimDb" in (profile ?? {})),
-  "AirPods profile 只有 48kHz FIR EQ 元数据，不带 profile gain 或 loudness trim");
-check(profile !== null && validateHeadphoneProfile(profile).length === 0, "内置 profile 通过元数据契约校验");
+const validProfile = {
+  id: "measured-headphone-rev-a",
+  name: "Measured Headphone Rev A",
+  source: "https://example.invalid/method",
+  target: "Documented target v1",
+  leftMeasurement: "https://example.invalid/left.csv",
+  rightMeasurement: "https://example.invalid/right.csv",
+  balanceEvidence: "GRAS rig, ANC state, tips, firmware, and verified L/R mapping",
+  sampleRate: 48000,
+  leftFirUrl: "/headphone/measured-left.f32",
+  rightFirUrl: "/headphone/measured-right.f32",
+};
+
+check(HEADPHONE_COMPENSATION_PROFILES.length === 0, "不内置未经独立左右平衡验证的耳机 profile");
+check(headphoneProfileById("airpods-pro-2-anc-averaged") === null, "已撤回 AirPods 平均测量 profile");
 check(headphoneProfileById("unknown") === null, "未知 profile 不可选");
-check(
-  validateHeadphoneProfile({
-    id: "BAD ID",
-    name: "",
-    source: "",
-    target: "",
-    sampleRate: 0,
-    leftFirUrl: "",
-    rightFirUrl: "",
-  }).length >= 6,
-  "缺来源或左右 FIR 的 profile 被拒绝",
-);
+check(validateHeadphoneProfile(validProfile).length === 0,
+  "独立左右测量、状态/映射证明与左右 FIR 齐全的 profile 可通过契约");
+check(validateHeadphoneProfile({ ...validProfile, leftMeasurement: "", balanceEvidence: "" }).length >= 2,
+  "缺独立左右测量或平衡证明的 profile 被拒绝");
 
-if (profile) {
-  const asset = (url) => path.join(root, "apps/web/public", url.replace(/^\//, ""));
-  const left = readFileSync(asset(profile.leftFirUrl));
-  const right = readFileSync(asset(profile.rightFirUrl));
-  check(left.length === 4800 * Float32Array.BYTES_PER_ELEMENT, "左耳 FIR 为 4,800 taps f32le");
-  check(left.equals(right), "平均测量近似的左右 FIR 逐字节相同");
-  const taps = new Float32Array(left.buffer, left.byteOffset, left.length / Float32Array.BYTES_PER_ELEMENT);
-  check(taps.every(Number.isFinite), "FIR taps 均为有限值");
-}
-
-console.log(failed ? `\n${failed} 项失败` : "\n耳机补偿 profile 契约通过");
+console.log(failed ? `\n${failed} 项失败` : "\n耳机补偿 profile 平衡契约通过");
 process.exit(failed ? 1 : 0);

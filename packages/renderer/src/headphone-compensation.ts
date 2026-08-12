@@ -14,6 +14,11 @@ export interface HeadphoneCompensationProfile {
   source: string;
   /** The response target used when deriving the correction FIRs. */
   target: string;
+  /** Public references for independently measured left/right source responses. */
+  leftMeasurement: string;
+  rightMeasurement: string;
+  /** Measurement rig, playback state, fit/tip/firmware, and verified channel mapping. */
+  balanceEvidence: string;
   sampleRate: number;
   /** Final stereo-output FIR asset URLs. Left/right may intentionally differ. */
   leftFirUrl: string;
@@ -26,21 +31,11 @@ export interface HeadphoneCompensationBuffers {
 }
 
 /**
- * AirPods Pro 2 ANC compensation uses AutoEq's crinacle 711 averaged response.
- * Both FIR files deliberately match: this is an averaged approximation, not an
- * independently measured left/right correction. See the colocated asset README.
+ * Built-ins require independently measured L/R responses and auditable balance
+ * evidence. The former AirPods Pro 2 average AutoEq FIR is intentionally not
+ * registered: it could not meet that bar for KU100 binaural programme playback.
  */
-export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProfile[] = [
-  {
-    id: "airpods-pro-2-anc-averaged",
-    name: "AirPods Pro 2（ANC，平均测量近似）",
-    source: "AutoEq crinacle 711 in-ear Apple AirPods Pro 2 (ANC mode), minimum-phase 48 kHz output",
-    target: "AutoEq in-ear target; averaged response, not independent L/R measurement",
-    sampleRate: 48000,
-    leftFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
-    rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
-  },
-];
+export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProfile[] = [];
 
 interface RawHeadphoneCompensation {
   profile: HeadphoneCompensationProfile;
@@ -61,6 +56,8 @@ export function validateHeadphoneProfile(profile: HeadphoneCompensationProfile):
   if (!profile.name.trim()) errors.push("缺少耳机型号名称");
   if (!profile.source.trim()) errors.push("缺少测量来源");
   if (!profile.target.trim()) errors.push("缺少目标曲线说明");
+  if (!profile.leftMeasurement.trim() || !profile.rightMeasurement.trim()) errors.push("必须提供独立左右测量来源");
+  if (!profile.balanceEvidence.trim()) errors.push("缺少测量状态或通道映射/平衡证明");
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("采样率无效");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("必须提供左右 FIR 资产");
   return errors;

@@ -12,7 +12,7 @@ if (!manifestPath) {
 const profile = JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
 const errors = [];
 if (!/^[a-z0-9][a-z0-9-]*$/.test(profile.id ?? "")) errors.push("id 必须是小写 slug");
-for (const key of ["name", "source", "target", "leftFirUrl", "rightFirUrl"]) {
+for (const key of ["name", "source", "target", "leftMeasurement", "rightMeasurement", "balanceEvidence", "leftFirUrl", "rightFirUrl"]) {
   if (typeof profile[key] !== "string" || !profile[key].trim()) errors.push(`缺少 ${key}`);
 }
 if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("sampleRate 无效");
