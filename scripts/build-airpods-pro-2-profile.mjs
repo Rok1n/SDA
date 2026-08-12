@@ -42,14 +42,55 @@ function parseStereoPcm16Wav(buffer) {
   return { left, right, sampleRate };
 }
 
+function responsePower(taps, sampleRate, hz) {
+  let real = 0;
+  let imag = 0;
+  for (let i = 0; i < taps.length; i++) {
+    const phase = (2 * Math.PI * hz * i) / sampleRate;
+    real += taps[i] * Math.cos(phase);
+    imag -= taps[i] * Math.sin(phase);
+  }
+  return real * real + imag * imag;
+}
+
+function referencePower(taps, sampleRate) {
+  let power = 0;
+  let weights = 0;
+  for (let hz = 250; hz <= 2000; hz++) {
+    const weight = 1 / hz;
+    power += responsePower(taps, sampleRate, hz) * weight;
+    weights += weight;
+  }
+  return power / weights;
+}
+
 const { left, right, sampleRate } = parseStereoPcm16Wav(readFileSync(resolve(inputPath)));
 for (let i = 0; i < left.length; i++) {
   if (!Number.isFinite(left[i]) || !Number.isFinite(right[i])) throw new Error(`Non-finite tap at ${i}`);
   if (left[i] !== right[i]) throw new Error(`Expected averaged L/R FIR, channels differ at tap ${i}`);
 }
+const sourceReferencePower = referencePower(left, sampleRate);
+if (!Number.isFinite(sourceReferencePower) || sourceReferencePower <= 0) {
+  throw new Error("Invalid 250Hz-2kHz reference power");
+}
+const scalar = 1 / Math.sqrt(sourceReferencePower);
+const normalized = new Float32Array(left.length);
+for (let i = 0; i < normalized.length; i++) normalized[i] = left[i] * scalar;
+const normalizedReferenceDb = 10 * Math.log10(referencePower(normalized, sampleRate));
+let peakPower = 0;
+let peakHz = 0;
+for (let hz = 20; hz <= 20000; hz++) {
+  const power = responsePower(normalized, sampleRate, hz);
+  if (power > peakPower) {
+    peakPower = power;
+    peakHz = hz;
+  }
+}
 for (const outputPath of [leftPath, rightPath]) {
   const absolutePath = resolve(outputPath);
   mkdirSync(dirname(absolutePath), { recursive: true });
-  writeFileSync(absolutePath, Buffer.from(left.buffer));
+  writeFileSync(absolutePath, Buffer.from(normalized.buffer));
 }
-console.log(`Wrote identical ${left.length}-tap AirPods Pro 2 ANC averaged FIRs @ ${sampleRate}Hz`);
+console.log(`Source reference: ${(10 * Math.log10(sourceReferencePower)).toFixed(6)}dB; scalar=${scalar.toFixed(10)} (${(20 * Math.log10(scalar)).toFixed(6)}dB)`);
+console.log(`Normalized reference: ${normalizedReferenceDb.toFixed(6)}dB; 20Hz-20kHz peak ${(10 * Math.log10(peakPower)).toFixed(6)}dB @ ${peakHz}Hz`);
+console.log(`Wrote identical ${normalized.length}-tap AirPods Pro 2 ANC reference-normalized FIRs @ ${sampleRate}Hz`);
