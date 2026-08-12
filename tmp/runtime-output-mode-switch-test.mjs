@@ -27,12 +27,12 @@ function node(tag) {
   };
 }
 class FakeAudioWorkletNode {
-  constructor() {
+  constructor(_, name) {
     worklets++;
-    this._tag = "worklet";
+    this._tag = name;
     this.port = { postMessage: (msg) => posted.push(msg), onmessage: null };
   }
-  connect(to, out, input) { wiring.push({ from: "worklet", to: to?._tag, out, input }); }
+  connect(to, out, input) { wiring.push({ from: this._tag, to: to?._tag, out, input }); }
   disconnect() {}
 }
 globalThis.AudioWorkletNode = FakeAudioWorkletNode;
@@ -97,12 +97,12 @@ check(modePathOutputs >= 3, `三条常驻输出路径已连接到独立 mode gai
 const makeup = wiring.find((edge) => edge.from === "merge16" && edge.to === "gain");
 const lfePeak = wiring.find((edge) => edge.from === "gain" && edge.to === "compressor-0");
 const lfeEarSplit = wiring.find((edge) => edge.from === "compressor-0" && edge.to === "gain");
-const safety = wiring.find((edge) => edge.from === "gain" && edge.to === "compressor-1");
-const binauralOutput = wiring.find((edge) => edge.from === "compressor-1" && edge.to === "gain");
+const guard = wiring.find((edge) => edge.from === "gain" && edge.to === "sda-final-peak-guard");
+const binauralOutput = wiring.find((edge) => edge.from === "sda-final-peak-guard" && edge.to === "gain");
 check(!!makeup, "双耳最终 merger 后存在独立 +6dB makeup gain 节点");
-check(!!lfePeak && !!lfeEarSplit, "LFE +10dB 后先经独立 peak compressor，再等量分送双耳");
-check(!!safety && !!binauralOutput, "双耳 makeup 后接最终 safety compressor，再进入 mode gain");
-check(wiring.filter((edge) => edge.to?.startsWith("compressor-")).length === 2, "只有 LFE 支路与最终双耳总和经过 compressor");
+check(!!lfePeak && !!lfeEarSplit, "LFE 后仍有独立 peak compressor，再等量分送双耳");
+check(!!guard && !!binauralOutput, "双耳 makeup 后接 emergency peak guard，再进入 mode gain");
+check(wiring.filter((edge) => edge.to?.startsWith("compressor-")).length === 1, "只有 LFE 支路经过 DynamicsCompressor");
 check(ctx.destination.channelCount === 16, `初始化一次固定最大设备通道数（${ctx.destination.channelCount}）`);
 
 console.log(failed ? `\n${failed} 项失败` : "\n播放中输出模式切换通过");

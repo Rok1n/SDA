@@ -19,12 +19,12 @@ function node(tag) {
   };
 }
 class FakeAudioWorkletNode {
-  constructor() {
+  constructor(_, name) {
     worklets++;
-    this._tag = "worklet";
+    this._tag = name;
     this.port = { postMessage() {}, onmessage: null };
   }
-  connect(to, out, input) { wiring.push({ from: "worklet", to: to?._tag, out, input }); }
+  connect(to, out, input) { wiring.push({ from: this._tag, to: to?._tag, out, input }); }
   disconnect() {}
 }
 globalThis.AudioWorkletNode = FakeAudioWorkletNode;
@@ -74,11 +74,13 @@ const rightInput = wiring.find((edge) => edge.to === "profile-conv-1" && edge.ou
 const leftOutput = wiring.find((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("merge2-") && edge.input === 0);
 const rightOutput = wiring.find((edge) => edge.from === "profile-conv-1" && edge.to === leftOutput?.to && edge.input === 1);
 const makeup = leftOutput && wiring.find((edge) => edge.from === leftOutput.to && edge.to?.startsWith("gain-"));
-const safety = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to?.startsWith("compressor-"));
+const guard = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to === "sda-final-peak-guard");
 check(!!leftInput && !!rightInput && !!leftOutput && !!rightOutput, "左右 FIR 保持通道身份，不交叉馈送");
-check(!!makeup && !!safety, "FIR merger 直接进入共享全局 makeup 与最终 safety");
+check(!!makeup && !!guard, "FIR merger 直接进入共享全局 makeup 与 emergency peak guard");
 check(wiring.filter((edge) => edge.from === leftOutput?.to && edge.to?.startsWith("compressor-")).length === 0,
   "profile FIR 后不创建独立 compressor 或 limiter");
+check(initialWorklets === 2 && wiring.some((edge) => edge.to === "sda-final-peak-guard"),
+  "AirPods 与 bypass 复用同一个常驻最终 emergency peak guard");
 renderer.setHeadphoneCompensation(null);
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(worklets === initialWorklets, "切回 bypass 不重建 worklet");

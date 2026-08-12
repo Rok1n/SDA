@@ -44,12 +44,8 @@ const LFE_LOWPASS_HZ = 120;
 const BINAURAL_LFE_INBAND_GAIN = 1;
 /** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
 const BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
-/** 最终双耳总和的防削波保护：仅峰值重叠时介入，不改变单个虚拟音箱的空间平衡。 */
-const BINAURAL_SAFETY_THRESHOLD_DB = -1;
-const BINAURAL_SAFETY_KNEE_DB = 0;
-const BINAURAL_SAFETY_RATIO = 4;
-const BINAURAL_SAFETY_ATTACK_S = 0.003;
-const BINAURAL_SAFETY_RELEASE_S = 0.15;
+/** 最终紧急 sample-peak ceiling；无 lookahead/oversampling，不作为 true-peak limiter 声称。 */
+const BINAURAL_PEAK_GUARD_CEILING_DB = -0.1;
 /** LFE 单独约束峰值，避免底鼓等低频驱动最终全频 safety compressor。 */
 const BINAURAL_LFE_PEAK_THRESHOLD_DB = -3;
 const BINAURAL_LFE_PEAK_KNEE_DB = 0;
@@ -98,6 +94,8 @@ export class SpatialRenderer {
   private modeGains = new Map<OutputMode, GainNode>();
   private vbap: VbapSolver;
   private node: AudioWorkletNode | null = null;
+  /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
+  private peakGuard: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
   private postNodes: AudioNode[] = [];
   /** 双耳路径每总线的卷积器（LFE/兜底位置为 null），切模式时只换 buffer。 */
@@ -188,6 +186,12 @@ export class SpatialRenderer {
         this.onConsumedTick?.();
       }
     };
+    this.peakGuard = new AudioWorkletNode(this.ctx, "sda-final-peak-guard", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: { ceilingDb: BINAURAL_PEAK_GUARD_CEILING_DB },
+    });
     this.buildOutputGraph();
   }
 
@@ -357,12 +361,9 @@ export class SpatialRenderer {
     const merger = this.ctx.createChannelMerger(n);
     const makeup = this.ctx.createGain();
     makeup.gain.value = BINAURAL_MAKEUP_GAIN;
-    const safety = this.ctx.createDynamicsCompressor();
-    safety.threshold.value = BINAURAL_SAFETY_THRESHOLD_DB;
-    safety.knee.value = BINAURAL_SAFETY_KNEE_DB;
-    safety.ratio.value = BINAURAL_SAFETY_RATIO;
-    safety.attack.value = BINAURAL_SAFETY_ATTACK_S;
-    safety.release.value = BINAURAL_SAFETY_RELEASE_S;
+    const peakGuard = this.peakGuard;
+    if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
+    peakGuard.disconnect();
     this.node!.connect(splitter);
     const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
 
@@ -452,9 +453,9 @@ export class SpatialRenderer {
       finalBinaural = earMerge;
     }
     finalBinaural.connect(makeup);
-    makeup.connect(safety);
-    safety.connect(output);
-    this.postNodes.push(splitter, merger, makeup, safety);
+    makeup.connect(peakGuard);
+    peakGuard.connect(output);
+    this.postNodes.push(splitter, merger, makeup);
   }
 
   /** Register a source. Bed channels pass their speaker label; objects an event id.
@@ -667,6 +668,8 @@ export class SpatialRenderer {
 
   async close(): Promise<void> {
     this.teardownPostNodes();
+    this.peakGuard?.disconnect();
+    this.peakGuard = null;
     this.node?.disconnect();
     this.master?.disconnect();
     if (this.ctx.state !== "closed") await this.ctx.close();

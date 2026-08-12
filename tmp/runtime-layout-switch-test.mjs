@@ -67,7 +67,7 @@ renderer.addSource("obj:9");
 renderer.applyEvent({ id: 9, pos: [-1, 0, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
 renderer.setSourceMuted("obj:9", true);
 
-check(worklets === 1, `初始只创建一个 worklet（${worklets}）`);
+check(worklets === 2, `初始创建 source renderer + final peak guard 两个 worklet（${worklets}）`);
 check(latest("bed:fl").gains.length === LAYOUTS["9.1.6"].length, "输出固定为 9.1.6 最大总线拓扑");
 
 for (const id of ["7.1.4", "9.1.6", "5.1"]) {

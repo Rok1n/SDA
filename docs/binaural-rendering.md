@@ -123,17 +123,17 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 KU100 IR 在运行时按左右耳**合计能量**归一化，保证方向与 Near/Mid/Far 间的相对
 响度一致；它不保证经过头部/耳廓频响后的主观响度等于未空间化立体声。SDA 因此在
 全部虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+6 dB` makeup gain，
-再经过最终双耳 safety compressor，最后进入输出模式淡化和用户 master 音量。
+再经过最终双耳 emergency peak guard，最后进入输出模式淡化和用户 master 音量。
 
 该值是 SDA 针对 AirPods/耳机主观响度的应用级标定点，**不是** Dolby、Apple 或
 Genelec 发布的固定双耳增益，也不是 KU100 补偿/耳机 profile。它不改 HRIR/BRIR
 资产、每方向能量归一化、LFE 的规范性 `+10 dB` 或用户音量控制。
 
-`+6 dB` 缩小了多总线同相峰值的余量，因此输出图只在最终 L/R 总和后放置一个保守的
-Web Audio `DynamicsCompressorNode`（`-1 dBFS` threshold、`4:1` ratio、`3 ms`
-attack、`150 ms` release）。它是防削波 safety compressor，**不是** true-peak limiter；
-低于阈值的正常节目不会发生 gain reduction，方向 IR、每对象增益与空间平衡都在其前级
-保持不变；密集同相总和、LFE 或高峰值瞬态接近输出峰值时才可能产生轻微 gain reduction。
+`+6 dB` 缩小了多总线同相峰值的余量，因此输出图只在最终 L/R 总和后放置 emergency
+sample-peak guard（ceiling `-0.1 dBFS`）。它逐样本、逐耳独立地限制超过 ceiling 的值；
+ceiling 以下严格 unity gain，峰值后的正常样本立即恢复，因此不会以 attack/release 包络
+持续压低完整节目内容。该节点没有 lookahead 或 oversampling，**不是** true-peak limiter；
+极端重叠或 inter-sample peak 的保护不等同于专业 true-peak 限制器。
 
 配合每源距离处理（`renderer.ts applyGains`）：
 1. **归一化对象距离**：ADM 距离 1 是虚拟音箱环。环内维持 0 dB；环外按

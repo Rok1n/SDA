@@ -636,11 +636,7 @@ async function getHeadphoneCompensationBuffers(ctx, profile) {
 var LFE_LOWPASS_HZ = 120;
 var BINAURAL_LFE_INBAND_GAIN = 1;
 var BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
-var BINAURAL_SAFETY_THRESHOLD_DB = -1;
-var BINAURAL_SAFETY_KNEE_DB = 0;
-var BINAURAL_SAFETY_RATIO = 4;
-var BINAURAL_SAFETY_ATTACK_S = 3e-3;
-var BINAURAL_SAFETY_RELEASE_S = 0.15;
+var BINAURAL_PEAK_GUARD_CEILING_DB = -0.1;
 var BINAURAL_LFE_PEAK_THRESHOLD_DB = -3;
 var BINAURAL_LFE_PEAK_KNEE_DB = 0;
 var BINAURAL_LFE_PEAK_RATIO = 8;
@@ -660,6 +656,8 @@ var SpatialRenderer = class {
   modeGains = /* @__PURE__ */ new Map();
   vbap;
   node = null;
+  /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
+  peakGuard = null;
   master = null;
   postNodes = [];
   /** 双耳路径每总线的卷积器（LFE/兜底位置为 null），切模式时只换 buffer。 */
@@ -746,6 +744,12 @@ var SpatialRenderer = class {
         this.onConsumedTick?.();
       }
     };
+    this.peakGuard = new AudioWorkletNode(this.ctx, "sda-final-peak-guard", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: { ceilingDb: BINAURAL_PEAK_GUARD_CEILING_DB }
+    });
     this.buildOutputGraph();
   }
   /** 注入双耳 IR 集；双耳路径常驻，即使当前未选双耳也立即更新，便于实时切回。 */
@@ -893,12 +897,9 @@ var SpatialRenderer = class {
     const merger = this.ctx.createChannelMerger(n);
     const makeup = this.ctx.createGain();
     makeup.gain.value = BINAURAL_MAKEUP_GAIN;
-    const safety = this.ctx.createDynamicsCompressor();
-    safety.threshold.value = BINAURAL_SAFETY_THRESHOLD_DB;
-    safety.knee.value = BINAURAL_SAFETY_KNEE_DB;
-    safety.ratio.value = BINAURAL_SAFETY_RATIO;
-    safety.attack.value = BINAURAL_SAFETY_ATTACK_S;
-    safety.release.value = BINAURAL_SAFETY_RELEASE_S;
+    const peakGuard = this.peakGuard;
+    if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
+    peakGuard.disconnect();
     this.node.connect(splitter);
     const busIrs = this.irSet ? buildBusIrs(this.ctx, this.irSet, this.topology, this.binauralMode) : null;
     let lfeBus = null;
@@ -986,9 +987,9 @@ var SpatialRenderer = class {
       finalBinaural = earMerge;
     }
     finalBinaural.connect(makeup);
-    makeup.connect(safety);
-    safety.connect(output);
-    this.postNodes.push(splitter, merger, makeup, safety);
+    makeup.connect(peakGuard);
+    peakGuard.connect(output);
+    this.postNodes.push(splitter, merger, makeup);
   }
   /** Register a source. Bed channels pass their speaker label; objects an event id.
    *  重复声明同一 id（稀疏声明变化时 player 会重放整组）完全幂等：保留
@@ -1154,6 +1155,8 @@ var SpatialRenderer = class {
   }
   async close() {
     this.teardownPostNodes();
+    this.peakGuard?.disconnect();
+    this.peakGuard = null;
     this.node?.disconnect();
     this.master?.disconnect();
     if (this.ctx.state !== "closed") await this.ctx.close();

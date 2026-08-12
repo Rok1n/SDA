@@ -264,4 +264,33 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   }
 }
 
+/** Final emergency sample-peak guard. It has no lookahead, oversampling, or
+ * release envelope: normal samples pass bit-for-bit and each channel clamps
+ * independently only at the configured ceiling. */
+class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    const ceilingDb = options?.processorOptions?.ceilingDb ?? -0.1;
+    this.ceiling = Math.pow(10, ceilingDb / 20);
+  }
+
+  process(inputs, outputs) {
+    const input = inputs[0] || [];
+    const output = outputs[0] || [];
+    for (let channel = 0; channel < output.length; channel++) {
+      const source = input[channel] || input[0];
+      const target = output[channel];
+      if (!source) {
+        target.fill(0);
+        continue;
+      }
+      for (let i = 0; i < target.length; i++) {
+        target[i] = Math.max(-this.ceiling, Math.min(this.ceiling, source[i]));
+      }
+    }
+    return true;
+  }
+}
+
 registerProcessor("sda-renderer", SdaRendererProcessor);
+registerProcessor("sda-final-peak-guard", SdaFinalPeakGuardProcessor);

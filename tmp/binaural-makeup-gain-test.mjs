@@ -1,5 +1,5 @@
 // Binaural makeup calibration diagnostic. It validates the final +6 dB stage
-// and reports where the final safety compressor protects aggregate peaks.
+// and reports where the final emergency sample-peak guard clamps output.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -9,7 +9,7 @@ const hrtfDir = path.join(root, "apps/web/public/hrtf");
 const BINAURAL_WET = { near: 0.04, mid: 0.2, far: 0.45 };
 const manifest = JSON.parse(readFileSync(path.join(hrtfDir, "hrtf-set.json"), "utf8"));
 const MAKEUP = Math.pow(10, 6 / 20);
-const SAFETY_THRESHOLD_DB = -1;
+const PEAK_GUARD_CEILING_DB = -0.1;
 const db = (value) => 20 * Math.log10(Math.max(value, 1e-12));
 
 function readF32(file) {
@@ -54,8 +54,7 @@ for (const mode of ["near", "mid", "far"]) {
   const peaks = manifest.positions.map((entry) => mixed(entry, mode) * MAKEUP);
   const max = Math.max(...peaks), min = Math.min(...peaks);
   check(Number.isFinite(max) && max > 0, `${mode}: 单一虚拟音箱经 +6dB 标定的峰值测量有效`);
-  const headroom = -db(max);
-  console.log(`INFO  ${mode}: 单箱 makeup 峰值范围 ${db(min).toFixed(2)}..${db(max).toFixed(2)}dBFS；相对 0dBFS 余量 ${headroom.toFixed(2)}dB，超过 ${SAFETY_THRESHOLD_DB}dBFS 时由最终 safety compressor 平滑保护，不宣称 true-peak 限制。`);
+  console.log(`INFO  ${mode}: 单箱 makeup 峰值范围 ${db(min).toFixed(2)}..${db(max).toFixed(2)}dBFS；超过 ${PEAK_GUARD_CEILING_DB}dBFS 时由最终 emergency sample-peak guard 逐样本 clamp，不宣称 true-peak 限制。`);
 }
 console.log(failed ? `\n${failed} 项失败` : "\n双耳响度标定诊断通过");
 process.exit(failed ? 1 : 0);
