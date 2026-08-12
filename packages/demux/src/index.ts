@@ -29,7 +29,7 @@ export interface DemuxedAudioPacket {
 
 export interface DemuxerCallbacks {
   /** First supported audio track discovered. durationSec 来自容器头部元数据（如有）。 */
-  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string }) => void;
+  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   onPacket?: (packet: DemuxedAudioPacket) => void;
   onError?: (message: string) => void;
 }
@@ -53,7 +53,7 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks): Demuxe
   if (kind === "mp4") {
     const mp4 = new Mp4Demuxer({
       onTrack: (t: Mp4AudioTrack) =>
-        cb.onTrack?.({ codec: t.codec, sampleRate: t.sampleRate, channels: t.channels, container: "mp4", durationSec: t.durationSec }),
+        cb.onTrack?.({ codec: t.codec, sampleRate: t.sampleRate, channels: t.channels, container: "mp4", durationSec: t.durationSec, coverArt: t.coverArt }),
       onPacket: (p) => cb.onPacket?.({ timestampMs: p.timestampMs, frames: [p.data] }),
       onError: cb.onError,
     });

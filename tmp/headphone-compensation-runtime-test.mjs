@@ -40,10 +40,23 @@ class FakeAudioContext {
     this.convolverCount = 0;
     this.mergerCount = 0;
     this.gainCount = 0;
+    this.convolvers = [];
   }
   createGain() { return node(`gain-${this.gainCount++}`); }
   createBiquadFilter() { return node("biquad"); }
-  createConvolver() { return node(`profile-conv-${this.convolverCount++}`); }
+  createConvolver() {
+    const convolver = node(`profile-conv-${this.convolverCount++}`);
+    convolver.normalize = true;
+    Object.defineProperty(convolver, "buffer", {
+      get() { return this._buffer; },
+      set(value) {
+        this._buffer = value;
+        this.normalizeAtBufferAssignment = this.normalize;
+      },
+    });
+    this.convolvers.push(convolver);
+    return convolver;
+  }
   createPanner() { return node("panner"); }
   createDynamicsCompressor() { return node(`compressor-${this.compressorCount++}`); }
   createChannelSplitter(n) { return node(`split${n}`); }
@@ -77,6 +90,29 @@ try {
 }
 check(rejected && worklets === initialWorklets && ctx.convolverCount === 0,
   "撤回或未知 profile 被拒绝，保持 literal bypass 且不重建 worklet");
+
+const profileFir = new Float32Array([1, 0, 0.25, 0]).buffer;
+globalThis.fetch = async () => ({ ok: true, arrayBuffer: async () => profileFir.slice(0) });
+let profileApplied = false;
+try {
+  renderer.setHeadphoneCompensation("sony-mdr-7506-average-autoeq");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  profileApplied = true;
+} catch {
+  profileApplied = false;
+}
+check(profileApplied && ctx.convolverCount === 2, "MDR-7506 使用两个独立最终耳道 convolver");
+check(ctx.convolvers.every((convolver) => convolver.normalize === false), "最终耳道 convolver 禁用 normalize");
+check(ctx.convolvers.every((convolver) => convolver.normalizeAtBufferAssignment === false),
+  "所有 convolver 在绑定 FIR 前已禁用 normalize");
+check(wiring.some((edge) => edge.from === "split2" && edge.to === "profile-conv-0" && edge.out === 0)
+  && wiring.some((edge) => edge.from === "split2" && edge.to === "profile-conv-1" && edge.out === 1),
+"MDR-7506 profile 保持 L/R 身份且不 crossfeed");
+check(wiring.some((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("merge2-"))
+  && wiring.some((edge) => edge.from === "profile-conv-1" && edge.to?.startsWith("merge2-"))
+  && wiring.some((edge) => edge.from?.startsWith("merge2-") && edge.to?.startsWith("gain-"))
+  && wiring.some((edge) => edge.to === "sda-final-peak-guard" && edge.from?.startsWith("gain-")),
+"profile 输出继续进入共享 binaural makeup 与 emergency guard");
 
 console.log(failed ? `\n${failed} 项失败` : "\n耳机补偿 bypass 运行时接线通过");
 process.exit(failed ? 1 : 0);

@@ -191,8 +191,11 @@ bypass。此前的 `AirPods Pro 2（ANC，平均测量近似）` 已撤回：它
 
 未来 profile 必须同时包含：耳机型号/版本、公开或可审计来源、目标曲线说明、**独立的
 left/right 原始测量来源**、夹具与 ANC/耳塞/固件/贴合状态、已验证的左右通道映射和平衡
-证明、左右 FIR 与采样率。合格 profile 仍只位于最终双耳 merger 后的独立 L/R FIR；它不
-改变每方向 HRIR/BRIR、对象/床层增益或 LFE 支路，立体声和多声道输出也不会经过该层。
+证明、左右 FIR 与采样率。桌面版的本地档案另外要求左右 `.f32` 资产的 tap count 和 SHA-256，
+并在导入与每次读取时重验；完整包格式和 AirPods Pro 2 测量门槛见
+[`airpods-pro-2-local-calibration.md`](airpods-pro-2-local-calibration.md)。合格 profile 仍只位于最终
+双耳 merger 后的独立 L/R FIR；它不改变每方向 HRIR/BRIR、对象/床层增益或 LFE 支路，
+立体声和多声道输出也不会经过该层。耳机 EQ 不承担全局响度补偿、动态压缩或声像修复。
 
 ## 4. Apple 侧：移动端原生渲染可用 API（Expo 原生模块设计依据）
 

@@ -158,6 +158,19 @@ Windows「开发者模式」后去掉该选项再配 `win.icon` / 证书。
 内容检测；可手动 5.1 ~ 9.1.6）和深浅色主题。双耳距离固定"近"（杜比
 Binaural Settings 语义，引擎保留近/中/远机制）。
 
+### MDR-7506 平均测量 EQ
+
+双耳输出可选内置 `Sony MDR-7506（AutoEq 平均测量 EQ，L/R 同一曲线）`。
+它从公开的 AutoEq Super Review 单一/平均响应派生，并在最终双耳合并后为左右
+输出分别运行同一份不可变 FIR；没有 crossfeed，也不会改变虚拟扬声器或 KU100
+BRIR/HRTF 资产。
+
+该档案不是独立左右声道测量，也不校正特定耳机的 driver 偏差、耳罩磨损或佩戴
+密封差异。AutoEq 文档里的 `-4.1 dB` preamp 被特意排除，profile 不添加 output
+trim、响度控制、压缩或 limiter；既有的 binaural makeup 和 emergency peak guard
+保持其独立行为。可审计的来源、生成方法、SHA-256 与限制见
+`apps/web/public/headphone-compensation/sony-mdr-7506-average-autoeq/`。
+
 ### 常见问题
 
 - **端口被占用**：5173 是 dev server（热更新），4173 是 preview（需先 build）。

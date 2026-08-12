@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "sony-mdr-7506-average-autoeq",
+  "name": "Sony MDR-7506 (AutoEq average measurement EQ, same L/R curve)",
+  "source": "AutoEq Super Review result, revision 36b1afcdf161c8a52b5093daefbbd335272508f3",
+  "target": "AutoEq Harman over-ear target; FIR normalized to 0 dB at 1 kHz",
+  "measurementMode": "average-dual-mono",
+  "channelClaim": "The same average-measurement EQ is applied to L/R; not independent L/R calibration and does not correct unit channel mismatch.",
+  "averageMeasurement": "https://github.com/jaakkopasanen/AutoEq/tree/master/results/Super%20Review/over-ear/Sony%20MDR-7506",
+  "derivation": "scripts/build-sony-mdr-7506-average-profile.mjs synthesized the published 10-band PEQ at 48 kHz into 8192 taps and normalized it at 1 kHz. AutoEq's -4.1 dB preamp is intentionally excluded.",
+  "createdAt": "2026-08-12T00:00:00.000Z",
+  "deviceRevision": "Sony MDR-7506 as identified by AutoEq Super Review",
+  "playbackState": "Passive wired headphone; source measurement state is defined by AutoEq Super Review",
+  "earTips": "Not applicable",
+  "firmware": "Not applicable",
+  "measurementRig": "Super Review measurement data as processed by AutoEq",
+  "referenceBand": "1 kHz normalized FIR reference",
+  "sampleRate": 48000,
+  "leftFir": {
+    "fileName": "average.f32",
+    "tapCount": 8192,
+    "sha256": "f50ff5e89cc7e3a535543f661edb8a17976cc80025b746ce6882b77e186148f8"
+  },
+  "rightFir": {
+    "fileName": "average.f32",
+    "tapCount": 8192,
+    "sha256": "f50ff5e89cc7e3a535543f661edb8a17976cc80025b746ce6882b77e186148f8"
+  }
+}

@@ -50,6 +50,8 @@ pub struct FrameData {
     /// Planar PCM: bed channels first, then dynamic-object channels.
     pub channels: Vec<Vec<f32>>,
     pub labels: Vec<String>,
+    /// Original fixed bed labels before object reconstruction/downstream routing.
+    pub raw_bed_labels: Vec<String>,
     pub events: Vec<ObjectEvent>,
     pub object_channels: Vec<ObjectChannelDecl>,
     pub ramp_duration: u32,
@@ -98,6 +100,11 @@ impl DecodedFrame {
     #[wasm_bindgen(getter)]
     pub fn labels(&self) -> Vec<String> {
         self.data.labels.clone()
+    }
+
+    #[wasm_bindgen(getter, js_name = rawBedLabels)]
+    pub fn raw_bed_labels(&self) -> Vec<String> {
+        self.data.raw_bed_labels.clone()
     }
 
     pub fn channel(&self, index: usize) -> Option<Float32Array> {

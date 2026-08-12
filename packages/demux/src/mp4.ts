@@ -7,11 +7,17 @@
 // @ts-ignore — mp4box ships untyped CommonJS.
 import MP4Box from "mp4box";
 
+export interface EmbeddedCoverArt {
+  bytes: Uint8Array;
+  mimeType: "image/jpeg" | "image/png";
+}
+
 export interface Mp4AudioTrack {
   trackId: number;
   codec: string; // mp4a codec string, e.g. "ec-3"
   sampleRate: number;
   channels: number;
+  coverArt?: EmbeddedCoverArt;
   /** Movie duration from the container header (seconds), when known. */
   durationSec?: number;
 }
@@ -29,6 +35,29 @@ export interface Mp4DemuxerCallbacks {
 }
 
 const AUDIO_CODECS = new Set(["ec-3", "ac-3", "ac-4", "mlpa", "dtsc", "dtsh", "dtsl", "dtse"]);
+const atomType = (bytes: Uint8Array, offset: number) => String.fromCharCode(...bytes.subarray(offset, offset + 4));
+
+/** Extract iTunes `covr` artwork from mp4box's unparsed `ilst` children. */
+function embeddedCoverArt(file: { moov?: { udta?: { meta?: { ilst?: { data?: Uint8Array } } } } }): EmbeddedCoverArt | undefined {
+  const ilst = file.moov?.udta?.meta?.ilst?.data;
+  if (!ilst) return undefined;
+  for (let offset = 0; offset + 8 <= ilst.length;) {
+    const size = new DataView(ilst.buffer, ilst.byteOffset + offset, 4).getUint32(0);
+    if (size < 16 || offset + size > ilst.length) break;
+    if (atomType(ilst, offset + 4) === "covr") {
+      const childOffset = offset + 8;
+      const childSize = new DataView(ilst.buffer, ilst.byteOffset + childOffset, 4).getUint32(0);
+      if (childSize >= 16 && childOffset + childSize <= offset + size && atomType(ilst, childOffset + 4) === "data") {
+        const bytes = ilst.slice(childOffset + 16, childOffset + childSize);
+        const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+        const png = bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+        if (jpeg || png) return { bytes, mimeType: jpeg ? "image/jpeg" : "image/png" };
+      }
+    }
+    offset += size;
+  }
+  return undefined;
+}
 
 export class Mp4Demuxer {
   private file: ReturnType<typeof MP4Box.createFile>;
@@ -49,6 +78,8 @@ export class Mp4Demuxer {
           sampleRate: t.audio.sample_rate,
           channels: t.audio.channel_count,
         };
+        const coverArt = embeddedCoverArt(this.file);
+        if (coverArt) track.coverArt = coverArt;
         const dur = t.duration && t.timescale ? t.duration / t.timescale
           : t.movie_duration && t.movie_timescale ? t.movie_duration / t.movie_timescale
           : undefined;

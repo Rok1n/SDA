@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use eac3::{
     BedChannel, CorePcmFrame, JOC_QMF_LATENCY_SAMPLES, OamdElementKind, OamdPayload,
-    ObjectPcmPushResult,
+    ObjectPcmPushResult, FrameType, inspect_access_unit, merge_core_with_dependent,
 };
 
 use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline};
@@ -17,6 +17,8 @@ pub struct Eac3Pipeline {
     extractor: eac3::Extractor,
     object_decoder: eac3::ObjectPcmDecoder,
     pcm_decoder: eac3::PcmDecoder,
+    dependent_pcm_decoder: eac3::PcmDecoder,
+    pending_independent_core: Option<CorePcmFrame>,
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
 }
@@ -27,9 +29,29 @@ impl Eac3Pipeline {
             extractor: eac3::Extractor::default(),
             object_decoder: eac3::ObjectPcmDecoder::new(),
             pcm_decoder: eac3::PcmDecoder::new(),
+            dependent_pcm_decoder: eac3::PcmDecoder::new(),
+            pending_independent_core: None,
             total_samples: 0,
             declared: None,
         }
+    }
+
+    fn raw_bed_labels(core: &CorePcmFrame) -> Vec<String> {
+        let mut labels: Vec<String> = core
+            .fullband_channel_order
+            .iter()
+            .map(|label| format!("{label:?}"))
+            .collect();
+        if core.lfe_channel.is_some() {
+            labels.push("LFE".to_string());
+        }
+        labels
+    }
+
+    fn emit_bed_frame(&mut self, core: CorePcmFrame, out: &mut VecDeque<FrameData>) {
+        let sample_pos = self.total_samples;
+        self.total_samples += core.samples_per_channel() as u64;
+        out.push_back(bed_frame("eac3", core, Vec::new(), Vec::new(), sample_pos, &[]));
     }
 
     fn process_frame(
@@ -38,33 +60,50 @@ impl Eac3Pipeline {
         out: &mut VecDeque<FrameData>,
         errors: &mut Vec<String>,
     ) {
+        let info = match inspect_access_unit(frame) {
+            Ok(info) => info,
+            Err(error) => {
+                errors.push(format!("E-AC-3 frame rejected: {error}"));
+                return;
+            }
+        };
+        let is_dependent = info.frame_type == FrameType::Dependent;
+
+        // An independent frame without a dependent partner is a complete core.
+        // Flush it before decoding the next independent presentation.
+        if !is_dependent {
+            if let Some(core) = self.pending_independent_core.take() {
+                self.emit_bed_frame(core, out);
+            }
+        }
+
+        if is_dependent {
+            let Some(core) = self.pending_independent_core.take() else {
+                errors.push("E-AC-3 dependent substream arrived without an independent core".to_string());
+                return;
+            };
+            if info.joc_payload_count() > 0 {
+                match self.object_decoder.push_access_unit_with_core(frame, core) {
+                    Ok(Some(result)) => out.push_back(self.build_object_frame(result)),
+                    Ok(None) => errors.push("E-AC-3 JOC dependent substream yielded no object PCM".to_string()),
+                    Err(error) => errors.push(format!("E-AC-3 dependent JOC frame rejected: {error}")),
+                }
+            } else {
+                let merged = merge_core_with_dependent(&mut self.dependent_pcm_decoder, &core, frame).unwrap_or(core);
+                self.emit_bed_frame(merged, out);
+            }
+            return;
+        }
+
         match self.object_decoder.push_access_unit(frame) {
             Ok(Some(result)) => {
                 out.push_back(self.build_object_frame(result));
-                return;
             }
-            Ok(None) => {}
-            Err(_) => {}
-        }
-
-        match self.pcm_decoder.push_access_unit(frame) {
-            Ok(result) => {
-                let pcm = result.pcm;
-                let sample_pos = self.total_samples;
-                self.total_samples += pcm.samples_per_channel() as u64;
-                out.push_back(bed_frame(
-                    "eac3",
-                    pcm,
-                    Vec::new(),
-                    Vec::new(),
-                    sample_pos,
-                    &[],
-                ));
-            }
-            Err(e) => {
-                // Legacy AC-3 and other rejects: surfaced, playback continues.
-                errors.push(format!("E-AC-3 frame rejected: {e}"));
-            }
+            Ok(None) => match self.pcm_decoder.push_access_unit(frame) {
+                Ok(result) => self.pending_independent_core = Some(result.pcm),
+                Err(error) => errors.push(format!("E-AC-3 frame rejected: {error}")),
+            },
+            Err(error) => errors.push(format!("E-AC-3 frame rejected: {error}")),
         }
     }
 
@@ -74,6 +113,7 @@ impl Eac3Pipeline {
         self.total_samples += pcm.samples_per_channel() as u64;
 
         let core = pcm.core;
+        let raw_bed_labels = Self::raw_bed_labels(&core);
         let joc_slot_count = pcm.object_channels.len();
         let Some(slot_layout) = consistent_joc_slot_layout(
             &pcm.oamd_payloads,
@@ -126,6 +166,7 @@ impl Eac3Pipeline {
             sample_pos,
             channels,
             labels,
+            raw_bed_labels,
             ramp_duration: events.first().map_or(0, |event| event.ramp_duration),
             events,
             object_channels,
@@ -477,6 +518,12 @@ fn bed_frame(
     extra_labels: &[String],
 ) -> FrameData {
     let mut channels = core.fullband_channels;
+    let raw_bed_labels: Vec<String> = core
+        .fullband_channel_order
+        .iter()
+        .map(|b| format!("{b:?}"))
+        .chain(core.lfe_channel.is_some().then(|| "LFE".to_string()))
+        .collect();
     let mut labels: Vec<String> = core
         .fullband_channel_order
         .iter()
@@ -493,6 +540,7 @@ fn bed_frame(
         sample_pos,
         channels,
         labels,
+        raw_bed_labels,
         ramp_duration: 0,
         events,
         object_channels,

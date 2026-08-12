@@ -38,6 +38,8 @@ export interface DecodedFrameData {
   samplePos: number;
   channels: Float32Array[];
   labels: string[];
+  /** Original fixed bed labels before object reconstruction/downstream routing. */
+  rawBedLabels: string[];
   events: ObjectEvent[];
   objectChannels: ObjectChannelDecl[];
   rampDuration: number;
@@ -83,6 +85,7 @@ export class SdaDecoder {
       samplePos: frame.samplePos,
       channels,
       labels: frame.labels,
+      rawBedLabels: frame.rawBedLabels,
       events: JSON.parse(frame.eventsJson) as ObjectEvent[],
       objectChannels: JSON.parse(frame.objectChannelsJson) as ObjectChannelDecl[],
       rampDuration: frame.rampDuration,

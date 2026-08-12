@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SdaPlayer, nextSoloMuteSet, type VisualObject } from "@sda/player";
 import {
-  HEADPHONE_COMPENSATION_PROFILES,
+  availableHeadphoneCompensationProfiles,
+  registerLocalHeadphoneCompensation,
+  type LocalHeadphoneCompensationData,
   LAYOUTS,
   detectLayoutId,
   type LayoutId,
@@ -40,6 +42,9 @@ export function App() {
   const [volume, setVolume] = useState(1);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
   const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
+  const [headphoneProfiles, setHeadphoneProfiles] = useState(() => availableHeadphoneCompensationProfiles());
+  const [profileBusy, setProfileBusy] = useState(false);
+  const coverUrlRef = useRef<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const lastFileRef = useRef<File | null>(null);
   /** 静音推送回调用的最新对象列表（避免闭包拿旧 state）。 */
@@ -51,7 +56,15 @@ export function App() {
     async (m: OutputMode, lid: LayoutId | "auto") => {
       await playerRef.current?.dispose();
       const player = new SdaPlayer({
-        onTrack: (t) => setTrack({ ...t, title: t.title ?? fileNameRef.current ?? undefined }),
+        onTrack: (t) => {
+          if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
+          const coverUrl = t.coverArt
+            ? URL.createObjectURL(new Blob([t.coverArt.bytes], { type: t.coverArt.mimeType }))
+            : undefined;
+          coverUrlRef.current = coverUrl ?? null;
+          setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
+        },
+        onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels }),
         onVisualState: (objs, t) => {
           objectsRef.current = objs;
           setObjects(objs);
@@ -82,6 +95,7 @@ export function App() {
 
   useEffect(
     () => () => {
+      if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
       void playerRef.current?.dispose();
       setPlayerReady(null);
     },
@@ -91,6 +105,46 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.listHeadphoneProfiles || !desktop.readHeadphoneProfile) return;
+    void desktop.listHeadphoneProfiles()
+      .then(async (manifests) => {
+        const entries = await Promise.all(manifests.map(async (profile) => {
+          const data = await desktop.readHeadphoneProfile!(profile.id);
+          return {
+            profile: data.profile,
+            leftFir: data.leftFir.buffer.slice(data.leftFir.byteOffset, data.leftFir.byteOffset + data.leftFir.byteLength),
+            rightFir: data.rightFir.buffer.slice(data.rightFir.byteOffset, data.rightFir.byteOffset + data.rightFir.byteLength),
+          } satisfies LocalHeadphoneCompensationData;
+        }));
+        for (const entry of entries) registerLocalHeadphoneCompensation(entry);
+        setHeadphoneProfiles(availableHeadphoneCompensationProfiles());
+        localStorage.removeItem("sda-headphone-profile-id");
+      })
+      .catch((error) => setErrors((prev) => [...prev, `加载本地耳机档案失败: ${String(error)}`]));
+  }, []);
+
+  const importHeadphoneProfile = useCallback(async () => {
+    const desktop = window.sdaDesktop;
+    if (!desktop?.importHeadphoneProfile) return;
+    setProfileBusy(true);
+    try {
+      const data = await desktop.importHeadphoneProfile();
+      if (!data) return;
+      registerLocalHeadphoneCompensation({
+        profile: data.profile,
+        leftFir: data.leftFir.buffer.slice(data.leftFir.byteOffset, data.leftFir.byteOffset + data.leftFir.byteLength),
+        rightFir: data.rightFir.buffer.slice(data.rightFir.byteOffset, data.rightFir.byteOffset + data.rightFir.byteLength),
+      });
+      setHeadphoneProfiles(availableHeadphoneCompensationProfiles());
+    } catch (error) {
+      setErrors((prev) => [...prev, `导入耳机档案失败: ${String(error)}`]);
+    } finally {
+      setProfileBusy(false);
+    }
+  }, []);
 
   /** 动态对象全部静音时，独立的 LFE 床声道也必须一起静音。 */
   const allObjectsMuted = objects.length > 0 && objects.every((object) => mutedIds.has(object.id));
@@ -235,8 +289,12 @@ export function App() {
   const changeHeadphoneCompensation = useCallback((id: string) => {
     const next = id || null;
     setHeadphoneProfileId(next);
+    if (next) localStorage.setItem("sda-headphone-profile-id", next);
+    else localStorage.removeItem("sda-headphone-profile-id");
     playerRef.current?.setHeadphoneCompensation(next);
   }, []);
+
+  const selectedHeadphoneProfile = headphoneProfiles.find((profile) => profile.id === headphoneProfileId) ?? null;
 
   const replay = useCallback(() => {
     const file = lastFileRef.current;
@@ -272,14 +330,19 @@ export function App() {
           <select
             value={headphoneProfileId ?? ""}
             disabled={mode !== "binaural"}
-            title={mode === "binaural" ? "仅显示带来源与实测左右 FIR 的耳机补偿曲线" : "耳机补偿仅用于双耳输出"}
+            title={mode === "binaural" ? "应用经完整性校验的最终双耳 EQ；平均测量档案会明确标注其限制" : "耳机补偿仅用于双耳输出"}
             onChange={(e) => changeHeadphoneCompensation(e.target.value)}
           >
             <option value="">耳机补偿：无</option>
-            {HEADPHONE_COMPENSATION_PROFILES.map((profile) => (
+            {headphoneProfiles.map((profile) => (
               <option key={profile.id} value={profile.id}>{profile.name}</option>
             ))}
           </select>
+          {window.sdaDesktop?.importHeadphoneProfile && (
+            <button disabled={profileBusy} onClick={() => void importHeadphoneProfile()} title="导入经 FIR、SHA-256、测量类别和来源证明验证的 profile.json">
+              导入耳机档案
+            </button>
+          )}
           <button
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
             title={theme === "dark" ? "切换到浅色模式" : "切换到深色模式"}
@@ -331,8 +394,16 @@ export function App() {
                 <dd>{track.codec}</dd>
                 <dt>采样率</dt>
                 <dd>{track.sampleRate} Hz</dd>
-                <dt>声道</dt>
-                <dd>{track.channels}</dd>
+                <dt>原始声道</dt>
+                <dd>{track.rawBedLabels?.length ? `${track.rawBedLabels.length} 声道 (${track.rawBedLabels.join(", ")})` : "等待首帧"}</dd>
+                <dt>解码床层</dt>
+                <dd>{track.bedLabels?.length ? `${track.bedLabels.length} 声道 (${track.bedLabels.join(", ")})` : "等待首帧"}</dd>
+                <dt>对象 PCM</dt>
+                <dd>{track.objectChannels === undefined ? "等待首帧" : `${track.objectChannels} 路动态对象`}</dd>
+                <dt>渲染</dt>
+                <dd>{mode === "multichannel"
+                  ? `物理 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → 系统声卡`
+                  : `虚拟 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → ${mode === "binaural" ? "耳机 L/R" : "立体声 L/R"}`}</dd>
                 <dt>容器</dt>
                 <dd>{track.container}</dd>
                 <dt>播放</dt>
@@ -374,6 +445,19 @@ export function App() {
               ))}
             </ul>
           </div>
+          {selectedHeadphoneProfile && (
+            <div className="panel">
+              <h2>耳机补偿</h2>
+              <dl>
+                <dt>模式</dt>
+                <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
+                <dt>来源</dt>
+                <dd>{selectedHeadphoneProfile.source}</dd>
+                {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
+                {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
+              </dl>
+            </div>
+          )}
           {errors.length > 0 && (
             <div className="panel errors">
               <h2>日志</h2>

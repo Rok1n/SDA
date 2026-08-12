@@ -9,6 +9,7 @@
  */
 
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -40,6 +41,65 @@ if (process.platform === "linux" && rendererMode === "2d") {
 /** File handles the renderer has opened, id → path. */
 const openFiles = new Map();
 let nextFileId = 1;
+
+const PROFILE_SCHEMA_VERSION = 1;
+const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
+const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+
+function profileValidationError(message) {
+  throw new Error(`耳机校准档案无效: ${message}`);
+}
+
+function safeProfileAsset(asset, side) {
+  if (!asset || typeof asset !== "object") profileValidationError(`缺少 ${side} FIR`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/.test(asset.fileName ?? "")) profileValidationError(`${side} FIR 文件名无效`);
+  if (!Number.isInteger(asset.tapCount) || asset.tapCount < 2) profileValidationError(`${side} FIR tapCount 无效`);
+  if (!/^[a-f0-9]{64}$/i.test(asset.sha256 ?? "")) profileValidationError(`${side} FIR SHA-256 无效`);
+  return asset;
+}
+
+function validateProfilePackage(manifest, directory) {
+  if (manifest?.schemaVersion !== PROFILE_SCHEMA_VERSION) profileValidationError("schemaVersion 必须为 1");
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(manifest?.id ?? "")) profileValidationError("id 必须是小写 slug");
+  if (!["independent-lr", "average-dual-mono"].includes(manifest.measurementMode)) profileValidationError("measurementMode 无效");
+  for (const key of ["name", "source", "target", "channelClaim", "createdAt", "deviceRevision", "playbackState", "earTips", "firmware", "measurementRig", "referenceBand"]) {
+    if (typeof manifest[key] !== "string" || !manifest[key].trim()) profileValidationError(`缺少 ${key}`);
+  }
+  if (manifest.measurementMode === "independent-lr") {
+    for (const key of ["leftMeasurement", "rightMeasurement", "balanceEvidence"]) {
+      if (typeof manifest[key] !== "string" || !manifest[key].trim()) profileValidationError(`独立 L/R profile 缺少 ${key}`);
+    }
+  } else {
+    for (const key of ["averageMeasurement", "derivation"]) {
+      if (typeof manifest[key] !== "string" || !manifest[key].trim()) profileValidationError(`平均双单声道 profile 缺少 ${key}`);
+    }
+    if (!/not independent|非独立|同一.*(?:eq|曲线)/i.test(manifest.channelClaim)) profileValidationError("平均双单声道 profile 必须声明非独立 L/R");
+  }
+  if (!Number.isFinite(Date.parse(manifest.createdAt))) profileValidationError("createdAt 无效");
+  if (!Number.isFinite(manifest.sampleRate) || manifest.sampleRate <= 0) profileValidationError("sampleRate 无效");
+  const left = safeProfileAsset(manifest.leftFir, "left");
+  const right = safeProfileAsset(manifest.rightFir, "right");
+  const sharedAsset = left.fileName === right.fileName || left.sha256 === right.sha256;
+  if (manifest.measurementMode === "independent-lr" && sharedAsset) profileValidationError("独立 L/R profile 的左右 FIR 必须是独立资产");
+  if (manifest.measurementMode === "average-dual-mono" && !sharedAsset) profileValidationError("平均双单声道 profile 的左右 FIR 必须是同一资产");
+  const readAsset = (asset, side) => {
+    const filePath = path.resolve(directory, asset.fileName);
+    if (path.dirname(filePath) !== path.resolve(directory)) profileValidationError(`${side} FIR 路径越界`);
+    const bytes = fs.readFileSync(filePath);
+    if (bytes.byteLength !== asset.tapCount * Float32Array.BYTES_PER_ELEMENT || !bytes.byteLength) profileValidationError(`${side} FIR 长度不符`);
+    const taps = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
+    if (![...taps].every(Number.isFinite)) profileValidationError(`${side} FIR 含无效 tap`);
+    if (sha256(bytes) !== asset.sha256.toLowerCase()) profileValidationError(`${side} FIR SHA-256 不匹配`);
+    return bytes;
+  };
+  return { manifest, leftFir: readAsset(left, "left"), rightFir: readAsset(right, "right") };
+}
+
+function readStoredProfile(id) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id ?? "")) profileValidationError("profile id 无效");
+  const directory = path.join(profileStorePath(), id);
+  return validateProfilePackage(JSON.parse(fs.readFileSync(path.join(directory, "profile.json"), "utf8")), directory);
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -137,6 +197,53 @@ ipcMain.handle("sda:read-slice", (_e, id, offset, length) => {
 
 ipcMain.handle("sda:close", (_e, id) => {
   openFiles.delete(id);
+});
+
+ipcMain.handle("sda:import-headphone-profile", async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: "选择耳机校准档案 profile.json",
+    filters: [{ name: "Headphone profile", extensions: ["json"] }],
+    properties: ["openFile"],
+  });
+  if (canceled) return null;
+  const sourceManifest = path.resolve(filePaths[0]);
+  const sourceDirectory = path.dirname(sourceManifest);
+  const manifest = JSON.parse(fs.readFileSync(sourceManifest, "utf8"));
+  const verified = validateProfilePackage(manifest, sourceDirectory);
+  const target = path.join(profileStorePath(), manifest.id);
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.mkdirSync(target, { recursive: true });
+  fs.copyFileSync(sourceManifest, path.join(target, "profile.json"));
+  fs.writeFileSync(path.join(target, manifest.leftFir.fileName), verified.leftFir);
+  if (manifest.rightFir.fileName !== manifest.leftFir.fileName) {
+    fs.writeFileSync(path.join(target, manifest.rightFir.fileName), verified.rightFir);
+  }
+  const stored = readStoredProfile(manifest.id);
+  return { profile: stored.manifest, leftFir: stored.leftFir, rightFir: stored.rightFir };
+});
+
+ipcMain.handle("sda:list-headphone-profiles", () => {
+  const root = profileStorePath();
+  if (!fs.existsSync(root)) return [];
+  return fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    if (!entry.isDirectory()) return [];
+    try {
+      return [readStoredProfile(entry.name).manifest];
+    } catch (error) {
+      console.warn(`[SDA] 忽略无效耳机 profile ${entry.name}:`, error);
+      return [];
+    }
+  });
+});
+
+ipcMain.handle("sda:read-headphone-profile", (_e, id) => {
+  const stored = readStoredProfile(id);
+  return { profile: stored.manifest, leftFir: stored.leftFir, rightFir: stored.rightFir };
+});
+
+ipcMain.handle("sda:delete-headphone-profile", (_e, id) => {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id ?? "")) profileValidationError("profile id 无效");
+  fs.rmSync(path.join(profileStorePath(), id), { recursive: true, force: true });
 });
 
 app.whenReady().then(() => {

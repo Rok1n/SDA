@@ -28,6 +28,7 @@ __export(index_exports, {
   VbapSolver: () => VbapSolver,
   admToSpherical: () => admToSpherical,
   aliasLabel: () => aliasLabel,
+  availableHeadphoneCompensationProfiles: () => availableHeadphoneCompensationProfiles,
   buildBusIrs: () => buildBusIrs,
   detectLayoutId: () => detectLayoutId,
   getBinauralIrSet: () => getBinauralIrSet,
@@ -37,9 +38,12 @@ __export(index_exports, {
   mixIrForMode: () => mixIrForMode,
   physicalChannelOrder: () => physicalChannelOrder,
   positionForLabel: () => positionForLabel,
+  registerLocalHeadphoneCompensation: () => registerLocalHeadphoneCompensation,
   sphericalToAdm: () => sphericalToAdm,
   sphericalToWebAudio: () => sphericalToWebAudio,
-  validateHeadphoneProfile: () => validateHeadphoneProfile
+  unregisterLocalHeadphoneCompensation: () => unregisterLocalHeadphoneCompensation,
+  validateHeadphoneProfile: () => validateHeadphoneProfile,
+  validateLocalHeadphoneProfile: () => validateLocalHeadphoneProfile
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -559,23 +563,157 @@ function buildBusIrs(ctx, set, layout, mode) {
 }
 
 // packages/renderer/src/headphone-compensation.ts
-var HEADPHONE_COMPENSATION_PROFILES = [];
+var HEADPHONE_COMPENSATION_PROFILES = [
+  {
+    id: "sennheiser-hd-820-average-autoeq",
+    name: "\u68EE\u6D77\u585E\u5C14 HD 820\uFF08AutoEq \u5E73\u5747\u6D4B\u91CF EQ\uFF0CL/R \u540C\u4E00\u66F2\u7EBF\uFF09",
+    source: "AutoEq HypetheSonics over-ear result, revision 7ae0f56d53074872b028649617a22bbb4232feb7",
+    target: "AutoEq over-ear target; FIR normalized to 0 dB at 1 kHz",
+    leftMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    rightMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    balanceEvidence: "\u4E0D\u9002\u7528\uFF1A\u6B64 profile \u4E0D\u58F0\u79F0\u72EC\u7ACB\u5DE6\u53F3\u58F0\u9053\u6D4B\u91CF\u6216 balance \u6821\u51C6",
+    measurementMode: "average-dual-mono",
+    channelClaim: "\u540C\u4E00\u5E73\u5747\u6D4B\u91CF EQ \u5E94\u7528\u4E8E L/R\uFF1B\u975E\u72EC\u7ACB L/R \u6821\u51C6\uFF0C\u4E0D\u4FEE\u6B63\u8033\u673A\u4E2A\u4F53\u58F0\u9053\u5DEE\u5F02",
+    averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/7ae0f56d53074872b028649617a22bbb4232feb7/results/HypetheSonics/over-ear/Sennheiser%20HD%20820",
+    derivation: "scripts/build-sennheiser-hd-820-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.4 dB preamp excluded",
+    sampleRate: 48e3,
+    leftFirUrl: "/headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
+    rightFirUrl: "/headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32"
+  },
+  {
+    id: "beyerdynamic-xelento-2nd-gen-average-autoeq",
+    name: "Beyerdynamic Xelento 2nd Gen \u6709\u7EBF\u7248\uFF08AutoEq \u5E73\u5747\u6D4B\u91CF EQ\uFF0CL/R \u540C\u4E00\u66F2\u7EBF\uFF09",
+    source: "AutoEq HypetheSonics GRAS RA0045 in-ear result, revision 6c9a097626213b8cbb0973e5a4dd645f5f9e3fd4",
+    target: "AutoEq in-ear target; FIR normalized to 0 dB at 1 kHz",
+    leftMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    rightMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    balanceEvidence: "\u4E0D\u9002\u7528\uFF1A\u6B64 profile \u4E0D\u58F0\u79F0\u72EC\u7ACB\u5DE6\u53F3\u58F0\u9053\u6D4B\u91CF\u6216 balance \u6821\u51C6",
+    measurementMode: "average-dual-mono",
+    channelClaim: "\u540C\u4E00\u5E73\u5747\u6D4B\u91CF EQ \u5E94\u7528\u4E8E L/R\uFF1B\u975E\u72EC\u7ACB L/R \u6821\u51C6\uFF0C\u4E0D\u4FEE\u6B63\u8033\u673A\u4E2A\u4F53\u58F0\u9053\u5DEE\u5F02",
+    averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/GRAS%20RA0045%20in-ear/Beyerdynamic%20Xelento%20%282nd%20Gen%29",
+    derivation: "scripts/build-beyerdynamic-xelento-2nd-gen-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.3 dB preamp excluded",
+    sampleRate: 48e3,
+    leftFirUrl: "/headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
+    rightFirUrl: "/headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32"
+  },
+  {
+    id: "beyerdynamic-xelento-wired-average-autoeq",
+    name: "Beyerdynamic Xelento \u6709\u7EBF\u7248\uFF08AutoEq \u5E73\u5747\u6D4B\u91CF EQ\uFF0CL/R \u540C\u4E00\u66F2\u7EBF\uFF09",
+    source: "AutoEq HypetheSonics B&K 5128 in-ear result, revision 6c9a097626213b8cbb0973e5a4dd645f5f9e3fd4",
+    target: "AutoEq in-ear target; FIR normalized to 0 dB at 1 kHz",
+    leftMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    rightMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    balanceEvidence: "\u4E0D\u9002\u7528\uFF1A\u6B64 profile \u4E0D\u58F0\u79F0\u72EC\u7ACB\u5DE6\u53F3\u58F0\u9053\u6D4B\u91CF\u6216 balance \u6821\u51C6",
+    measurementMode: "average-dual-mono",
+    channelClaim: "\u540C\u4E00\u5E73\u5747\u6D4B\u91CF EQ \u5E94\u7528\u4E8E L/R\uFF1B\u975E\u72EC\u7ACB L/R \u6821\u51C6\uFF0C\u4E0D\u4FEE\u6B63\u8033\u673A\u4E2A\u4F53\u58F0\u9053\u5DEE\u5F02",
+    averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/Bruel%20%26%20Kjaer%205128%20in-ear/Beyerdynamic%20Xelento",
+    derivation: "scripts/build-beyerdynamic-xelento-wired-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.6 dB preamp excluded",
+    sampleRate: 48e3,
+    leftFirUrl: "/headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
+    rightFirUrl: "/headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32"
+  },
+  {
+    id: "sony-mdr-7506-average-autoeq",
+    name: "Sony MDR-7506\uFF08AutoEq \u5E73\u5747\u6D4B\u91CF EQ\uFF0CL/R \u540C\u4E00\u66F2\u7EBF\uFF09",
+    source: "AutoEq Super Review result, revision 36b1afcdf161c8a52b5093daefbbd335272508f3",
+    target: "AutoEq Harman over-ear target; FIR normalized to 0 dB at 1 kHz",
+    leftMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    rightMeasurement: "\u4E0D\u9002\u7528\uFF1A\u516C\u5F00\u6765\u6E90\u4E3A\u5355\u4E00/\u5E73\u5747\u6D4B\u91CF\u54CD\u5E94",
+    balanceEvidence: "\u4E0D\u9002\u7528\uFF1A\u6B64 profile \u4E0D\u58F0\u79F0\u72EC\u7ACB\u5DE6\u53F3\u58F0\u9053\u6D4B\u91CF\u6216 balance \u6821\u51C6",
+    measurementMode: "average-dual-mono",
+    channelClaim: "\u540C\u4E00\u5E73\u5747\u6D4B\u91CF EQ \u5E94\u7528\u4E8E L/R\uFF1B\u975E\u72EC\u7ACB L/R \u6821\u51C6\uFF0C\u4E0D\u4FEE\u6B63\u8033\u673A\u4E2A\u4F53\u58F0\u9053\u5DEE\u5F02",
+    averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/Super%20Review/over-ear/Sony%20MDR-7506",
+    derivation: "scripts/build-sony-mdr-7506-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -4.1 dB preamp excluded",
+    sampleRate: 48e3,
+    leftFirUrl: "/headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
+    rightFirUrl: "/headphone-compensation/sony-mdr-7506-average-autoeq/average.f32"
+  }
+];
+var localProfiles = /* @__PURE__ */ new Map();
 var rawCache = /* @__PURE__ */ new Map();
 function headphoneProfileById(id) {
   if (!id) return null;
-  return HEADPHONE_COMPENSATION_PROFILES.find((profile) => profile.id === id) ?? null;
+  return localProfiles.get(id)?.profile ?? HEADPHONE_COMPENSATION_PROFILES.find((profile) => profile.id === id) ?? null;
+}
+function availableHeadphoneCompensationProfiles() {
+  return [...HEADPHONE_COMPENSATION_PROFILES, ...[...localProfiles.values()].map((entry) => entry.profile)];
 }
 function validateHeadphoneProfile(profile) {
+  const errors = validateCommonProfile(profile);
+  const mode = profile.measurementMode ?? "independent-lr";
+  if (mode === "independent-lr") {
+    if (!profile.leftMeasurement.trim() || !profile.rightMeasurement.trim()) errors.push("\u72EC\u7ACB L/R profile \u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3\u6D4B\u91CF\u6765\u6E90");
+    if (!profile.balanceEvidence.trim()) errors.push("\u72EC\u7ACB L/R profile \u7F3A\u5C11\u5E73\u8861\u8BC1\u660E");
+    if (profile.leftFirUrl === profile.rightFirUrl) errors.push("\u72EC\u7ACB L/R profile \u7684\u5DE6\u53F3 FIR \u5FC5\u987B\u662F\u72EC\u7ACB\u8D44\u4EA7");
+  } else if (mode === "average-dual-mono") {
+    if (!profile.averageMeasurement?.trim()) errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u7F3A\u5C11 averageMeasurement");
+    if (!profile.derivation?.trim()) errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u7F3A\u5C11 derivation");
+    if (!profile.channelClaim?.trim() || !/not independent|非独立|同一.*(?:eq|曲线)/i.test(profile.channelClaim)) {
+      errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u5FC5\u987B\u660E\u786E\u975E\u72EC\u7ACB L/R \u58F0\u660E");
+    }
+    if (profile.leftFirUrl !== profile.rightFirUrl) errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u7684\u5DE6\u53F3 FIR \u5FC5\u987B\u6307\u5411\u540C\u4E00\u8D44\u4EA7");
+  } else {
+    errors.push("measurementMode \u5FC5\u987B\u4E3A independent-lr \u6216 average-dual-mono");
+  }
+  return errors;
+}
+function validateCommonProfile(profile) {
   const errors = [];
   if (!/^[a-z0-9][a-z0-9-]*$/.test(profile.id)) errors.push("id \u5FC5\u987B\u662F\u5C0F\u5199 slug");
   if (!profile.name.trim()) errors.push("\u7F3A\u5C11\u8033\u673A\u578B\u53F7\u540D\u79F0");
   if (!profile.source.trim()) errors.push("\u7F3A\u5C11\u6D4B\u91CF\u6765\u6E90");
   if (!profile.target.trim()) errors.push("\u7F3A\u5C11\u76EE\u6807\u66F2\u7EBF\u8BF4\u660E");
-  if (!profile.leftMeasurement.trim() || !profile.rightMeasurement.trim()) errors.push("\u5FC5\u987B\u63D0\u4F9B\u72EC\u7ACB\u5DE6\u53F3\u6D4B\u91CF\u6765\u6E90");
-  if (!profile.balanceEvidence.trim()) errors.push("\u7F3A\u5C11\u6D4B\u91CF\u72B6\u6001\u6216\u901A\u9053\u6620\u5C04/\u5E73\u8861\u8BC1\u660E");
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("\u91C7\u6837\u7387\u65E0\u6548");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
   return errors;
+}
+function validateLocalHeadphoneProfile(data) {
+  const { profile } = data;
+  const errors = validateCommonProfile(profile);
+  if (profile.schemaVersion !== 1) errors.push("\u4E0D\u652F\u6301\u7684\u672C\u5730 profile schemaVersion");
+  if (profile.measurementMode !== "independent-lr" && profile.measurementMode !== "average-dual-mono") {
+    errors.push("measurementMode \u5FC5\u987B\u4E3A independent-lr \u6216 average-dual-mono");
+  }
+  if (!profile.channelClaim.trim()) errors.push("\u7F3A\u5C11 channelClaim");
+  if (!Number.isFinite(Date.parse(profile.createdAt))) errors.push("createdAt \u65E0\u6548");
+  for (const key of ["deviceRevision", "playbackState", "earTips", "firmware", "measurementRig", "referenceBand"]) {
+    if (!profile[key].trim()) errors.push(`\u7F3A\u5C11 ${key}`);
+  }
+  if (profile.measurementMode === "independent-lr") {
+    if (!profile.leftMeasurement.trim() || !profile.rightMeasurement.trim()) errors.push("\u72EC\u7ACB L/R profile \u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3\u6D4B\u91CF\u6765\u6E90");
+    if (!profile.balanceEvidence.trim()) errors.push("\u72EC\u7ACB L/R profile \u7F3A\u5C11\u5E73\u8861\u8BC1\u660E");
+  } else if (profile.measurementMode === "average-dual-mono") {
+    if (!profile.averageMeasurement?.trim()) errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u7F3A\u5C11 averageMeasurement");
+    if (!profile.derivation?.trim()) errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u7F3A\u5C11 derivation");
+    if (!/not independent|非独立|同一.*(?:eq|曲线)/i.test(profile.channelClaim)) {
+      errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u5FC5\u987B\u660E\u786E\u975E\u72EC\u7ACB L/R \u58F0\u660E");
+    }
+  }
+  for (const [ear, asset, buffer] of [["left", profile.leftFir, data.leftFir], ["right", profile.rightFir, data.rightFir]]) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/.test(asset.fileName)) errors.push(`${ear} FIR \u6587\u4EF6\u540D\u65E0\u6548`);
+    if (!/^[a-f0-9]{64}$/i.test(asset.sha256)) errors.push(`${ear} FIR SHA-256 \u65E0\u6548`);
+    if (!Number.isInteger(asset.tapCount) || asset.tapCount < 2) errors.push(`${ear} FIR tapCount \u65E0\u6548`);
+    if (buffer.byteLength !== asset.tapCount * Float32Array.BYTES_PER_ELEMENT) errors.push(`${ear} FIR \u5B57\u8282\u957F\u5EA6\u4E0E tapCount \u4E0D\u7B26`);
+    try {
+      decodeRawFir(buffer, asset.fileName);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : `${ear} FIR \u65E0\u6548`);
+    }
+  }
+  const sharedAsset = profile.leftFir.fileName === profile.rightFir.fileName || profile.leftFir.sha256 === profile.rightFir.sha256;
+  if (profile.measurementMode === "independent-lr" && sharedAsset) errors.push("\u72EC\u7ACB L/R profile \u7684\u5DE6\u53F3 FIR \u5FC5\u987B\u662F\u72EC\u7ACB\u8D44\u4EA7");
+  if (profile.measurementMode === "average-dual-mono" && !sharedAsset) errors.push("\u5E73\u5747\u53CC\u5355\u58F0\u9053 profile \u7684\u5DE6\u53F3 FIR \u5FC5\u987B\u6307\u5411\u540C\u4E00\u8D44\u4EA7");
+  return errors;
+}
+function registerLocalHeadphoneCompensation(data) {
+  const errors = validateLocalHeadphoneProfile(data);
+  if (errors.length) throw new Error(`\u672C\u5730\u8033\u673A\u8865\u507F profile \u65E0\u6548: ${errors.join("\uFF1B")}`);
+  localProfiles.set(data.profile.id, data);
+  rawCache.delete(data.profile.id);
+}
+function unregisterLocalHeadphoneCompensation(id) {
+  rawCache.delete(id);
+  return localProfiles.delete(id);
 }
 function decodeRawFir(buffer, url) {
   if (!buffer.byteLength || buffer.byteLength % Float32Array.BYTES_PER_ELEMENT) {
@@ -602,7 +740,12 @@ function resampleLinear2(taps, fromRate, toRate) {
 async function getRawHeadphoneCompensation(profile) {
   let request = rawCache.get(profile.id);
   if (!request) {
-    request = Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)]).then(async ([left, right]) => {
+    const local = localProfiles.get(profile.id);
+    request = local ? Promise.resolve({
+      profile: local.profile,
+      left: decodeRawFir(local.leftFir, local.profile.leftFir.fileName),
+      right: decodeRawFir(local.rightFir, local.profile.rightFir.fileName)
+    }) : Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)]).then(async ([left, right]) => {
       if (!left.ok) throw new Error(`\u8033\u673A\u5DE6 FIR HTTP ${left.status}: ${profile.leftFirUrl}`);
       if (!right.ok) throw new Error(`\u8033\u673A\u53F3 FIR HTTP ${right.status}: ${profile.rightFirUrl}`);
       const [leftBuffer, rightBuffer] = await Promise.all([left.arrayBuffer(), right.arrayBuffer()]);
@@ -930,8 +1073,8 @@ var SpatialRenderer = class {
       const ir = busIrs?.get(bus);
       if (ir) {
         const conv = this.ctx.createConvolver();
-        conv.buffer = ir;
         conv.normalize = false;
+        conv.buffer = ir;
         const earSplit = this.ctx.createChannelSplitter(2);
         splitter.connect(conv, bus);
         conv.connect(earSplit);
@@ -965,10 +1108,10 @@ var SpatialRenderer = class {
       const earSplit = this.ctx.createChannelSplitter(2);
       const left = this.ctx.createConvolver();
       const right = this.ctx.createConvolver();
-      left.buffer = this.headphoneBuffers.left;
-      right.buffer = this.headphoneBuffers.right;
       left.normalize = false;
       right.normalize = false;
+      left.buffer = this.headphoneBuffers.left;
+      right.buffer = this.headphoneBuffers.right;
       const earMerge = this.ctx.createChannelMerger(2);
       merger.connect(earSplit);
       earSplit.connect(left, 0);
@@ -1164,6 +1307,7 @@ var SpatialRenderer = class {
   VbapSolver,
   admToSpherical,
   aliasLabel,
+  availableHeadphoneCompensationProfiles,
   buildBusIrs,
   detectLayoutId,
   getBinauralIrSet,
@@ -1173,7 +1317,10 @@ var SpatialRenderer = class {
   mixIrForMode,
   physicalChannelOrder,
   positionForLabel,
+  registerLocalHeadphoneCompensation,
   sphericalToAdm,
   sphericalToWebAudio,
-  validateHeadphoneProfile
+  unregisterLocalHeadphoneCompensation,
+  validateHeadphoneProfile,
+  validateLocalHeadphoneProfile
 });

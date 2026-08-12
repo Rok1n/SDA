@@ -60,7 +60,10 @@ self.onmessage = async (e: MessageEvent) => {
       if (!demuxer) {
         const kind: ContainerKind = msg.kind ?? sniffContainer(chunk);
         demuxer = createDemuxer(kind, {
-          onTrack: (t) => self.postMessage({ type: "track", track: t }),
+          onTrack: (t) => self.postMessage(
+            { type: "track", track: t },
+            t.coverArt ? [t.coverArt.bytes.buffer] : [],
+          ),
           onPacket: (p) => {
             for (const au of p.frames) decoder!.push(au);
             drainFrames();

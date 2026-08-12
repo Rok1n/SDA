@@ -17,6 +17,9 @@ import {
   SpatialRenderer,
   getBinauralIrSet,
   headphoneProfileById,
+  registerLocalHeadphoneCompensation,
+  unregisterLocalHeadphoneCompensation,
+  type LocalHeadphoneCompensationData,
   type BinauralMode,
   type OutputMode,
   type VirtualSpeaker,
@@ -33,7 +36,9 @@ export interface VisualObject {
 }
 
 export interface PlayerCallbacks {
-  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string }) => void;
+  onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
+  /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
+  onDecodedFormat?: (info: { rawBedLabels: string[]; bedLabels: string[]; objectChannels: number }) => void;
   /** Throttled (~per frame batch) object-state snapshot for the 3D view. */
   onVisualState?: (objects: VisualObject[], streamTimeSec: number) => void;
   onError?: (message: string) => void;
@@ -64,6 +69,7 @@ export class SdaPlayer {
   private readyResolve!: () => void;
   private ready: Promise<void>;
   private objectChannels = new Map<number, number>(); // object id → PCM channel
+  private decodedFormatKey = "";
   private trackReported = false;
   private knownBedLabels: string[] = [];
   private fedSamples = 0;
@@ -190,6 +196,18 @@ export class SdaPlayer {
   setBinauralMode(mode: BinauralMode): void {
     this.binauralMode = mode;
     this.renderer?.setBinauralMode(mode);
+  }
+
+  /** 注册主进程已校验的本地左右 FIR。选中该 profile 时只切最终双耳 EQ，
+   * 不重建 decoder/worklet/PCM。 */
+  registerLocalHeadphoneCompensation(data: LocalHeadphoneCompensationData): void {
+    registerLocalHeadphoneCompensation(data);
+  }
+
+  /** 移除本地档案。若它正在使用，先回到 literal bypass。 */
+  unregisterLocalHeadphoneCompensation(profileId: string): boolean {
+    if (this.headphoneProfileId === profileId) this.setHeadphoneCompensation(null);
+    return unregisterLocalHeadphoneCompensation(profileId);
   }
 
   /** 设置最终双耳耳机补偿。profile 必须来自 renderer 注册的真实测量曲线。 */
@@ -360,6 +378,7 @@ export class SdaPlayer {
     this.objects.clear();
     this.pendingVisualEvents = [];
     this.objectChannels.clear();
+    this.decodedFormatKey = "";
     this.emitVisual();
     this.fedSamples = 0;
     this.pcmQueue = [];
@@ -455,7 +474,7 @@ export class SdaPlayer {
         break;
       case "track": {
         this.trackReported = true;
-        const track = msg.track as { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string };
+        const track = msg.track as { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } };
         if (track.durationSec && Number.isFinite(track.durationSec)) {
           this.containerDurationSec = track.durationSec;
         }
@@ -535,6 +554,15 @@ export class SdaPlayer {
       }
 
       const declarations = frame.objectChannels as ObjectChannelDecl[];
+      const bedLabels = frame.labels.filter((label) => !label.startsWith("Obj_"));
+      // Object declarations are sparse after their first frame. Labels remain on
+      // every PCM frame, so they are the durable decoded-format signal for UI.
+      const objectChannelCount = frame.labels.filter((label) => label.startsWith("Obj_")).length;
+      const decodedFormatKey = `${frame.rawBedLabels.join(",")}|${bedLabels.join(",")}|${objectChannelCount}`;
+      if (decodedFormatKey !== this.decodedFormatKey) {
+        this.decodedFormatKey = decodedFormatKey;
+        this.cb.onDecodedFormat?.({ rawBedLabels: frame.rawBedLabels, bedLabels, objectChannels: objectChannelCount });
+      }
       if (declarations.length > 0) {
         // A non-empty sparse declaration is the complete replacement mapping,
         // not a patch. Replacing it prevents stale IDs/channels after a track

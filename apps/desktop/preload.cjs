@@ -12,5 +12,9 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),
   readSlice: (id, offset, length) => ipcRenderer.invoke("sda:read-slice", id, offset, length),
   close: (id) => ipcRenderer.invoke("sda:close", id),
+  importHeadphoneProfile: () => ipcRenderer.invoke("sda:import-headphone-profile"),
+  listHeadphoneProfiles: () => ipcRenderer.invoke("sda:list-headphone-profiles"),
+  readHeadphoneProfile: (id) => ipcRenderer.invoke("sda:read-headphone-profile", id),
+  deleteHeadphoneProfile: (id) => ipcRenderer.invoke("sda:delete-headphone-profile", id),
   onOpenFile: (cb) => ipcRenderer.on("sda:open-file", (_e, p) => cb(p)),
 });

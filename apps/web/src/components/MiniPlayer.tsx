@@ -7,8 +7,17 @@
 export interface TrackInfo {
   codec: string;
   sampleRate: number;
+  /** Container/header channel_count. For EC-3 JOC this can be its 2-channel core. */
   channels: number;
   container: string;
+  /** Actual fixed E-AC-3/other codec channels before object reconstruction. */
+  rawBedLabels?: string[];
+  /** Object URL for embedded MP4/MKV cover art, when available. */
+  coverUrl?: string;
+  /** Decoded fixed bed labels from actual PCM frames. */
+  bedLabels?: string[];
+  /** Decoded dynamic object PCM channels from actual PCM frames. */
+  objectChannels?: number;
   /** 歌曲标题：容器元数据（MKV Title / 音轨 Name）或文件名兜底。 */
   title?: string;
 }
@@ -55,16 +64,13 @@ export function MiniPlayer({
         <div className="mp-bar">
           {/* 左：封面 + 曲名 */}
           <div className="mp-left">
-            <div className={`mp-art ${playing && !paused ? "playing" : ""}`}>
-              <span />
-              <span />
-              <span />
-              <span />
+            <div className={`mp-art ${track.coverUrl ? "has-cover" : ""} ${playing && !paused ? "playing" : ""}`}>
+              {track.coverUrl ? <img src={track.coverUrl} alt="" /> : <><span /><span /><span /><span /></>}
             </div>
             <div className="mp-meta">
               <div className="mp-title">{track.title ?? track.codec}</div>
               <div className="mp-sub">
-                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.channels} 声道 · {track.container}
+                {track.codec} · {(track.sampleRate / 1000).toFixed(1)} kHz · {track.rawBedLabels?.length ? `${track.rawBedLabels.length} 原始声道` : "等待首帧"} · {track.objectChannels ? `${track.objectChannels} 对象` : "无对象"} · {track.container}
               </div>
             </div>
           </div>

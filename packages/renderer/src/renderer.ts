@@ -404,8 +404,8 @@ export class SpatialRenderer {
       const ir = busIrs?.get(bus);
       if (ir) {
         const conv = this.ctx.createConvolver();
-        conv.buffer = ir;
         conv.normalize = false;
+        conv.buffer = ir;
         const earSplit = this.ctx.createChannelSplitter(2);
         splitter.connect(conv, bus);
         conv.connect(earSplit);
@@ -439,10 +439,10 @@ export class SpatialRenderer {
       const earSplit = this.ctx.createChannelSplitter(2);
       const left = this.ctx.createConvolver();
       const right = this.ctx.createConvolver();
-      left.buffer = this.headphoneBuffers.left;
-      right.buffer = this.headphoneBuffers.right;
       left.normalize = false;
       right.normalize = false;
+      left.buffer = this.headphoneBuffers.left;
+      right.buffer = this.headphoneBuffers.right;
       const earMerge = this.ctx.createChannelMerger(2);
       merger.connect(earSplit);
       earSplit.connect(left, 0);

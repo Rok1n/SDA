@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "airpods-pro-2-local-example",
+  "name": "AirPods Pro 2 (local measured ANC)",
+  "source": "Local fixture measurement session AP2-YYYYMMDD",
+  "target": "State the correction target and smoothing here",
+  "leftMeasurement": "Reference to the independent raw left-ear measurement artifact",
+  "rightMeasurement": "Reference to the independent raw right-ear measurement artifact",
+  "balanceEvidence": "Document L/R mapping verification and reference-band balance result",
+  "sampleRate": 48000,
+  "leftFirUrl": "local://left.f32",
+  "rightFirUrl": "local://right.f32",
+  "createdAt": "2026-08-12T00:00:00.000Z",
+  "deviceRevision": "Record hardware revision",
+  "playbackState": "ANC on; Adaptive Audio off; head tracking off",
+  "earTips": "Record tip size",
+  "firmware": "Record firmware version",
+  "measurementRig": "Record coupler/ear simulator and microphone calibration",
+  "referenceBand": "State band and expected L/R gain relationship",
+  "leftFir": {
+    "fileName": "left.f32",
+    "tapCount": 0,
+    "sha256": "replace-with-left-fir-sha256"
+  },
+  "rightFir": {
+    "fileName": "right.f32",
+    "tapCount": 0,
+    "sha256": "replace-with-right-fir-sha256"
+  }
+}

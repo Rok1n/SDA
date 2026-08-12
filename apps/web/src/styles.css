@@ -440,6 +440,18 @@ aside {
   justify-content: center;
   gap: 3px;
   padding: 9px 8px;
+  overflow: hidden;
+}
+
+.mp-art.has-cover {
+  padding: 0;
+  background: #0d1320;
+}
+
+.mp-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .mp-art span {

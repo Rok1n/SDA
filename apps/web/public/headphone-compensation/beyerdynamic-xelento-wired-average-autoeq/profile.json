@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "beyerdynamic-xelento-wired-average-autoeq",
+  "name": "Beyerdynamic Xelento wired (AutoEq average measurement EQ, same L/R curve)",
+  "source": "AutoEq HypetheSonics B&K 5128 in-ear result, revision 6c9a097626213b8cbb0973e5a4dd645f5f9e3fd4",
+  "target": "AutoEq in-ear target; FIR normalized to 0 dB at 1 kHz",
+  "measurementMode": "average-dual-mono",
+  "channelClaim": "The same average-measurement EQ is applied to L/R; not independent L/R calibration and does not correct unit channel mismatch.",
+  "averageMeasurement": "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/Bruel%20%26%20Kjaer%205128%20in-ear/Beyerdynamic%20Xelento",
+  "derivation": "scripts/build-beyerdynamic-xelento-wired-average-profile.mjs synthesized the published 10-band PEQ at 48 kHz into 8192 taps and normalized it at 1 kHz. AutoEq's -6.6 dB preamp is intentionally excluded.",
+  "createdAt": "2026-08-12T00:00:00.000Z",
+  "deviceRevision": "Beyerdynamic Xelento wired as identified by AutoEq HypetheSonics",
+  "playbackState": "Passive wired IEM; source measurement state is defined by HypetheSonics",
+  "earTips": "Source tip and insertion state are defined by HypetheSonics B&K 5128 measurement",
+  "firmware": "Not applicable",
+  "measurementRig": "HypetheSonics Bruel & Kjaer 5128 in-ear measurement data as processed by AutoEq",
+  "referenceBand": "1 kHz normalized FIR reference",
+  "sampleRate": 48000,
+  "leftFir": {
+    "fileName": "average.f32",
+    "tapCount": 8192,
+    "sha256": "a714ad94c9221211ff72541d15fa546b12de366afa8da85d9e10a6af4c4b3af1"
+  },
+  "rightFir": {
+    "fileName": "average.f32",
+    "tapCount": 8192,
+    "sha256": "a714ad94c9221211ff72541d15fa546b12de366afa8da85d9e10a6af4c4b3af1"
+  }
+}
