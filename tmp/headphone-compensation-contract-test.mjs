@@ -20,8 +20,8 @@ function check(condition, text) {
 const profile = headphoneProfileById("airpods-pro-2-anc-averaged");
 check(HEADPHONE_COMPENSATION_PROFILES.length === 1, "内置一个明确标注的平均近似 profile");
 check(!!profile && profile.name.includes("平均测量近似"), "AirPods Pro 2 profile 明确标注平均近似");
-check(profile?.sampleRate === 48000 && profile?.preampDb === -3.4 && profile?.postFirLoudnessTrimDb === 4.58,
-  "AirPods profile 固定为 48kHz / -3.4dB preamp / +4.58dB 中频响度匹配");
+check(profile?.sampleRate === 48000 && !("preampDb" in (profile ?? {})) && !("postFirLoudnessTrimDb" in (profile ?? {})),
+  "AirPods profile 只有 48kHz FIR EQ 元数据，不带 profile gain 或 loudness trim");
 check(profile !== null && validateHeadphoneProfile(profile).length === 0, "内置 profile 通过元数据契约校验");
 check(headphoneProfileById("unknown") === null, "未知 profile 不可选");
 check(
@@ -33,10 +33,8 @@ check(
     sampleRate: 0,
     leftFirUrl: "",
     rightFirUrl: "",
-    preampDb: 1,
-    postFirLoudnessTrimDb: 6.01,
   }).length >= 6,
-  "缺来源、左右 FIR 或越界响度 trim 的 profile 被拒绝",
+  "缺来源或左右 FIR 的 profile 被拒绝",
 );
 
 if (profile) {

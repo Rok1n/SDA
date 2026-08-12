@@ -18,10 +18,6 @@ export interface HeadphoneCompensationProfile {
   /** Final stereo-output FIR asset URLs. Left/right may intentionally differ. */
   leftFirUrl: string;
   rightFirUrl: string;
-  /** Fixed headroom before correction; must be zero or negative. */
-  preampDb: number;
-  /** Post-FIR 250Hz–2kHz pink-weighted RMS level match before global output calibration. */
-  postFirLoudnessTrimDb: number;
 }
 
 export interface HeadphoneCompensationBuffers {
@@ -43,8 +39,6 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     sampleRate: 48000,
     leftFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
     rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
-    preampDb: -3.4,
-    postFirLoudnessTrimDb: 4.58,
   },
 ];
 
@@ -69,10 +63,6 @@ export function validateHeadphoneProfile(profile: HeadphoneCompensationProfile):
   if (!profile.target.trim()) errors.push("缺少目标曲线说明");
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("采样率无效");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("必须提供左右 FIR 资产");
-  if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb 必须为 0 或负值");
-  if (!Number.isFinite(profile.postFirLoudnessTrimDb) || profile.postFirLoudnessTrimDb < 0 || profile.postFirLoudnessTrimDb > 6) {
-    errors.push("postFirLoudnessTrimDb 必须在 0..6dB");
-  }
   return errors;
 }
 

@@ -73,14 +73,12 @@ const leftInput = wiring.find((edge) => edge.to === "profile-conv-0" && edge.out
 const rightInput = wiring.find((edge) => edge.to === "profile-conv-1" && edge.out === 1);
 const leftOutput = wiring.find((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("merge2-") && edge.input === 0);
 const rightOutput = wiring.find((edge) => edge.from === "profile-conv-1" && edge.to === leftOutput?.to && edge.input === 1);
-const recovery = leftOutput && wiring.find((edge) => edge.from === leftOutput.to && edge.to?.startsWith("gain-"));
-const loudnessTrim = recovery && wiring.find((edge) => edge.from === recovery.to && edge.to?.startsWith("gain-"));
-const profilePeak = loudnessTrim && wiring.find((edge) => edge.from === loudnessTrim.to && edge.to?.startsWith("compressor-"));
-const makeup = profilePeak && wiring.find((edge) => edge.from === profilePeak.to && edge.to?.startsWith("gain-"));
-const safety = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to?.startsWith("compressor-") && edge.to !== profilePeak?.to);
+const makeup = leftOutput && wiring.find((edge) => edge.from === leftOutput.to && edge.to?.startsWith("gain-"));
+const safety = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to?.startsWith("compressor-"));
 check(!!leftInput && !!rightInput && !!leftOutput && !!rightOutput, "左右 FIR 保持通道身份，不交叉馈送");
-check(!!recovery && !!loudnessTrim && !!profilePeak && !!makeup && !!safety,
-  "FIR 后依次经过 recovery、profile +4.58dB 中频匹配、profile peak control、全局 makeup 与最终 safety");
+check(!!makeup && !!safety, "FIR merger 直接进入共享全局 makeup 与最终 safety");
+check(wiring.filter((edge) => edge.from === leftOutput?.to && edge.to?.startsWith("compressor-")).length === 0,
+  "profile FIR 后不创建独立 compressor 或 limiter");
 renderer.setHeadphoneCompensation(null);
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(worklets === initialWorklets, "切回 bypass 不重建 worklet");

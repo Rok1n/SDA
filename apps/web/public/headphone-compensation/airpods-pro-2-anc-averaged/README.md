@@ -8,14 +8,10 @@
   https://github.com/jaakkopasanen/AutoEq/tree/master/results/crinacle/711%20in-ear/Apple%20AirPods%20Pro%202%20%28ANC%20mode%29
 - Measurement provenance: crinacle 711 in-ear measurement as identified by AutoEq.
 - Target: AutoEq in-ear target used by the referenced output.
-- Preamp: -3.4 dB before FIR, matching AutoEq's ten-filter headroom recommendation.
-- Recovery: +3.4 dB after FIR restores SDA's final binaural output calibration.
-- Loudness trim: +4.58 dB after recovery matches the FIR's 250Hz-2kHz
-  pink-weighted RMS level. It is an SDA static EQ level match, not AutoEq
-  correction data.
-- Profile peak control: a short-release peak controller follows the trim before
-  SDA's global makeup. It contains FIR-created peaks locally so they do not hold
-  down the shared final safety compressor; it is not a true-peak limiter.
+- Processing: SDA applies these raw FIRs directly to the final left/right binaural
+  output with `normalize = false`. It does not add profile preamp, recovery,
+  loudness trim, compression, or limiting. The shared binaural output calibration
+  and final safety compressor remain downstream for every binaural profile.
 
 The source result is an averaged response. SDA intentionally writes identical files
 and applies them through two independent final-output convolvers. This is not an

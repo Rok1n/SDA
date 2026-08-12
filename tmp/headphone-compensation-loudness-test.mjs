@@ -1,4 +1,4 @@
-// AirPods profile loudness diagnostic: match 250Hz-2kHz pink-weighted RMS.
+// AirPods profile FIR diagnostic: compensation is raw final-L/R EQ only.
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
@@ -28,25 +28,20 @@ function check(condition, text) {
   console.log(`${condition ? "PASS" : "FAIL"}  ${text}`);
 }
 
-let peak = 0;
+let peakPower = 0;
 let weightedPower = 0;
 let weights = 0;
-for (let hz = 20; hz <= 20000; hz += 1) peak = Math.max(peak, responsePower(hz));
+for (let hz = 20; hz <= 20000; hz += 1) peakPower = Math.max(peakPower, responsePower(hz));
 for (let hz = 250; hz <= 2000; hz += 1) {
   const weight = 1 / hz;
   weightedPower += responsePower(hz) * weight;
   weights += weight;
 }
-const midrangeLossDb = 10 * Math.log10(weightedPower / weights);
-const preamp = Math.pow(10, profile.preampDb / 20);
-const recovery = Math.pow(10, -profile.preampDb / 20);
-const loudnessTrim = Math.pow(10, profile.postFirLoudnessTrimDb / 20);
-const residualDb = midrangeLossDb + profile.postFirLoudnessTrimDb;
-check(Math.abs(preamp * recovery - 1) < 1e-12, `profile preamp/recovery 精确抵消（${db(preamp * recovery).toFixed(6)}dB）`);
-check(Math.abs(residualDb) <= 0.01,
-  `250Hz-2kHz pink-weighted FIR 电平匹配残差 <= 0.01dB（${residualDb.toFixed(4)}dB）`);
-check(db(peak) > -0.5 && db(peak) <= 0.1, `FIR 峰值接近 unity（${db(Math.sqrt(peak)).toFixed(2)}dB）`);
-console.log(`INFO  250Hz-2kHz pink-weighted FIR=${midrangeLossDb.toFixed(4)}dB，profile trim=${profile.postFirLoudnessTrimDb.toFixed(2)}dB；trim 后 FIR 峰值 ${(db(Math.sqrt(peak) * loudnessTrim)).toFixed(2)}dB，由最终 safety compressor 保护。`);
+const midrangeDb = 10 * Math.log10(weightedPower / weights);
+const peakDb = db(Math.sqrt(peakPower));
+check(Math.abs(midrangeDb - -4.5764) <= 0.01, `250Hz-2kHz pink-weighted raw FIR 响应稳定（${midrangeDb.toFixed(4)}dB）`);
+check(peakDb > -0.5 && peakDb <= 0.1, `raw FIR 峰值接近 unity（${peakDb.toFixed(2)}dB）`);
+console.log(`INFO  profile 只应用 raw L/R FIR EQ：250Hz-2kHz=${midrangeDb.toFixed(4)}dB，峰值=${peakDb.toFixed(2)}dB；SDA 不添加 profile gain、loudness trim 或 profile dynamics。`);
 
-console.log(failed ? `\n${failed} 项失败` : "\nAirPods profile 中频响度标定通过");
+console.log(failed ? `\n${failed} 项失败` : "\nAirPods profile 原始 EQ 诊断通过");
 process.exit(failed ? 1 : 0);

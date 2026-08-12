@@ -567,9 +567,7 @@ var HEADPHONE_COMPENSATION_PROFILES = [
     target: "AutoEq in-ear target; averaged response, not independent L/R measurement",
     sampleRate: 48e3,
     leftFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
-    rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
-    preampDb: -3.4,
-    postFirLoudnessTrimDb: 4.58
+    rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32"
   }
 ];
 var rawCache = /* @__PURE__ */ new Map();
@@ -585,10 +583,6 @@ function validateHeadphoneProfile(profile) {
   if (!profile.target.trim()) errors.push("\u7F3A\u5C11\u76EE\u6807\u66F2\u7EBF\u8BF4\u660E");
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("\u91C7\u6837\u7387\u65E0\u6548");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
-  if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb \u5FC5\u987B\u4E3A 0 \u6216\u8D1F\u503C");
-  if (!Number.isFinite(profile.postFirLoudnessTrimDb) || profile.postFirLoudnessTrimDb < 0 || profile.postFirLoudnessTrimDb > 6) {
-    errors.push("postFirLoudnessTrimDb \u5FC5\u987B\u5728 0..6dB");
-  }
   return errors;
 }
 function decodeRawFir(buffer, url) {
@@ -652,11 +646,6 @@ var BINAURAL_LFE_PEAK_KNEE_DB = 0;
 var BINAURAL_LFE_PEAK_RATIO = 8;
 var BINAURAL_LFE_PEAK_ATTACK_S = 3e-3;
 var BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
-var HEADPHONE_PROFILE_PEAK_THRESHOLD_DB = -7;
-var HEADPHONE_PROFILE_PEAK_KNEE_DB = 0;
-var HEADPHONE_PROFILE_PEAK_RATIO = 12;
-var HEADPHONE_PROFILE_PEAK_ATTACK_S = 1e-3;
-var HEADPHONE_PROFILE_PEAK_RELEASE_S = 0.04;
 function sizeToSpread(size) {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
 }
@@ -980,8 +969,6 @@ var SpatialRenderer = class {
     let finalBinaural = merger;
     const profile = headphoneProfileById(this.headphoneProfileId);
     if (profile && this.headphoneBuffers) {
-      const preamp = this.ctx.createGain();
-      preamp.gain.value = Math.pow(10, profile.preampDb / 20);
       const earSplit = this.ctx.createChannelSplitter(2);
       const left = this.ctx.createConvolver();
       const right = this.ctx.createConvolver();
@@ -990,27 +977,13 @@ var SpatialRenderer = class {
       left.normalize = false;
       right.normalize = false;
       const earMerge = this.ctx.createChannelMerger(2);
-      const recovery = this.ctx.createGain();
-      recovery.gain.value = Math.pow(10, -profile.preampDb / 20);
-      const loudnessTrim = this.ctx.createGain();
-      loudnessTrim.gain.value = Math.pow(10, profile.postFirLoudnessTrimDb / 20);
-      const profilePeak = this.ctx.createDynamicsCompressor();
-      profilePeak.threshold.value = HEADPHONE_PROFILE_PEAK_THRESHOLD_DB;
-      profilePeak.knee.value = HEADPHONE_PROFILE_PEAK_KNEE_DB;
-      profilePeak.ratio.value = HEADPHONE_PROFILE_PEAK_RATIO;
-      profilePeak.attack.value = HEADPHONE_PROFILE_PEAK_ATTACK_S;
-      profilePeak.release.value = HEADPHONE_PROFILE_PEAK_RELEASE_S;
-      merger.connect(preamp);
-      preamp.connect(earSplit);
+      merger.connect(earSplit);
       earSplit.connect(left, 0);
       earSplit.connect(right, 1);
       left.connect(earMerge, 0, 0);
       right.connect(earMerge, 0, 1);
-      earMerge.connect(recovery);
-      recovery.connect(loudnessTrim);
-      loudnessTrim.connect(profilePeak);
-      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery, loudnessTrim, profilePeak);
-      finalBinaural = profilePeak;
+      this.postNodes.push(earSplit, left, right, earMerge);
+      finalBinaural = earMerge;
     }
     finalBinaural.connect(makeup);
     makeup.connect(safety);
