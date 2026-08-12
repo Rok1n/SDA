@@ -13,7 +13,7 @@ const profile = {
   schemaVersion: 1, id: "airpods-pro-2-local-test", name: "AirPods Pro 2 local test",
   source: "fixture session", target: "documented target", leftMeasurement: "left raw", rightMeasurement: "right raw",
   balanceEvidence: "verified L/R map", measurementMode: "independent-lr", channelClaim: "independent L/R calibration",
-  sampleRate: 48000, leftFirUrl: "local://left.f32", rightFirUrl: "local://right.f32",
+  sampleRate: 48000, preampDb: -6, leftFirUrl: "local://left.f32", rightFirUrl: "local://right.f32",
   createdAt: "2026-08-12T00:00:00.000Z", deviceRevision: "test", playbackState: "ANC on", earTips: "M",
   firmware: "test", measurementRig: "fixture", referenceBand: "500 Hz to 2 kHz",
   leftFir: { fileName: "left.f32", tapCount: 4, sha256: hash(left) },

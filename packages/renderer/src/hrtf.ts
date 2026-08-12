@@ -205,6 +205,27 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
     R[i] = R[i]! + w * wetR[i]!;
   }
 
+  // A nominal 0° source should not carry the KU100 fixture's persistent ear
+  // sensitivity offset. Equalise only measured centre directions; lateral ILD
+  // remains untouched and continues to encode direction.
+  if (Math.abs(raw.azimuth) < 1e-6) {
+    let leftEnergy = 0;
+    let rightEnergy = 0;
+    for (let i = 0; i < outLen; i++) {
+      leftEnergy += L[i]! * L[i]!;
+      rightEnergy += R[i]! * R[i]!;
+    }
+    if (leftEnergy > 0 && rightEnergy > 0) {
+      const targetEnergy = (leftEnergy + rightEnergy) / 2;
+      const leftScale = Math.sqrt(targetEnergy / leftEnergy);
+      const rightScale = Math.sqrt(targetEnergy / rightEnergy);
+      for (let i = 0; i < outLen; i++) {
+        L[i] = L[i]! * leftScale;
+        R[i] = R[i]! * rightScale;
+      }
+    }
+  }
+
   // 能量归一化（Omnitone 惯例）：近/中/远切换、不同方向之间响度一致，
   // 不会因为房间能量多少而忽大忽小。
   let energy = 0;

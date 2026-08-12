@@ -123,17 +123,18 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 KU100 IR 在运行时按左右耳**合计能量**归一化，保证方向与 Near/Mid/Far 间的相对
 响度一致；它不保证经过头部/耳廓频响后的主观响度等于未空间化立体声。SDA 因此在
 全部虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+6 dB` makeup gain，
-再经过最终双耳 emergency peak guard，最后进入输出模式淡化和用户 master 音量。
+再依次经过用户 master 音量、布局电平补偿和可选节目 dialnorm；最终与立体声路径共用
+stereo-linked lookahead limiter，再进入输出模式 master。
 
 该值是 SDA 针对 AirPods/耳机主观响度的应用级标定点，**不是** Dolby、Apple 或
 Genelec 发布的固定双耳增益，也不是 KU100 补偿/耳机 profile。它不改 HRIR/BRIR
-资产、每方向能量归一化、LFE 的规范性 `+10 dB` 或用户音量控制。
+资产、每方向能量归一化、LFE 带内增益或用户音量控制。
 
-`+6 dB` 缩小了多总线同相峰值的余量，因此输出图只在最终 L/R 总和后放置 emergency
-sample-peak guard（ceiling `-0.1 dBFS`）。它逐样本、逐耳独立地限制超过 ceiling 的值；
-ceiling 以下严格 unity gain，峰值后的正常样本立即恢复，因此不会以 attack/release 包络
-持续压低完整节目内容。该节点没有 lookahead 或 oversampling，**不是** true-peak limiter；
-极端重叠或 inter-sample peak 的保护不等同于专业 true-peak 限制器。
+`+6 dB` 缩小了多总线同相峰值的余量，因此双耳与立体声路径在模式交叉淡化后共用
+一个 ceiling `-1 dBFS`、约 `5 ms` lookahead 的 stereo-linked limiter。左右耳/声道
+共享同一 gain envelope，lookahead attack 和约 `100 ms` release 都连续，避免峰值阈值
+跨越造成单样本台阶。该节点没有 oversampling，**不是** true-peak limiter；极端
+inter-sample peak 的保护不等同于专业 true-peak 限制器。
 
 配合每源距离处理（`renderer.ts applyGains`）：
 1. **归一化对象距离**：ADM 距离 1 是虚拟音箱环。环内维持 0 dB；环外按
@@ -168,7 +169,7 @@ SDA 双耳路径因此采用以下规则：
 
 1. **主声道全频空间化**：每个非 LFE 虚拟扬声器完整进入其方向的 HRIR/BRIR 卷积，
    不做主声道低频重定向。
-2. **LFE 独立处理**：原始 LFE 走 LR4 低通 **120 Hz**、带内 **+10 dB**，再经仅作用于
+2. **LFE 独立处理**：原始 LFE 走 LR4 低通 **120 Hz**、耳机路径带内 **unity**，再经仅作用于
    LFE 支路的 peak compressor 后等量直送双耳；它不参与方向卷积，也不接收主声道低频。
    该节点只约束会主导最终双耳 safety compressor 的 LFE 瞬态，避免低频驱动全频 gain
    reduction 而掩盖低中频和方向线索；它不是 true-peak limiter，也不替代 LFE 的规范增益。
@@ -285,7 +286,7 @@ SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 
 | 系统 | 约定 |
 |---|---|
-| ADM / OAMD 事件流 | 笛卡尔 [x,y,z]：x+ = 左，y+ = 前，z+ = 上（单位立方体） |
+| ADM / OAMD 事件流 | 笛卡尔 [x,y,z]：x+ = 右，y+ = 前，z+ = 上（单位立方体） |
 | ADM 极坐标（VBAP 内部） | 方位角 0°=前，+ = 左；仰角 + = 上 |
 | Web Audio / three.js | 右手系：x+ = 右，y+ = 上，z+ = 朝听者（听者面朝 -z） |
 

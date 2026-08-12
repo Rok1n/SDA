@@ -166,9 +166,9 @@ Binaural Settings 语义，引擎保留近/中/远机制）。
 BRIR/HRTF 资产。
 
 该档案不是独立左右声道测量，也不校正特定耳机的 driver 偏差、耳罩磨损或佩戴
-密封差异。AutoEq 文档里的 `-4.1 dB` preamp 被特意排除，profile 不添加 output
-trim、响度控制、压缩或 limiter；既有的 binaural makeup 和 emergency peak guard
-保持其独立行为。可审计的来源、生成方法、SHA-256 与限制见
+密封差异。FIR 保持 1 kHz 归一化，runtime profile branch 施加由发布 FIR 峰值
+校核的 `-6.1 dB` preamp；它不添加响度控制或压缩。既有 binaural makeup 与
+stereo-linked lookahead limiter 保持独立行为。可审计的来源、生成方法、SHA-256 与限制见
 `apps/web/public/headphone-compensation/sony-mdr-7506-average-autoeq/`。
 
 ### 常见问题
@@ -217,7 +217,7 @@ pnpm mobile:start
   `bridge_api::REvent`，坐标为 ADM 笛卡尔）。
 - **渲染器自研**：Omniphony 的 VBAP 渲染不在 harletty 仓库，按其
   `BINAURAL.md` 与 EBU BEAR 的架构（虚拟扬声器 + BRIR 卷积）重写。
-- **坐标系**：事件流是 ADM 约定（x+左, y+前, z+上），Web Audio/three.js
+- **坐标系**：事件流是 ADM 约定（x+右, y+前, z+上），Web Audio/three.js
   是右手系（x+右, y+上, z+朝听者），转换集中在 `renderer/src/coords.ts`。
 
 ## 许可

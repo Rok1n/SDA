@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const core = await import(pathToFileURL(join(here, "../pkg-node/sda_core.js")).href);
+const core = await import(pathToFileURL(join(here, "../pkg-node/sda_core.cjs")).href);
 const data = readFileSync(join(here, "../../../apps/web/public/demo-joc.ec3"));
 
 const dec = new core.SdaDecoder("eac3");

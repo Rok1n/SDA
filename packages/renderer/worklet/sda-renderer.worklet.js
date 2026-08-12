@@ -33,6 +33,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   createSource() {
     return {
       ring: new Float32Array(RING_SIZE),
+      valid: new Uint8Array(RING_SIZE),
       validStart: Number.POSITIVE_INFINITY,
       validEnd: Number.NEGATIVE_INFINITY,
       gains: new Float32Array(this.busCount),
@@ -50,9 +51,16 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       lpA: 1,
       lpY: 0,
       binauralBank: 1,
-      availabilityGain: 0,
-      availabilityTarget: 0,
+      availabilityFrom: 0,
+      availabilityRampLeft: 0,
+      availabilityLastOutput: 0,
+      availabilityWasValid: false,
       hasReceivedPcm: false,
+      lifecycleEvents: [],
+      lifecycleEventOrder: 0,
+      active: true,
+      inactiveSince: null,
+      inactiveToken: null,
     };
   }
 
@@ -100,6 +108,21 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     }
   }
 
+  scheduleLifecycle(src, at, active, token = null) {
+    if (!Number.isSafeInteger(at)) return;
+    src.lifecycleEvents.push({ at, active, token, order: src.lifecycleEventOrder++ });
+    src.lifecycleEvents.sort((left, right) => left.at - right.at || left.order - right.order);
+  }
+
+  applyLifecycleThrough(src, currentTime) {
+    while (src.lifecycleEvents.length > 0 && src.lifecycleEvents[0].at <= currentTime) {
+      const event = src.lifecycleEvents.shift();
+      src.active = event.active;
+      src.inactiveSince = event.active ? null : event.at;
+      src.inactiveToken = event.active ? null : event.token;
+    }
+  }
+
   rejectBatch(sequence, reason) {
     this.rejectedBatches++;
     this.port.postMessage({ type: "batchRejected", sequence, reason });
@@ -143,11 +166,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       if (Number.isFinite(source.validEnd) && writeStart > source.validEnd) {
         const gapEnd = Math.min(writeStart, source.validEnd + RING_SIZE);
         for (let position = source.validEnd; position < gapEnd; position++) {
-          source.ring[position & RING_MASK] = 0;
+          const slot = position & RING_MASK;
+          source.ring[slot] = 0;
+          source.valid[slot] = 0;
         }
       }
       for (let i = 0; i < count; i++) {
-        source.ring[(writeStart + i) & RING_MASK] = samples[skipped + i];
+        const slot = (writeStart + i) & RING_MASK;
+        source.ring[slot] = samples[skipped + i];
+        source.valid[slot] = 1;
       }
       source.validStart = Number.isFinite(source.validStart)
         ? Math.min(source.validStart, writeStart)
@@ -173,6 +200,16 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       case "remove":
         this.sources.delete(msg.id);
         break;
+      case "removeAt": {
+        const src = this.sources.get(msg.id);
+        if (src) this.scheduleLifecycle(src, msg.at, false, msg.token);
+        break;
+      }
+      case "resumeAt": {
+        const src = this.sources.get(msg.id);
+        if (src) this.scheduleLifecycle(src, msg.at, true);
+        break;
+      }
       case "feed": {
         const src = this.sources.get(msg.id);
         if (!src) break;
@@ -223,11 +260,19 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         for (const src of this.sources.values()) {
           src.validStart = Number.POSITIVE_INFINITY;
           src.validEnd = Number.NEGATIVE_INFINITY;
+          src.valid.fill(0);
           src.scheduledGains.length = 0;
           src.lpY = 0;
-          src.availabilityGain = 0;
-          src.availabilityTarget = 0;
+          src.availabilityFrom = 0;
+          src.availabilityRampLeft = 0;
+          src.availabilityLastOutput = 0;
+          src.availabilityWasValid = false;
           src.hasReceivedPcm = false;
+          src.lifecycleEvents.length = 0;
+          src.lifecycleEventOrder = 0;
+          src.active = true;
+          src.inactiveSince = null;
+          src.inactiveToken = null;
         }
         this.paused = false;
         this.consumed = 0;
@@ -262,7 +307,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     }
     if (this.paused || !this.timelineStarted) return true;
 
-    for (const src of this.sources.values()) {
+    for (const [sourceId, src] of this.sources) {
       const buses = busesByBank[src.binauralBank] || primaryBuses;
       let gain = src.gain;
       let muteGain = src.muteGain;
@@ -278,17 +323,25 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         gain = src.gain;
 
         let sample = 0;
-        const available = samplePosition >= src.validStart && samplePosition < src.validEnd;
-        src.availabilityTarget = available ? 1 : 0;
-        if (available) {
-          sample = src.ring[samplePosition & RING_MASK];
-        } else if (src.hasReceivedPcm && samplePosition >= src.validStart) {
-          this.underrunSamples++;
+        const slot = samplePosition & RING_MASK;
+        this.applyLifecycleThrough(src, samplePosition);
+        const retired = !src.active;
+        const available = src.active && samplePosition >= src.validStart && samplePosition < src.validEnd && src.valid[slot] === 1;
+        if (available !== src.availabilityWasValid) {
+          src.availabilityWasValid = available;
+          src.availabilityFrom = src.availabilityLastOutput;
+          src.availabilityRampLeft = 32;
         }
-        // A 32-sample envelope avoids an instantaneous non-zero ↔ zero step when
-        // decoder/main-thread delivery briefly misses a render quantum.
-        src.availabilityGain += (src.availabilityTarget - src.availabilityGain) / 32;
-        sample *= src.availabilityGain;
+        if (!retired && !available && src.hasReceivedPcm && samplePosition >= src.validStart) this.underrunSamples++;
+        const target = available ? src.ring[slot] : 0;
+        if (src.availabilityRampLeft > 0) {
+          const progress = (33 - src.availabilityRampLeft) / 32;
+          sample = src.availabilityFrom + (target - src.availabilityFrom) * progress;
+          src.availabilityRampLeft--;
+        } else {
+          sample = target;
+        }
+        src.availabilityLastOutput = sample;
         if (src.lpA < 0.999) {
           lpY += src.lpA * (sample - lpY);
           sample = lpY;
@@ -313,6 +366,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       src.gain = gain;
       src.muteGain = muteGain;
       src.lpY = lpY;
+      const blockEnd = this.consumed + blockSize;
+      const hasFutureResume = src.lifecycleEvents.some((event) => event.active);
+      if (!src.active && !hasFutureResume && src.inactiveSince !== null && blockEnd >= src.inactiveSince + 32) {
+        this.sources.delete(sourceId);
+        this.port.postMessage({ type: "sourceRetired", id: sourceId, token: src.inactiveToken });
+      }
     }
 
     this.consumed += blockSize;
@@ -335,30 +394,162 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   }
 }
 
-/** Final emergency sample-peak guard. It has no lookahead, oversampling, or
- * release envelope: normal samples pass bit-for-bit and each channel clamps
- * independently only at the configured ceiling. */
+/** Stereo-linked lookahead limiter. Both ears share one gain envelope so peak
+ * control cannot shift the binaural image. */
 class SdaFinalPeakGuardProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
-    const ceilingDb = options?.processorOptions?.ceilingDb ?? -0.1;
+    const ceilingDb = options?.processorOptions?.ceilingDb ?? -1;
     this.ceiling = Math.pow(10, ceilingDb / 20);
+    this.lookahead = Math.max(1, Math.round((typeof sampleRate === "number" ? sampleRate : 48000) * 0.005));
+    this.releaseCoeff = Math.exp(-1 / ((typeof sampleRate === "number" ? sampleRate : 48000) * 0.1));
+    this.buffers = [new Float32Array(this.lookahead), new Float32Array(this.lookahead)];
+    this.write = 0;
+    this.gain = 1;
+    this.attackTarget = 1;
+    this.attackStep = 0;
+    this.hold = 0;
+    this.timelineStarted = false;
+    this.paused = false;
+    this.consumed = 0;
+    this.programEnabled = false;
+    this.programMetadataGain = 1;
+    this.programGain = 1;
+    this.programTargetGain = 1;
+    this.programGainStep = 0;
+    this.programRampLeft = 0;
+    this.scheduledProgramGains = [];
+    this.programEventOrder = 0;
+    this.port.onmessage = (event) => this.onMessage(event.data);
+  }
+
+  setProgramTarget(target, ramp) {
+    this.programTargetGain = this.programEnabled ? target : 1;
+    if (!this.timelineStarted) {
+      this.programGain = this.programTargetGain;
+      this.programGainStep = 0;
+      this.programRampLeft = 0;
+      return;
+    }
+    this.programRampLeft = Math.max(1, ramp | 0);
+    this.programGainStep = (this.programTargetGain - this.programGain) / this.programRampLeft;
+  }
+
+  normalizeProgramGain(value) {
+    const gain = Number(value);
+    return Number.isFinite(gain) ? Math.max(0, Math.min(1, gain)) : 1;
+  }
+
+  onMessage(msg) {
+    const ramp = Math.max(1, Math.round((typeof sampleRate === "number" ? sampleRate : 48000) * 0.05));
+    switch (msg.type) {
+      case "programGain":
+        this.programMetadataGain = this.normalizeProgramGain(msg.gain);
+        this.setProgramTarget(this.programMetadataGain, ramp);
+        break;
+      case "scheduleProgramGain":
+        if (!Number.isSafeInteger(msg.at)) break;
+        this.scheduledProgramGains.push({
+          at: msg.at,
+          gain: this.normalizeProgramGain(msg.gain),
+          order: this.programEventOrder++,
+        });
+        this.scheduledProgramGains.sort((left, right) => left.at - right.at || left.order - right.order);
+        break;
+      case "programEnabled":
+        this.programEnabled = !!msg.enabled;
+        this.setProgramTarget(this.programMetadataGain, ramp);
+        break;
+      case "start":
+        if (!this.timelineStarted && Number.isSafeInteger(msg.origin)) {
+          this.consumed = msg.origin;
+          this.applyProgramEventsThrough(msg.origin);
+          this.timelineStarted = true;
+        }
+        break;
+      case "reset":
+        this.timelineStarted = false;
+        this.paused = false;
+        this.consumed = 0;
+        for (const buffer of this.buffers) buffer.fill(0);
+        this.write = 0;
+        this.gain = 1;
+        this.attackTarget = 1;
+        this.attackStep = 0;
+        this.hold = 0;
+        this.programMetadataGain = 1;
+        this.programGain = 1;
+        this.programTargetGain = 1;
+        this.programGainStep = 0;
+        this.programRampLeft = 0;
+        this.scheduledProgramGains.length = 0;
+        this.programEventOrder = 0;
+        break;
+      case "pause":
+        this.paused = !!msg.paused;
+        break;
+    }
+  }
+
+  applyProgramEventsThrough(samplePosition) {
+    while (this.scheduledProgramGains.length > 0 && this.scheduledProgramGains[0].at <= samplePosition) {
+      const event = this.scheduledProgramGains.shift();
+      this.programMetadataGain = event.gain;
+      const ramp = Math.max(1, Math.round((typeof sampleRate === "number" ? sampleRate : 48000) * 0.05));
+      this.setProgramTarget(event.gain, ramp);
+    }
   }
 
   process(inputs, outputs) {
     const input = inputs[0] || [];
     const output = outputs[0] || [];
-    for (let channel = 0; channel < output.length; channel++) {
-      const source = input[channel] || input[0];
-      const target = output[channel];
-      if (!source) {
-        target.fill(0);
-        continue;
-      }
-      for (let i = 0; i < target.length; i++) {
-        target[i] = Math.max(-this.ceiling, Math.min(this.ceiling, source[i]));
-      }
+    const blockSize = output[0]?.length ?? 128;
+    if (this.paused) {
+      for (const channel of output) channel.fill(0);
+      return true;
     }
+    for (let i = 0; i < blockSize; i++) {
+      if (this.timelineStarted) this.applyProgramEventsThrough(this.consumed + i);
+      let peak = 0;
+      const delayedLeft = this.buffers[0][this.write];
+      const delayedRight = this.buffers[1][this.write];
+      for (let channel = 0; channel < 2; channel++) {
+        const source = input[channel] || input[0];
+        const raw = Number.isFinite(source?.[i]) ? source[i] : 0;
+        const sample = raw * this.programGain;
+        this.buffers[channel][this.write] = sample;
+        peak = Math.max(peak, Math.abs(sample));
+      }
+      const target = peak > this.ceiling ? this.ceiling / peak : 1;
+      if (target < this.attackTarget) {
+        const nextStep = (target - this.gain) / this.lookahead;
+        this.attackStep = this.gain > this.attackTarget
+          ? Math.min(this.attackStep, nextStep)
+          : nextStep;
+        this.attackTarget = target;
+      }
+      if (target < 1) this.hold = this.lookahead;
+      if (this.gain > this.attackTarget) {
+        this.gain = Math.max(this.attackTarget, this.gain + this.attackStep);
+        if (this.gain === this.attackTarget) this.attackStep = 0;
+      } else if (this.hold > 0) {
+        this.hold--;
+      } else {
+        this.gain = 1 - (1 - this.gain) * this.releaseCoeff;
+        this.attackTarget = this.gain;
+      }
+      for (let channel = 0; channel < output.length; channel++) {
+        const delayed = channel === 0 ? delayedLeft : delayedRight;
+        output[channel][i] = Math.max(-1, Math.min(1, delayed * this.gain));
+      }
+      if (this.programRampLeft > 0) {
+        this.programGain += this.programGainStep;
+        this.programRampLeft--;
+        if (this.programRampLeft === 0) this.programGain = this.programTargetGain;
+      }
+      this.write = (this.write + 1) % this.lookahead;
+    }
+    if (this.timelineStarted) this.consumed += blockSize;
     return true;
   }
 }

@@ -77,6 +77,7 @@ function validateProfilePackage(manifest, directory) {
   }
   if (!Number.isFinite(Date.parse(manifest.createdAt))) profileValidationError("createdAt 无效");
   if (!Number.isFinite(manifest.sampleRate) || manifest.sampleRate <= 0) profileValidationError("sampleRate 无效");
+  if (!Number.isFinite(manifest.preampDb) || manifest.preampDb > 0) profileValidationError("preampDb 必须是有限非正值");
   const left = safeProfileAsset(manifest.leftFir, "left");
   const right = safeProfileAsset(manifest.rightFir, "right");
   const sharedAsset = left.fileName === right.fileName || left.sha256 === right.sha256;

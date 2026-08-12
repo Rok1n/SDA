@@ -16,6 +16,7 @@
   "measurementRig": "HypetheSonics over-ear measurement data as processed by AutoEq",
   "referenceBand": "1 kHz normalized FIR reference",
   "sampleRate": 48000,
+  "preampDb": -8.3,
   "leftFir": {
     "fileName": "average.f32",
     "tapCount": 8192,

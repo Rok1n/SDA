@@ -8,6 +8,7 @@ const out = path.join(path.dirname(fileURLToPath(import.meta.url)), "renderer.bu
 
 // ---- Web Audio mocks（connect 调用带记录，验证物理重排接线）----
 const postedToWorklet = [];
+const workletNodes = [];
 const wiring = [];
 function fakeParam() {
   return { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, cancelScheduledValues() {} };
@@ -30,6 +31,7 @@ class FakeAudioWorkletNode {
   constructor(ctx, name, opts) {
     this._tag = "worklet";
     this.port = { postMessage: (msg) => postedToWorklet.push(msg), onmessage: null };
+    workletNodes.push(this);
   }
   connect(to, out, inn) { wiring.push({ from: "worklet", to: to?._tag, out, in: inn }); }
   disconnect() {}
@@ -43,6 +45,7 @@ class FakeAudioContext {
     this.destination = fakeNode("destination");
     this.listener = {};
   }
+  createDelay() { const delay = fakeNode("delay"); delay.delayTime = fakeParam(); return delay; }
   createGain() { return fakeNode("gain"); }
   createBiquadFilter() { return fakeNode("biquad"); }
   createConvolver() { return fakeNode("conv"); }
@@ -105,6 +108,26 @@ function addBed(r, labels) {
     `对象在左侧位: VBAP 主能量在侧环(SL=${og[bus("SurroundLeft")].toFixed(3)})，不触发扩展馈送 (RL=${og[bus("RearLeft")]}, RR=${og[bus("RearRight")]})`);
 }
 
+// ---- 3b. 播放中床标签重绑：占用集合变化在同一 sample 重算所有 expansion ----
+{
+  postedToWorklet.length = 0;
+  const r = new SpatialRenderer(new FakeAudioContext(), { mode: "multichannel", layout: LAYOUTS["7.1.4"] });
+  await r.init("mock://worklet");
+  addBed(r, BED_5_1);
+  check(lastGains("bed:4").gains[bus("RearLeft")] === 0.5, "重绑前 Ls 仍馈送空闲 RearLeft");
+  r.rebindBedSource("bed:2", "RearLeft", 4096);
+  const reboundLs = lastGains("bed:4");
+  const reboundRear = lastGains("bed:2");
+  check(reboundLs.type === "scheduleGains" && reboundLs.at === 4096 && reboundLs.gains[bus("RearLeft")] === 0,
+    "Center→RearLeft 边界同步撤销 Ls 的旧 RearLeft expansion feed");
+  check(reboundRear.type === "scheduleGains" && reboundRear.at === 4096 && reboundRear.gains[bus("RearLeft")] === 1,
+    "重绑床声道在同一 codec sample 直送 RearLeft");
+  r.retireSourceAt("bed:2", 8192);
+  const contractedLs = lastGains("bed:4");
+  check(contractedLs.type === "scheduleGains" && contractedLs.at === 8192 && contractedLs.gains[bus("RearLeft")] === 0.5,
+    "7.1→5.1 床收缩在消失声道的 sample 边界恢复 Ls→RearLeft expansion");
+}
+
 // ---- 4. 5.1 床 → 5.1 布局：纯吸附，无扩展目标 ----
 {
   postedToWorklet.length = 0;
@@ -149,8 +172,8 @@ function addBed(r, labels) {
   const fl9 = lastGains("bed:0").gains;
   check(near(fl9[0], 1) && fl9[4] === 0, `双耳 5.1→9.1.4: FL 直送前左，不馈前宽（WL=${fl9[4]}）`);
   const binauralBiquads = wiring.filter((edge) => edge.from === "biquad" || edge.to === "biquad");
-  check(binauralBiquads.length === 3,
-    `双耳: 只有 LFE 120Hz LR4 使用滤波器，主声道全频卷积（biquad 接线=${binauralBiquads.length}）`);
+  check(binauralBiquads.length === 11,
+    `双耳: LFE LR4 + 左右三段 EQ 常驻，主声道除此之外全频卷积（biquad 接线=${binauralBiquads.length}）`);
 }
 
 // ---- 6. 双耳 Near/Mid/Far：只重混 IR，不篡改 ADM 对象高频或相对响度 ----
@@ -169,6 +192,25 @@ function addBed(r, labels) {
     `双耳档位：ADM 归一化距离不擅自低通内容（near/far lp=${nearMode.lp}/${farMode.lp}）`);
 }
 
+// ---- 6b. 复用 source ID：迟到的旧退休 ack 不得删除新生命周期 ----
+{
+  postedToWorklet.length = 0;
+  const nodeOffset = workletNodes.length;
+  const r = new SpatialRenderer(new FakeAudioContext(), { mode: "binaural", layout: LAYOUTS["5.1"] });
+  await r.init("mock://worklet");
+  const sourceWorklet = workletNodes[nodeOffset];
+  r.addSource("obj:token");
+  r.retireSourceAt("obj:token", 1024);
+  const firstToken = [...postedToWorklet].reverse().find((message) => message.type === "removeAt")?.token;
+  r.addSource("obj:token", { atSample: 2048 });
+  r.retireSourceAt("obj:token", 3072);
+  const secondToken = [...postedToWorklet].reverse().find((message) => message.type === "removeAt")?.token;
+  sourceWorklet.port.onmessage({ data: { type: "sourceRetired", id: "obj:token", token: firstToken } });
+  check(r.setSourceMuted("obj:token", true), "迟到的旧 token ack 保留复用 ID 的新 SourceState");
+  sourceWorklet.port.onmessage({ data: { type: "sourceRetired", id: "obj:token", token: secondToken } });
+  check(!r.setSourceMuted("obj:token", false), "仅当前 retirement token ack 删除对应 SourceState");
+}
+
 // ---- 7. 多声道模式：destination 声道数 + WASAPI 物理顺序重排 ----
 {
   wiring.length = 0;
@@ -176,22 +218,24 @@ function addBed(r, labels) {
   const r = new SpatialRenderer(ctx, { mode: "multichannel", layout: LAYOUTS["7.1.4"] });
   await r.init("mock://worklet");
   check(ctx.destination.channelCount === 12 && ctx.destination.channelCountMode === "explicit",
-    `多声道: 固定最大拓扑受设备上限钳制为 12 ch（实际 ${ctx.destination.channelCount}/${ctx.destination.channelCountMode}）`);
-  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge16" && typeof w.out === "number" && typeof w.in === "number");
-  const expect = [[0, 0], [1, 1], [2, 2], [3, 3], [8, 4], [9, 5], [6, 6], [7, 7], [4, 8], [5, 9], [10, 10], [11, 11], [12, 12], [13, 13], [14, 14], [15, 15]];
-  const ok = expect.every(([bus, inp]) => edges.some((e) => e.out === bus && e.in === inp));
-  check(ok && edges.length === 16, `多声道: 固定 9.1.6 总线按 WASAPI 顺序重排${ok ? "" : JSON.stringify(edges)}`);
+    `多声道: 7.1.4 compact 输出为 12 ch（实际 ${ctx.destination.channelCount}/${ctx.destination.channelCountMode}）`);
+  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge12" && typeof w.out === "number" && typeof w.in === "number");
+  const expect = [[0, 0], [1, 1], [2, 2], [3, 3], [8, 4], [9, 5], [6, 6], [7, 7], [10, 8], [11, 9], [14, 10], [15, 11]];
+  const ok = expect.every(([bus, channel]) => edges.some((e) => e.out === bus && e.in === channel));
+  check(ok && edges.length === expect.length * 4, `多声道: 四个 bank 的 7.1.4 总线按 compact WASAPI 顺序重排${ok ? "" : JSON.stringify(edges)}`);
 }
 
-// ---- 8. 5.1 逻辑布局多声道：仍维持最大物理拓扑以支持无中断切换 ----
+// ---- 8. 5.1 逻辑布局多声道：物理输出紧凑无空洞 ----
 {
   wiring.length = 0;
   const ctx = new FakeAudioContext();
   const r = new SpatialRenderer(ctx, { mode: "multichannel", layout: LAYOUTS["5.1"] });
   await r.init("mock://worklet");
-  check(ctx.destination.channelCount === 12, `多声道 5.1: 固定最大拓扑受 12ch 设备上限钳制`);
-  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge16" && typeof w.out === "number" && typeof w.in === "number");
-  check(edges.length === 16, `多声道 5.1: 固定物理总线完整接线，未用声道由零增益静音`);
+  check(ctx.destination.channelCount === 6, `多声道 5.1: destination 紧凑为 6 ch`);
+  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge6" && typeof w.out === "number" && typeof w.in === "number");
+  const expect = [[0, 0], [1, 1], [2, 2], [3, 3], [6, 4], [7, 5]];
+  const ok = expect.every(([bus, channel]) => edges.some((edge) => edge.out === bus && edge.in === channel));
+  check(ok && edges.length === expect.length * 4, `多声道 5.1: 四个 bank 全部投影到无空洞 WASAPI 顺序`);
 }
 
 console.log(failed === 0 ? "\n全部通过" : `\n${failed} 项失败`);

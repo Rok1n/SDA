@@ -41,6 +41,13 @@ export interface ObjectChannelDecl {
   channel: number;
 }
 
+export interface ProgramLoudnessMetadata {
+  source: "eac3-dialnorm" | "truehd-dialogue-norm";
+  dialogueLevelDb: number;
+  targetDb: -31;
+  gainDb: number;
+}
+
 export interface DecodedFrameData {
   codec: string;
   sampleRate: number;
@@ -51,6 +58,7 @@ export interface DecodedFrameData {
   rawBedLabels: string[];
   events: ObjectEvent[];
   objectChannels: ObjectChannelDecl[];
+  programLoudness: ProgramLoudnessMetadata | null;
   rampDuration: number;
 }
 
@@ -97,6 +105,7 @@ export class SdaDecoder {
       rawBedLabels: frame.rawBedLabels,
       events: JSON.parse(frame.eventsJson) as ObjectEvent[],
       objectChannels: JSON.parse(frame.objectChannelsJson) as ObjectChannelDecl[],
+      programLoudness: JSON.parse(frame.programLoudnessJson) as ProgramLoudnessMetadata | null,
       rampDuration: frame.rampDuration,
     };
     frame.free();

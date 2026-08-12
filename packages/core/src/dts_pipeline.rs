@@ -67,6 +67,7 @@ impl Pipeline for DtsPipeline {
                         raw_bed_labels: labels,
                         events: Vec::new(),
                         object_channels: Vec::new(),
+                        program_loudness: None,
                         ramp_duration: 0,
                     });
                 }

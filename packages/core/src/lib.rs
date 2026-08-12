@@ -5,7 +5,7 @@
 //! object) plus the object spatial events that were active for the frame.
 //!
 //! The event model mirrors Omniphony's `bridge_api::REvent`: positions are
-//! ADM cartesian `[x, y, z]` (x+ = left, y+ = front, z+ = up), `sample_pos`
+//! ADM cartesian `[x, y, z]` (x+ = right, y+ = front, z+ = up), `sample_pos`
 //! is absolute on the codec sample clock, `ramp_duration` is in samples.
 
 use std::collections::VecDeque;
@@ -26,7 +26,7 @@ pub struct ObjectEvent {
     pub sample_pos: u64,
     /// False = gain/ramp-only update, `pos` holds no valid coordinates.
     pub has_pos: bool,
-    /// ADM cartesian [x, y, z]: x+ = left, y+ = front, z+ = up.
+    /// ADM cartesian [x, y, z]: x+ = right, y+ = front, z+ = up.
     pub pos: [f64; 3],
     pub gain_db: i8,
     /// Object extent (width, depth, height), each normalised to [0, 1].
@@ -50,6 +50,28 @@ pub struct ObjectChannelDecl {
     pub channel: u32,
 }
 
+/// Program-level loudness metadata. Dynamic-range control is intentionally not
+/// included: dialnorm is a static decoder gain and DRC remains disabled.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramLoudnessMetadata {
+    pub source: &'static str,
+    pub dialogue_level_db: i8,
+    pub target_db: i8,
+    pub gain_db: i8,
+}
+
+impl ProgramLoudnessMetadata {
+    pub fn dolby(source: &'static str, dialogue_level_db: i8) -> Self {
+        Self {
+            source,
+            dialogue_level_db,
+            target_db: -31,
+            gain_db: -31 - dialogue_level_db,
+        }
+    }
+}
+
 /// Decoded frame handed to JavaScript.
 pub struct FrameData {
     pub codec: &'static str,
@@ -62,6 +84,7 @@ pub struct FrameData {
     pub raw_bed_labels: Vec<String>,
     pub events: Vec<ObjectEvent>,
     pub object_channels: Vec<ObjectChannelDecl>,
+    pub program_loudness: Option<ProgramLoudnessMetadata>,
     pub ramp_duration: u32,
 }
 
@@ -133,6 +156,11 @@ impl DecodedFrame {
         serde_json::to_string(&self.data.object_channels).unwrap_or_default()
     }
 
+    #[wasm_bindgen(getter, js_name = programLoudnessJson)]
+    pub fn program_loudness_json(&self) -> String {
+        serde_json::to_string(&self.data.program_loudness).unwrap_or_default()
+    }
+
     #[wasm_bindgen(getter, js_name = rampDuration)]
     pub fn ramp_duration(&self) -> u32 {
         self.data.ramp_duration
@@ -179,7 +207,8 @@ impl SdaDecoder {
                     let buffered = std::mem::take(sniff);
                     self.pipeline = build_pipeline(codec)?;
                     self.sniff = None;
-                    self.pipeline.push(&buffered, &mut self.queue, &mut self.errors);
+                    self.pipeline
+                        .push(&buffered, &mut self.queue, &mut self.errors);
                 }
                 None if sniff.len() >= 64 * 1024 => {
                     return Err(JsValue::from_str(

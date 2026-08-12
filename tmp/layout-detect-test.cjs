@@ -86,15 +86,15 @@ eq(
   "TopSurroundLeft 仰角 45°",
 );
 
-// ---- truehd 回归（原有矩阵）----
+// ---- truehd 0.6.3 实际 ChannelLabel Debug 输出 ----
 eq(
-  detectLayoutId(["Left", "Center", "Right", "Ls", "Rs", "Lfe"], false),
+  detectLayoutId(["L", "C", "R", "Ls", "Rs", "LFE"], false),
   "5.1",
   "truehd 5.1 → 5.1",
 );
 eq(
   detectLayoutId(
-    ["Left", "Center", "Right", "Ls", "Rs", "Lrs", "Rrs", "Ltf", "Rtf", "Ltr", "Rtr", "Lfe"],
+    ["L", "C", "R", "Ls", "Rs", "Lb", "Rb", "Tfl", "Tfr", "Tbl", "Tbr", "LFE"],
     false,
   ),
   "7.1.4",
@@ -103,14 +103,27 @@ eq(
 eq(
   detectLayoutId(
     [
-      "Left", "Center", "Right", "Lw", "Rw", "Ls", "Rs", "Lrs", "Rrs",
-      "Ltf", "Rtf", "Ltm", "Rtm", "Ltr", "Rtr", "Lfe",
+      "L", "C", "R", "Lw", "Rw", "Ls", "Rs", "Lb", "Rb",
+      "Tfl", "Tfr", "Tsl", "Tsr", "Tbl", "Tbr", "LFE",
     ],
     false,
   ),
   "9.1.6",
   "truehd 9.1.6 → 9.1.6",
 );
+
+eq(
+  detectLayoutId(["L", "R", "Tc"], false),
+  "5.1.2",
+  "truehd 顶中 Tc 触发顶层布局",
+);
+eq(
+  detectLayoutId(["L", "R", "Tfc"], false),
+  "5.1.2",
+  "truehd 顶前中 Tfc 触发顶层布局",
+);
+eq(String(positionForLabel("Tc").azimuth), "0", "truehd Tc 保持正中方位");
+eq(String(positionForLabel("Tfc").azimuth), "0", "truehd Tfc 保持正中方位");
 
 // 布局引用完整性：检测返回的 id 必须存在
 for (const id of ["5.1", "7.1.2", "9.1.2", "7.1.4"]) {

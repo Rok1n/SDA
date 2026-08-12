@@ -6,6 +6,7 @@ import path from "node:path";
 const bundle = path.join(path.dirname(fileURLToPath(import.meta.url)), "renderer.bundle.cjs");
 const posted = [];
 const wiring = [];
+const delays = [];
 let worklets = 0;
 function param() {
   return {
@@ -45,6 +46,7 @@ class FakeAudioContext {
     this.compressorCount = 0;
     this.audioWorklet = { addModule: async () => {} };
   }
+  createDelay() { const delay = node("delay"); delay.delayTime = param(); delays.push(delay); return delay; }
   createGain() { return node("gain"); }
   createBiquadFilter() { return node("biquad"); }
   createConvolver() { return node("conv"); }
@@ -94,16 +96,22 @@ for (const mode of ["stereo", "multichannel", "binaural"]) {
 }
 const modePathOutputs = wiring.filter((edge) => edge.to === "gain").length;
 check(modePathOutputs >= 3, `三条常驻输出路径已连接到独立 mode gain（${modePathOutputs}）`);
-const makeup = wiring.find((edge) => edge.from === "merge16" && edge.to === "gain");
 const lfePeak = wiring.find((edge) => edge.from === "gain" && edge.to === "compressor-0");
 const lfeEarSplit = wiring.find((edge) => edge.from === "compressor-0" && edge.to === "gain");
-const guard = wiring.find((edge) => edge.from === "gain" && edge.to === "sda-final-peak-guard");
-const binauralOutput = wiring.find((edge) => edge.from === "sda-final-peak-guard" && edge.to === "gain");
-check(!!makeup, "双耳最终 merger 后存在独立 +6dB makeup gain 节点");
+const guardInputs = wiring.filter((edge) => edge.to === "sda-final-peak-guard");
+const guardOutputs = wiring.filter((edge) => edge.from === "sda-final-peak-guard");
 check(!!lfePeak && !!lfeEarSplit, "LFE 后仍有独立 peak compressor，再等量分送双耳");
-check(!!guard && !!binauralOutput, "双耳 makeup 后接 emergency peak guard，再进入 mode gain");
-check(wiring.filter((edge) => edge.to?.startsWith("compressor-")).length === 1, "只有 LFE 支路经过 DynamicsCompressor");
-check(ctx.destination.channelCount === 16, `初始化一次固定最大设备通道数（${ctx.destination.channelCount}）`);
+check(guardInputs.length === 2 && guardOutputs.length === 1,
+  "立体声与双耳 mode gain 共用一个 linked limiter，并只输出一次到 master");
+check(delays.length === 1 && delays[0].delayTime.value === 0.005
+  && wiring.some((edge) => edge.to === "delay") && wiring.some((edge) => edge.from === "delay" && edge.to === "gain"),
+"多声道路径补偿 limiter 的 5ms lookahead，模式 crossfade 保持 sample-aligned");
+renderer.setBinauralData({ sampleRate: 48000, positions: [] });
+const rebuiltGuardOutputs = wiring.filter((edge) => edge.from === "sda-final-peak-guard");
+check(rebuiltGuardOutputs.length === 2, "HRTF 图重建只新增当前 limiter→master 连接，不保留旧连接");
+check(wiring.filter((edge) => edge.to?.startsWith("compressor-")).length === 2,
+  "初始图与一次 HRTF 重建各创建一个仅 LFE 使用的 compressor");
+check(ctx.destination.channelCount === LAYOUTS["7.1.4"].length, `设备通道数紧凑匹配当前布局（${ctx.destination.channelCount}）`);
 
 console.log(failed ? `\n${failed} 项失败` : "\n播放中输出模式切换通过");
 process.exit(failed ? 1 : 0);

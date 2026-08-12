@@ -8,6 +8,7 @@
   "rightMeasurement": "Reference to the independent raw right-ear measurement artifact",
   "balanceEvidence": "Document L/R mapping verification and reference-band balance result",
   "sampleRate": 48000,
+  "preampDb": -6.0,
   "leftFirUrl": "local://left.f32",
   "rightFirUrl": "local://right.f32",
   "createdAt": "2026-08-12T00:00:00.000Z",

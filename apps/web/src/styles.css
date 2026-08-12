@@ -255,6 +255,12 @@ h1 {
   border: 0;
 }
 
+.settings-section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
 .settings-group legend {
   padding: 0;
   font-size: 12px;

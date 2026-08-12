@@ -7,6 +7,43 @@ import { resolve } from "node:path";
 const dist = resolve("apps/web/dist");
 const profileRoot = resolve(dist, "headphone-compensation");
 const errors = [];
+const headroomLimitDb = -0.1;
+
+function maximumFirResponseDb(bytes) {
+  const taps = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
+  let size = 1;
+  while (size < taps.length * 8) size <<= 1;
+  const re = new Float64Array(size);
+  const im = new Float64Array(size);
+  re.set(taps);
+  for (let i = 1, j = 0; i < size; i++) {
+    let bit = size >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) [re[i], re[j]] = [re[j], re[i]];
+  }
+  for (let length = 2; length <= size; length <<= 1) {
+    const angle = (-2 * Math.PI) / length;
+    for (let start = 0; start < size; start += length) {
+      for (let offset = 0; offset < length / 2; offset++) {
+        const cos = Math.cos(angle * offset);
+        const sin = Math.sin(angle * offset);
+        const even = start + offset;
+        const odd = even + length / 2;
+        const oddRe = re[odd] * cos - im[odd] * sin;
+        const oddIm = re[odd] * sin + im[odd] * cos;
+        re[odd] = re[even] - oddRe;
+        im[odd] = im[even] - oddIm;
+        re[even] += oddRe;
+        im[even] += oddIm;
+      }
+    }
+  }
+  let maximum = 0;
+  for (let i = 0; i <= size / 2; i++) maximum = Math.max(maximum, Math.hypot(re[i], im[i]));
+  return 20 * Math.log10(maximum);
+}
+
 const ids = [
   "sony-mdr-7506-average-autoeq",
   "beyerdynamic-xelento-wired-average-autoeq",
@@ -39,6 +76,14 @@ for (const id of ids) {
   }
   const hash = createHash("sha256").update(bytes).digest("hex");
   if (hash !== manifest.leftFir.sha256) errors.push(`${id}: FIR SHA-256 不匹配`);
+  if (!Number.isFinite(manifest.preampDb) || manifest.preampDb > 0) {
+    errors.push(`${id}: preampDb 必须是有限非正值`);
+  } else {
+    const finalPeakDb = maximumFirResponseDb(bytes) + manifest.preampDb;
+    if (finalPeakDb > headroomLimitDb + 0.01) {
+      errors.push(`${id}: FIR + preamp 峰值 ${finalPeakDb.toFixed(2)} dB 超过 ${headroomLimitDb} dB`);
+    }
+  }
   const resolvedFromFilePage = new URL(`headphone-compensation/${id}/${manifest.leftFir.fileName}`, new URL("index.html", `file:///${dist.replaceAll("\\", "/")}/`));
   if (!resolvedFromFilePage.pathname.endsWith(`/headphone-compensation/${id}/${manifest.leftFir.fileName}`)) {
     errors.push(`${id}: file:// 相对 URL 解析错误`);

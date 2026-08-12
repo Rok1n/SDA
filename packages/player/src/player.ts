@@ -124,6 +124,10 @@ export class SdaPlayer {
    *  触发，并发跑 recreateRenderer 会泄漏 AudioContext —— 必须排队。 */
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
+  private layoutLevelCompensationEnabled = true;
+  private volumeBalanceEnabled = false;
+  private programLoudnessGainDb: number | null = null;
+  private scheduledProgramLoudnessGainDb: number | null | undefined;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
    *  UI 固定"近"，mid/far 暂不从界面暴露。 */
   private binauralMode: BinauralMode = "near";
@@ -348,6 +352,10 @@ export class SdaPlayer {
         return;
       }
       r.setVolume(this.lastVolume);
+      r.setLayoutLevelCompensation(this.layoutLevelCompensationEnabled);
+      r.setProgramLoudnessGainDb(this.programLoudnessGainDb);
+      this.scheduledProgramLoudnessGainDb = undefined;
+      r.setVolumeBalance(this.volumeBalanceEnabled);
       r.setHeadphoneCompensation(this.headphoneCompensationProfileId);
       r.setBinauralEqBands(this.binauralEqBands);
       r.setLfeMuted(this.lfeMuted);
@@ -459,6 +467,9 @@ export class SdaPlayer {
     this.queuedSamples = 0;
     this.containerDurationSec = null;
     this.trackReported = false;
+    this.programLoudnessGainDb = null;
+    this.scheduledProgramLoudnessGainDb = undefined;
+    this.renderer?.setProgramLoudnessGainDb(null);
     this.ended = false;
     this.rateChecked = false;
     this.layoutChecked = false;
@@ -495,6 +506,16 @@ export class SdaPlayer {
     } catch {
       /* ignore */
     }
+  }
+
+  setVolumeBalance(enabled: boolean): void {
+    this.volumeBalanceEnabled = enabled;
+    this.renderer?.setVolumeBalance(enabled);
+  }
+
+  setLayoutLevelCompensation(enabled: boolean): void {
+    this.layoutLevelCompensationEnabled = enabled;
+    this.renderer?.setLayoutLevelCompensation(enabled);
   }
 
   setVolume(v: number): void {
@@ -660,6 +681,9 @@ export class SdaPlayer {
     // 整个文件会在窗口内解完扔光 → 提前 onEnded，卡在第几秒）。
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
+    if (frame.programLoudness) {
+      this.programLoudnessGainDb = Math.min(0, frame.programLoudness.gainDb);
+    }
 
     // Raw elementary streams never fire the demuxer's onTrack — derive the
     // panel info from the first decoded frame instead.
@@ -706,13 +730,28 @@ export class SdaPlayer {
       const frame = this.pcmQueue.find((candidate) => !this.submittedFrames.has(candidate));
       if (!frame) break;
       const frameSamples = frame.channels[0]?.length ?? 0;
+      if (frame.programLoudness) {
+        const gainDb = Math.min(0, frame.programLoudness.gainDb);
+        if (gainDb !== this.scheduledProgramLoudnessGainDb) {
+          this.scheduledProgramLoudnessGainDb = gainDb;
+          this.renderer.setProgramLoudnessGainDb(gainDb, frame.samplePos);
+        }
+      }
 
-      // (Re)declare bed sources when labels change.
+      // (Re)declare bed sources when labels change. Retire channels removed by
+      // a topology contraction on the same codec sample boundary.
       if (frame.labels.join() !== this.knownBedLabels.join()) {
+        const previousLabels = this.knownBedLabels;
+        previousLabels.forEach((label, ch) => {
+          const next = frame.labels[ch];
+          if (!label.startsWith("Obj_") && (!next || next.startsWith("Obj_"))) {
+            this.renderer!.retireSourceAt(`bed:${ch}`, frame.samplePos);
+          }
+        });
         this.knownBedLabels = frame.labels;
         frame.labels.forEach((label, ch) => {
           if (!label.startsWith("Obj_")) {
-            this.renderer!.addSource(`bed:${ch}`, { bedLabel: label });
+            this.renderer!.rebindBedSource(`bed:${ch}`, label, frame.samplePos);
           }
         });
       }
@@ -724,6 +763,7 @@ export class SdaPlayer {
       const hasObjectLabels = frame.labels.some((label) => label.startsWith("Obj_"));
       let visualChanged = false;
       if (!hasObjectLabels) {
+        for (const id of this.objectChannels.keys()) this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
         this.objectChannels.clear();
         if (this.objects.size > 0) {
           this.objects.clear();
@@ -743,14 +783,17 @@ export class SdaPlayer {
       }
       if (declarations.length > 0) {
         // A non-empty sparse declaration is the complete replacement mapping,
-        // not a patch. Replacing it prevents stale IDs/channels after a track
-        // change or a presentation switch.
+        // not a patch. Retire removed sources on the codec sample boundary.
+        const nextIds = new Set(declarations.map((declaration) => declaration.id));
+        for (const id of this.objectChannels.keys()) {
+          if (!nextIds.has(id)) this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
+        }
         this.objectChannels.clear();
         const declaredIds = new Set<number>();
         for (const [ordinal, decl] of declarations.entries()) {
           declaredIds.add(decl.id);
           this.objectChannels.set(decl.id, decl.channel);
-          this.renderer.addSource(`obj:${decl.id}`);
+          this.renderer.addSource(`obj:${decl.id}`, { atSample: frame.samplePos });
           const mode = this.binauralMetadata?.available ? this.binauralMetadata.objectModes[ordinal] : undefined;
           if (mode) {
             this.objectBinauralModes.set(decl.id, mode);
@@ -810,7 +853,9 @@ export class SdaPlayer {
       const entries = frame.channels.map((samples, ch) => {
         const objectId = channelToObject.get(ch);
         const id = objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`;
-        if (objectId === undefined) this.renderer!.addSource(id, { bedLabel: frame.labels[ch] ?? `Bed_${ch}` });
+        if (objectId === undefined) {
+          this.renderer!.addSource(id, { bedLabel: frame.labels[ch] ?? `Bed_${ch}`, atSample: frame.samplePos });
+        }
         return { id, samples };
       });
       const sequence = this.nextBatchSequence++;

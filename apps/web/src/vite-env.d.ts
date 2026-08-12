@@ -15,6 +15,7 @@ interface LocalHeadphoneProfileManifest {
   rightMeasurement: string;
   balanceEvidence: string;
   sampleRate: number;
+  preampDb: number;
   leftFirUrl: string;
   rightFirUrl: string;
   schemaVersion: 1;

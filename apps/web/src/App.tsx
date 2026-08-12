@@ -44,6 +44,12 @@ export function App() {
    *  playerRef 是空的、pause() 会丢 —— play() 建好 player 后按此补发。 */
   const pausedRef = useRef(false);
   const [volume, setVolume] = useState(1);
+  const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(
+    () => localStorage.getItem("sda-volume-balance-enabled") === "true",
+  );
+  const [layoutLevelCompensationEnabled, setLayoutLevelCompensationEnabled] = useState(
+    () => localStorage.getItem("sda-layout-level-compensation-enabled") !== "false",
+  );
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
     const readBand = (band: keyof BinauralEqBands) => {
       const value = Number(localStorage.getItem(`sda-binaural-eq-${band}-db`));
@@ -101,11 +107,13 @@ export function App() {
         await player.init(m, workletUrl, LAYOUTS[lid]);
       }
       playerRef.current = player;
+      player.setVolumeBalance(volumeBalanceEnabled);
+      player.setLayoutLevelCompensation(layoutLevelCompensationEnabled);
       player.setBinauralEqBands(binauralEqBands);
       setPlayerReady(player);
       return player;
     },
-    [binauralEqBands],
+    [binauralEqBands, layoutLevelCompensationEnabled, volumeBalanceEnabled],
   );
 
   useEffect(
@@ -235,6 +243,8 @@ export function App() {
         // Always rebuild with the currently selected output mode and layout.
         const player = await createPlayer(mode, layoutId);
         player.setVolume(volume);
+        player.setVolumeBalance(volumeBalanceEnabled);
+        player.setLayoutLevelCompensation(layoutLevelCompensationEnabled);
         player.setHeadphoneCompensation(headphoneProfileId);
         applyMutes(mutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
         // 建 player 期间用户已按暂停：补发暂停意图
@@ -245,7 +255,7 @@ export function App() {
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume, headphoneProfileId, applyMutes, mutedIds],
+    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, layoutLevelCompensationEnabled, headphoneProfileId, applyMutes, mutedIds],
   );
 
   const onDrop = useCallback(
@@ -294,6 +304,18 @@ export function App() {
   const changeVolume = useCallback((v: number) => {
     setVolume(v);
     playerRef.current?.setVolume(v);
+  }, []);
+
+  const changeVolumeBalance = useCallback((enabled: boolean) => {
+    setVolumeBalanceEnabled(enabled);
+    localStorage.setItem("sda-volume-balance-enabled", String(enabled));
+    playerRef.current?.setVolumeBalance(enabled);
+  }, []);
+
+  const changeLayoutLevelCompensation = useCallback((enabled: boolean) => {
+    setLayoutLevelCompensationEnabled(enabled);
+    localStorage.setItem("sda-layout-level-compensation-enabled", String(enabled));
+    playerRef.current?.setLayoutLevelCompensation(enabled);
   }, []);
 
   const changeBinauralEqBand = useCallback((band: keyof BinauralEqBands, db: number) => {
@@ -398,7 +420,28 @@ export function App() {
                 ×
               </button>
             </div>
-            <fieldset className="settings-group" disabled={mode !== "binaural"}>
+            <fieldset className="settings-group" disabled={mode === "multichannel"}>
+              <legend>输出</legend>
+              <label className="settings-switch" title="使用 Dolby dialnorm / dialogue normalization 做节目级静态衰减，不启用动态范围压缩">
+                <span>音量平衡</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={volumeBalanceEnabled}
+                  onChange={(event) => changeVolumeBalance(event.target.checked)}
+                />
+              </label>
+              <label className="settings-switch" title="按当前虚拟扬声器数量补偿并发功率，不改变左右平衡">
+                <span>布局电平补偿</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={layoutLevelCompensationEnabled}
+                  onChange={(event) => changeLayoutLevelCompensation(event.target.checked)}
+                />
+              </label>
+            </fieldset>
+            <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
               <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机补偿档案。</p>
               {([
@@ -422,7 +465,8 @@ export function App() {
                 </label>
               ))}
             </fieldset>
-            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用。</p>}
+            {mode === "multichannel" && <p className="settings-disabled">音量平衡与布局电平补偿仅用于双耳和立体声输出。</p>}
+            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}
           </section>
         </div>
       )}

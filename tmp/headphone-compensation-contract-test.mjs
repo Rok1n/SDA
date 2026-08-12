@@ -26,6 +26,7 @@ const independentProfile = {
   measurementMode: "independent-lr",
   channelClaim: "Independent L/R measurement and calibration",
   sampleRate: 48000,
+  preampDb: -6,
   leftFirUrl: "/headphone/measured-left.f32",
   rightFirUrl: "/headphone/measured-right.f32",
 };

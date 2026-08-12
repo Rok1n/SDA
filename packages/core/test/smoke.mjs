@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const core = await import(pathToFileURL(join(here, "../pkg-node/sda_core.js")).href);
+const core = await import(pathToFileURL(join(here, "../pkg-node/sda_core.cjs")).href);
 const sample = join(
   here,
   "../../../harletty-bridge/eac3/tests/data/short_packet_independent_joc.bin",

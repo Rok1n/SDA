@@ -24,10 +24,11 @@ L/R balance calibration and cannot correct unit variation, nozzle insertion
 depth, tips, seal, or fit differences.
 
 AutoEq's published Parametric EQ includes a `-6.3 dB` preamp recommendation.
-That preamp is deliberately excluded from this FIR and is not installed as a
-profile-level output gain. This profile adds no compressor, limiter, loudness
-control, or other dynamics processing. SDA's existing binaural makeup and
-emergency peak guard retain their own independent behavior.
+The FIR remains normalized at 1 kHz; SDA applies a measured `-6.3 dB` runtime
+preamp on this profile's wet branch so the published FIR's maximum response
+boost retains headroom. This profile adds no compressor, loudness control, or
+other dynamics processing. SDA's binaural makeup and final linked limiter
+retain their independent behavior.
 
 The FIR is referenced to `0 dB` at 1 kHz, not loudness-matched to the bypass
 path. Match A/B listening with the application's master volume; do not

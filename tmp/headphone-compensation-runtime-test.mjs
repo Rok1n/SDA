@@ -42,6 +42,7 @@ class FakeAudioContext {
     this.gainCount = 0;
     this.convolvers = [];
   }
+  createDelay() { const delay = node("delay"); delay.delayTime = param(); return delay; }
   createGain() { return node(`gain-${this.gainCount++}`); }
   createBiquadFilter() { return node("biquad"); }
   createConvolver() {
@@ -76,11 +77,10 @@ const ctx = new FakeAudioContext();
 const renderer = new SpatialRenderer(ctx, { mode: "binaural", layout: LAYOUTS["7.1.4"] });
 await renderer.init("mock://worklet");
 const initialWorklets = worklets;
-const guardInput = wiring.find((edge) => edge.to === "sda-final-peak-guard" && edge.from?.startsWith("gain-"));
-const makeupInput = guardInput && wiring.find((edge) => edge.to === guardInput.from && edge.from?.startsWith("merge"));
+const guardInputs = wiring.filter((edge) => edge.to === "sda-final-peak-guard");
 check(initialWorklets === 2, "初始化只有 source renderer + shared emergency guard 两个常驻 worklet");
 check(ctx.convolverCount === 0, "无合格 profile 时不创建最终耳机 FIR convolver");
-check(!!guardInput && !!makeupInput, "最终 L/R merger 直接进入共享 makeup 与 emergency guard");
+check(guardInputs.length === 2, "立体声与双耳共用最终 linked limiter");
 check(ctx.compressorCount === 1, "无 profile 时只有 LFE 使用 DynamicsCompressor");
 let rejected = false;
 try {
@@ -108,11 +108,10 @@ check(ctx.convolvers.every((convolver) => convolver.normalizeAtBufferAssignment 
 check(wiring.some((edge) => edge.from === "split2" && edge.to === "profile-conv-0" && edge.out === 0)
   && wiring.some((edge) => edge.from === "split2" && edge.to === "profile-conv-1" && edge.out === 1),
 "MDR-7506 profile 保持 L/R 身份且不 crossfeed");
-check(wiring.some((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("merge2-"))
-  && wiring.some((edge) => edge.from === "profile-conv-1" && edge.to?.startsWith("merge2-"))
-  && wiring.some((edge) => edge.from?.startsWith("merge2-") && edge.to?.startsWith("gain-"))
-  && wiring.some((edge) => edge.to === "sda-final-peak-guard" && edge.from?.startsWith("gain-")),
-"profile 输出继续进入共享 binaural makeup 与 emergency guard");
+check(wiring.some((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("gain-"))
+  && wiring.some((edge) => edge.from === "profile-conv-1" && edge.to?.startsWith("gain-"))
+  && wiring.filter((edge) => edge.to === "sda-final-peak-guard").length === 2,
+"profile 输出保持在双耳最终增益链内，并继续进入 shared linked limiter");
 
 console.log(failed ? `\n${failed} 项失败` : "\n耳机补偿 bypass 运行时接线通过");
 process.exit(failed ? 1 : 0);

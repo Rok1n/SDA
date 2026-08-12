@@ -78,36 +78,53 @@ const LABEL_POSITIONS: Record<string, Spherical> = {
   // 6.1 后中置（eac3 channel_mode 4/5、dependent chanmap Cs 位）：正后方 180°，
   // 不属于任何布局的音箱，渲染时由 VBAP 平移到后环/环绕对之间。
   RearCenter: { azimuth: 180, elevation: 0, distance: 1 },
+  TopCenter: { azimuth: 0, elevation: 90, distance: 1 },
+  TopFrontCenter: { azimuth: 0, elevation: 45, distance: 1 },
 };
 
 const LABEL_ALIASES: Record<string, string> = {
-  // truehd ChannelLabel variants
-  Left: "FrontLeft",
-  Right: "FrontRight",
+  // truehd 0.6.3 ChannelLabel Debug variants
+  L: "FrontLeft",
+  R: "FrontRight",
+  C: "Center",
+  LFE: "LFE",
   Ls: "SurroundLeft",
   Rs: "SurroundRight",
+  Tfl: "TopFrontLeft",
+  Tfr: "TopFrontRight",
+  Tsl: "TopSideLeft",
+  Tsr: "TopSideRight",
+  Tbl: "TopRearLeft",
+  Tbr: "TopRearRight",
+  Lsc: "SurroundLeft",
+  Rsc: "SurroundRight",
+  Lb: "RearLeft",
+  Rb: "RearRight",
+  Cb: "RearCenter",
+  Tc: "TopCenter",
+  Lsd: "SurroundLeft",
+  Rsd: "SurroundRight",
+  Lw: "WideLeft",
+  Rw: "WideRight",
+  Tfc: "TopFrontCenter",
+  LFE2: "LFE",
+  // Legacy names retained for old bridge output and fixtures.
+  Left: "FrontLeft",
+  Right: "FrontRight",
   Lrs: "RearLeft",
   Rrs: "RearRight",
   Ltf: "TopFrontLeft",
   Rtf: "TopFrontRight",
   Ltr: "TopRearLeft",
   Rtr: "TopRearRight",
-  // 顶侧（TrueHD 常写作 Ltm/Rtm "top middle"，ADM 写作 Tsl/Tsr）
+  // Older bridge/ADM spellings.
   Lts: "TopSideLeft",
   Rts: "TopSideRight",
   Ltm: "TopSideLeft",
   Rtm: "TopSideRight",
-  Tsl: "TopSideLeft",
-  Tsr: "TopSideRight",
-  Tfl: "TopFrontLeft",
-  Tfr: "TopFrontRight",
   Trl: "TopRearLeft",
   Trr: "TopRearRight",
   Lfe: "LFE",
-  LFE2: "LFE",
-  // TrueHD / harletty 原生前宽标签（不可只依赖已经归一的 WideLeft/Right）。
-  Lw: "WideLeft",
-  Rw: "WideRight",
   // eac3 BedChannel Debug 全名（lfe_channel 通常单列 "LFE"，此处防御性覆盖）
   LowFrequencyEffects: "LFE",
   LowFrequencyEffects2: "LFE",
@@ -144,9 +161,9 @@ export function aliasLabel(label: string): string {
 export function physicalChannelOrder(layout: readonly VirtualSpeaker[]): number[] {
   const PRIORITY = [
     "FrontLeft", "FrontRight", "Center", "LFE",
-    "RearLeft", "RearRight", // WASAPI BL/BR 位
+    "RearLeft", "RearRight", // WASAPI BL/BR bits
+    "WideLeft", "WideRight", // WASAPI FLC/FRC bits precede side surrounds
     "SurroundLeft", "SurroundRight",
-    "WideLeft", "WideRight",
     "TopFrontLeft", "TopFrontRight", "TopSideLeft", "TopSideRight",
     "TopRearLeft", "TopRearRight",
   ];
@@ -185,7 +202,7 @@ export function detectLayoutId(labels: readonly string[], hasDynamics: boolean):
   let tops: 0 | 2 | 4 | 6 = 0;
   if (has("TopSideLeft", "TopSideRight")) tops = 6;
   else if (has("TopRearLeft", "TopRearRight")) tops = 4;
-  else if (has("TopFrontLeft", "TopFrontRight")) tops = 2;
+  else if (has("TopFrontLeft", "TopFrontRight") || names.has("TopCenter") || names.has("TopFrontCenter")) tops = 2;
 
   if (hasDynamics) {
     if (base < 7) base = 7;

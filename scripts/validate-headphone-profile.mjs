@@ -33,6 +33,7 @@ if (profile.measurementMode === "independent-lr") {
 }
 if (!Number.isFinite(Date.parse(profile.createdAt))) errors.push("createdAt 无效");
 if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("sampleRate 无效");
+if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb 必须是有限非正值");
 
 for (const key of ["leftFir", "rightFir"]) {
   const asset = profile[key];

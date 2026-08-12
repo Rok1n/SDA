@@ -35,6 +35,7 @@ class FakeAudioContext {
     this.destination = node("destination");
     this.audioWorklet = { addModule: async () => {} };
   }
+  createDelay() { const delay = node("delay"); delay.delayTime = param(); return delay; }
   createGain() { return node("gain"); }
   createBiquadFilter() { return node("biquad"); }
   createConvolver() { return node("conv"); }

@@ -249,11 +249,12 @@ const Listener = memo(function Listener() {
 const ObjectDot = memo(function ObjectDot({ obj, muted }: { obj: VisualObject; muted: boolean }) {
   const ref = useRef<THREE.Group>(null);
   const target = useMemo(() => new THREE.Vector3(), []);
-  useFrame((_, dt) => {
+  useFrame(({ invalidate }, dt) => {
     if (!ref.current) return;
     // Smooth toward the latest event position (renderer ramps audio; we ease the view).
     target.set(...admToScene(obj.pos));
     ref.current.position.lerp(target, Math.min(1, dt * 20));
+    if (ref.current.position.distanceToSquared(target) > 1e-8) invalidate();
   });
   const height = obj.pos[2]; // ADM z = up
   const color = useMemo(
@@ -308,6 +309,7 @@ export function ObjectView({
   const isSwiftShader = rendererMode === "swiftshader";
   return (
     <Canvas
+      frameloop="demand"
       camera={{ position: [0, 1.3, 4.2], fov: 55 }}
       style={{ background: p.bg }}
       // SwiftShader is software rasterization: render one device pixel per CSS

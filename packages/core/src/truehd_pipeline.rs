@@ -13,10 +13,66 @@ use std::collections::VecDeque;
 use truehd::process::{decode::Decoder, extract::Extractor, parse::Parser};
 use truehd::structs::oamd::ObjectAudioMetadataPayload;
 
-use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline};
+use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline, ProgramLoudnessMetadata};
 
 /// Full Atmos presentation (harletty CLI default).
 const PRESENTATION: usize = 3;
+
+fn truehd_dialogue_level(encoded: u8) -> i8 {
+    if encoded == 0 {
+        -31
+    } else {
+        -(encoded as i8)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TruehdDialogueNorms {
+    two: u8,
+    six: u8,
+    eight: u8,
+    sixteen: Option<u8>,
+}
+
+fn truehd_dialogue_level_for_output(
+    norms: TruehdDialogueNorms,
+    channel_count: usize,
+    has_oamd: bool,
+) -> i8 {
+    let encoded = if has_oamd || channel_count > 8 {
+        norms.sixteen.unwrap_or(norms.eight)
+    } else if channel_count <= 2 {
+        norms.two
+    } else if channel_count <= 6 {
+        norms.six
+    } else {
+        norms.eight
+    };
+    truehd_dialogue_level(encoded)
+}
+
+fn update_spatial_labels(
+    spatial_labels: &mut Option<Vec<String>>,
+    labels: &[String],
+    declarations: &[ObjectChannelDecl],
+    has_oamd: bool,
+    supported: bool,
+) {
+    if !has_oamd {
+        return;
+    }
+    if !supported || declarations.is_empty() {
+        *spatial_labels = None;
+        return;
+    }
+    let mut next = labels.to_vec();
+    for declaration in declarations {
+        if let Some(label) = next.get_mut(declaration.channel as usize) {
+            *label = format!("Obj_{}", declaration.id);
+        }
+    }
+    *spatial_labels = Some(next);
+}
 
 pub struct TruehdPipeline {
     extractor: Extractor,
@@ -24,6 +80,9 @@ pub struct TruehdPipeline {
     decoder: Decoder,
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
+    spatial_labels: Option<Vec<String>>,
+    dialogue_norms: Option<TruehdDialogueNorms>,
+    program_loudness: Option<ProgramLoudnessMetadata>,
 }
 
 impl TruehdPipeline {
@@ -36,6 +95,9 @@ impl TruehdPipeline {
             decoder: Decoder::default(),
             total_samples: 0,
             declared: None,
+            spatial_labels: None,
+            dialogue_norms: None,
+            program_loudness: None,
         }
     }
 
@@ -78,6 +140,19 @@ impl Pipeline for TruehdPipeline {
                 }
             };
 
+            if let Some(major_sync) = &access_unit.major_sync_info {
+                let channel_meaning = &major_sync.channel_meaning;
+                self.dialogue_norms = Some(TruehdDialogueNorms {
+                    two: channel_meaning.twoch_dialogue_norm,
+                    six: channel_meaning.sixch_dialogue_norm,
+                    eight: channel_meaning.eightch_dialogue_norm,
+                    sixteen: channel_meaning
+                        .extra_channel_meaning
+                        .as_ref()
+                        .map(|extra| extra.sixteench_dialogue_norm),
+                });
+            }
+
             let decoded = match self.decoder.decode_presentation(&access_unit, PRESENTATION) {
                 Ok(d) => d,
                 Err(e) => {
@@ -91,12 +166,25 @@ impl Pipeline for TruehdPipeline {
                 continue;
             }
 
+            if let Some(norms) = self.dialogue_norms {
+                let dialogue_level_db = truehd_dialogue_level_for_output(
+                    norms,
+                    decoded.channel_count,
+                    !decoded.oamd.is_empty(),
+                );
+                self.program_loudness = Some(ProgramLoudnessMetadata::dolby(
+                    "truehd-dialogue-norm",
+                    dialogue_level_db,
+                ));
+            }
+
             let sample_pos = self.total_samples;
             self.total_samples += decoded.sample_length as u64;
 
             // Planar f32 from sample-major 24-bit-in-i32 PCM.
             let channel_count = decoded.channel_count.min(16);
-            let mut channels: Vec<Vec<f32>> = vec![Vec::with_capacity(decoded.sample_length); channel_count];
+            let mut channels: Vec<Vec<f32>> =
+                vec![Vec::with_capacity(decoded.sample_length); channel_count];
             for row in decoded.pcm_data.iter().take(decoded.sample_length) {
                 for (ch, slot) in channels.iter_mut().enumerate().take(channel_count) {
                     slot.push(row[ch] as f32 / 8_388_608.0);
@@ -113,20 +201,47 @@ impl Pipeline for TruehdPipeline {
                 labels.push(format!("Ch{}", labels.len()));
             }
 
-            let (events, object_channels) = match decoded.oamd.first() {
-                Some(oamd) => {
-                    let extracted = extract_events(oamd, sample_pos);
-                    let decl: Vec<ObjectChannelDecl> = extracted
-                        .objects
-                        .iter()
-                        .map(|&(id, channel)| ObjectChannelDecl {
-                            id,
-                            channel: channel as u32,
-                        })
-                        .collect();
-                    (extracted.events, self.sparse_declare(decl))
+            if decoded.substream_info_changed {
+                self.declared = None;
+                self.spatial_labels = None;
+            }
+            let mut events = Vec::new();
+            let mut declarations = Vec::new();
+            let mut unsupported_oamd = false;
+            for oamd in &decoded.oamd {
+                let extracted = extract_events(oamd, sample_pos + oamd.evo_sample_offset);
+                if !extracted.supported {
+                    unsupported_oamd = true;
+                    break;
                 }
-                None => (Vec::new(), Vec::new()),
+                declarations.extend(extracted.objects.iter().map(|&(id, channel)| {
+                    ObjectChannelDecl {
+                        id,
+                        channel: channel as u32,
+                    }
+                }));
+                events.extend(extracted.events);
+            }
+            if unsupported_oamd {
+                events.clear();
+                declarations.clear();
+                self.declared = None;
+            }
+            update_spatial_labels(
+                &mut self.spatial_labels,
+                &labels,
+                &declarations,
+                !decoded.oamd.is_empty(),
+                !unsupported_oamd,
+            );
+            if let Some(spatial_labels) = &self.spatial_labels {
+                labels = spatial_labels.clone();
+            }
+            events.sort_by_key(|event| event.sample_pos);
+            let object_channels = if decoded.oamd.is_empty() {
+                Vec::new()
+            } else {
+                self.sparse_declare(declarations)
             };
 
             let ramp_duration = decoded
@@ -143,9 +258,13 @@ impl Pipeline for TruehdPipeline {
                 sample_pos,
                 channels,
                 labels: labels.clone(),
-                raw_bed_labels: labels.into_iter().filter(|label| !label.starts_with("Obj_")).collect(),
+                raw_bed_labels: labels
+                    .into_iter()
+                    .filter(|label| !label.starts_with("Obj_"))
+                    .collect(),
                 events,
                 object_channels,
+                program_loudness: self.program_loudness.clone(),
                 ramp_duration,
             });
         }
@@ -163,17 +282,19 @@ struct Extracted {
     events: Vec<ObjectEvent>,
     /// Dynamic-object declaration: (id, PCM channel index).
     objects: Vec<(u32, usize)>,
+    supported: bool,
 }
 
 fn extract_events(oamd: &ObjectAudioMetadataPayload, base_sample_pos: u64) -> Extracted {
-    let empty = Extracted {
+    let unsupported = Extracted {
         events: Vec::new(),
         objects: Vec::new(),
+        supported: false,
     };
 
     let object_count = oamd.object_count;
     let Some(object_element) = &oamd.object_element else {
-        return empty;
+        return unsupported;
     };
     // Unsupported multi-block / multi-bed / ISF layouts: skip metadata
     // (audio still plays as a flat bed), same policy as the bridge.
@@ -181,7 +302,7 @@ fn extract_events(oamd: &ObjectAudioMetadataPayload, base_sample_pos: u64) -> Ex
         || oamd.program_assignment.bed_assignment.len() != 1
         || oamd.program_assignment.num_isf_objects != 0
     {
-        return empty;
+        return unsupported;
     }
 
     let sample_offset = object_element.md_update_info.sample_offset as u64;
@@ -227,24 +348,88 @@ fn extract_events(oamd: &ObjectAudioMetadataPayload, base_sample_pos: u64) -> Ex
             "screen"
         } else {
             "room"
-        }.to_string();
+        }
+        .to_string();
 
         objects.push((id, i));
         events.push(ObjectEvent {
-          id,
-          sample_pos,
-          has_pos,
-          pos,
-          gain_db: object_data.object_basic_info.object_gain,
-          size,
-          anchor,
-          distance_m,
-          distance_infinite,
-          screen_factor: render.b_object_use_screen_ref.then_some(render.screen_factor),
-          depth_factor: render.b_object_use_screen_ref.then_some(render.depth_factor),
-          ramp_duration,
+            id,
+            sample_pos,
+            has_pos,
+            pos,
+            gain_db: object_data.object_basic_info.object_gain,
+            size,
+            anchor,
+            distance_m,
+            distance_infinite,
+            screen_factor: render
+                .b_object_use_screen_ref
+                .then_some(render.screen_factor),
+            depth_factor: render
+                .b_object_use_screen_ref
+                .then_some(render.depth_factor),
+            ramp_duration,
         });
     }
 
-    Extracted { events, objects }
+    Extracted {
+        events,
+        objects,
+        supported: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        truehd_dialogue_level, truehd_dialogue_level_for_output, update_spatial_labels,
+        TruehdDialogueNorms,
+    };
+    use crate::ObjectChannelDecl;
+
+    #[test]
+    fn dialogue_norm_zero_code_maps_to_minus_31() {
+        assert_eq!(truehd_dialogue_level(0), -31);
+        assert_eq!(truehd_dialogue_level(27), -27);
+    }
+
+    #[test]
+    fn dialogue_norm_tracks_the_decoded_presentation() {
+        let norms = TruehdDialogueNorms {
+            two: 20,
+            six: 21,
+            eight: 22,
+            sixteen: Some(23),
+        };
+        assert_eq!(truehd_dialogue_level_for_output(norms, 2, false), -20);
+        assert_eq!(truehd_dialogue_level_for_output(norms, 6, false), -21);
+        assert_eq!(truehd_dialogue_level_for_output(norms, 8, false), -22);
+        assert_eq!(truehd_dialogue_level_for_output(norms, 16, false), -23);
+        assert_eq!(truehd_dialogue_level_for_output(norms, 6, true), -23);
+    }
+
+    #[test]
+    fn unsupported_oamd_clears_cached_object_labels() {
+        let labels = vec!["L".to_string(), "R".to_string()];
+        let mut spatial = Some(vec!["Obj_10".to_string(), "R".to_string()]);
+        update_spatial_labels(&mut spatial, &labels, &[], true, false);
+        assert!(spatial.is_none());
+    }
+
+    #[test]
+    fn absent_oamd_preserves_sparse_object_labels() {
+        let labels = vec!["L".to_string(), "R".to_string()];
+        let mut spatial = Some(vec!["Obj_10".to_string(), "R".to_string()]);
+        update_spatial_labels(&mut spatial, &labels, &[], false, true);
+        assert_eq!(spatial.unwrap()[0], "Obj_10");
+    }
+
+    #[test]
+    fn supported_oamd_replaces_object_labels() {
+        let labels = vec!["L".to_string(), "R".to_string()];
+        let declarations = vec![ObjectChannelDecl { id: 12, channel: 1 }];
+        let mut spatial = None;
+        update_spatial_labels(&mut spatial, &labels, &declarations, true, true);
+        assert_eq!(spatial.unwrap(), vec!["L", "Obj_12"]);
+    }
 }

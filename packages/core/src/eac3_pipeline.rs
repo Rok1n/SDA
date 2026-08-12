@@ -7,18 +7,18 @@
 use std::collections::VecDeque;
 
 use eac3::{
-    BedChannel, CorePcmFrame, JOC_QMF_LATENCY_SAMPLES, OamdElementKind, OamdPayload,
-    ObjectPcmPushResult, FrameType, inspect_access_unit, merge_core_with_dependent,
+    inspect_access_unit, merge_core_with_dependent, BedChannel, CorePcmFrame, FrameType,
+    OamdElementKind, OamdPayload, ObjectPcmPushResult, JOC_QMF_LATENCY_SAMPLES,
 };
 
-use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline};
+use crate::{FrameData, ObjectChannelDecl, ObjectEvent, Pipeline, ProgramLoudnessMetadata};
 
 pub struct Eac3Pipeline {
     extractor: eac3::Extractor,
     object_decoder: eac3::ObjectPcmDecoder,
     pcm_decoder: eac3::PcmDecoder,
     dependent_pcm_decoder: eac3::PcmDecoder,
-    pending_independent_core: Option<CorePcmFrame>,
+    pending_independent_core: Option<(CorePcmFrame, ProgramLoudnessMetadata)>,
     total_samples: u64,
     declared: Option<Vec<ObjectChannelDecl>>,
 }
@@ -48,10 +48,27 @@ impl Eac3Pipeline {
         labels
     }
 
-    fn emit_bed_frame(&mut self, core: CorePcmFrame, out: &mut VecDeque<FrameData>) {
+    fn loudness(info: &eac3::AccessUnitInfo) -> ProgramLoudnessMetadata {
+        ProgramLoudnessMetadata::dolby("eac3-dialnorm", info.dialogue_normalization[0])
+    }
+
+    fn emit_bed_frame(
+        &mut self,
+        core: CorePcmFrame,
+        loudness: ProgramLoudnessMetadata,
+        out: &mut VecDeque<FrameData>,
+    ) {
         let sample_pos = self.total_samples;
         self.total_samples += core.samples_per_channel() as u64;
-        out.push_back(bed_frame("eac3", core, Vec::new(), Vec::new(), sample_pos, &[]));
+        out.push_back(bed_frame(
+            "eac3",
+            core,
+            Vec::new(),
+            Vec::new(),
+            Some(loudness),
+            sample_pos,
+            &[],
+        ));
     }
 
     fn process_frame(
@@ -72,42 +89,81 @@ impl Eac3Pipeline {
         // An independent frame without a dependent partner is a complete core.
         // Flush it before decoding the next independent presentation.
         if !is_dependent {
-            if let Some(core) = self.pending_independent_core.take() {
-                self.emit_bed_frame(core, out);
+            if let Some((core, loudness)) = self.pending_independent_core.take() {
+                self.emit_bed_frame(core, loudness, out);
             }
         }
 
         if is_dependent {
-            let Some(core) = self.pending_independent_core.take() else {
-                errors.push("E-AC-3 dependent substream arrived without an independent core".to_string());
+            let Some((core, loudness)) = self.pending_independent_core.take() else {
+                errors.push(
+                    "E-AC-3 dependent substream arrived without an independent core".to_string(),
+                );
                 return;
             };
             if info.joc_payload_count() > 0 {
-                match self.object_decoder.push_access_unit_with_core(frame, core) {
-                    Ok(Some(result)) => out.push_back(self.build_object_frame(result)),
-                    Ok(None) => errors.push("E-AC-3 JOC dependent substream yielded no object PCM".to_string()),
-                    Err(error) => errors.push(format!("E-AC-3 dependent JOC frame rejected: {error}")),
+                match self
+                    .object_decoder
+                    .push_access_unit_with_core(frame, core.clone())
+                {
+                    Ok(Some(result)) => {
+                        out.push_back(self.build_object_frame(result, Some(loudness)))
+                    }
+                    Ok(None) => {
+                        errors.push("E-AC-3 JOC dependent substream yielded no object PCM; using independent core".to_string());
+                        self.emit_bed_frame(core, loudness, out);
+                    }
+                    Err(error) => {
+                        errors.push(format!(
+                            "E-AC-3 dependent JOC frame rejected, using independent core: {error}"
+                        ));
+                        self.emit_bed_frame(core, loudness, out);
+                    }
                 }
             } else {
-                let merged = merge_core_with_dependent(&mut self.dependent_pcm_decoder, &core, frame).unwrap_or(core);
-                self.emit_bed_frame(merged, out);
+                let merged =
+                    merge_core_with_dependent(&mut self.dependent_pcm_decoder, &core, frame)
+                        .unwrap_or(core);
+                self.emit_bed_frame(merged, loudness, out);
             }
             return;
         }
 
         match self.object_decoder.push_access_unit(frame) {
             Ok(Some(result)) => {
-                out.push_back(self.build_object_frame(result));
+                out.push_back(self.build_object_frame(result, None));
             }
             Ok(None) => match self.pcm_decoder.push_access_unit(frame) {
-                Ok(result) => self.pending_independent_core = Some(result.pcm),
+                Ok(result) => {
+                    let loudness = Self::loudness(&result.info);
+                    self.pending_independent_core = Some((result.pcm, loudness));
+                }
                 Err(error) => errors.push(format!("E-AC-3 frame rejected: {error}")),
             },
-            Err(error) => errors.push(format!("E-AC-3 frame rejected: {error}")),
+            Err(error) => {
+                errors.push(format!(
+                    "E-AC-3 object frame rejected, using core PCM: {error}"
+                ));
+                match self.pcm_decoder.push_access_unit(frame) {
+                    Ok(result) => {
+                        let loudness = Self::loudness(&result.info);
+                        self.pending_independent_core = Some((result.pcm, loudness));
+                    }
+                    Err(core_error) => {
+                        errors.push(format!("E-AC-3 core fallback rejected: {core_error}"));
+                        self.total_samples += u64::from(info.num_blocks) * 256;
+                    }
+                }
+            }
         }
     }
 
-    fn build_object_frame(&mut self, result: ObjectPcmPushResult) -> FrameData {
+    fn build_object_frame(
+        &mut self,
+        result: ObjectPcmPushResult,
+        loudness_override: Option<ProgramLoudnessMetadata>,
+    ) -> FrameData {
+        let loudness = loudness_override.unwrap_or_else(|| Self::loudness(&result.info));
         let pcm = result.pcm;
         let sample_pos = self.total_samples;
         self.total_samples += pcm.samples_per_channel() as u64;
@@ -123,7 +179,15 @@ impl Eac3Pipeline {
             // JOC without a complete, topology-consistent OAMD map cannot be
             // routed safely: a guessed slot can attach dialogue to motion.
             let object_channels = self.sparse_declare(Vec::new());
-            return bed_frame("eac3", core, Vec::new(), object_channels, sample_pos, &[]);
+            return bed_frame(
+                "eac3",
+                core,
+                Vec::new(),
+                object_channels,
+                Some(loudness),
+                sample_pos,
+                &[],
+            );
         };
 
         // JOC reconstructs every OAMD essence except the ordinary LFE carried by
@@ -170,6 +234,7 @@ impl Eac3Pipeline {
             ramp_duration: events.first().map_or(0, |event| event.ramp_duration),
             events,
             object_channels,
+            program_loudness: Some(loudness),
         }
     }
 
@@ -369,7 +434,8 @@ fn extract_events(
                     eac3::ObjectAnchor::Room => "room",
                     eac3::ObjectAnchor::Screen => "screen",
                     eac3::ObjectAnchor::Speaker => "speaker",
-                }.to_string();
+                }
+                .to_string();
 
                 events.push(ObjectEvent {
                     id,
@@ -529,6 +595,7 @@ fn bed_frame(
     core: CorePcmFrame,
     events: Vec<ObjectEvent>,
     object_channels: Vec<ObjectChannelDecl>,
+    program_loudness: Option<ProgramLoudnessMetadata>,
     sample_pos: u64,
     extra_labels: &[String],
 ) -> FrameData {
@@ -559,5 +626,6 @@ fn bed_frame(
         ramp_duration: 0,
         events,
         object_channels,
+        program_loudness,
     }
 }

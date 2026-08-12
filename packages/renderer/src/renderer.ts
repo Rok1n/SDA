@@ -65,8 +65,9 @@ const LFE_LOWPASS_HZ = 120;
 const BINAURAL_LFE_INBAND_GAIN = 1;
 /** KU100 双耳最终输出标定：补偿主观响度，不改方向 IR 或用户主音量。 */
 const BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
-/** 最终紧急 sample-peak ceiling；无 lookahead/oversampling，不作为 true-peak limiter 声称。 */
-const BINAURAL_PEAK_GUARD_CEILING_DB = -0.1;
+/** Shared stereo-linked lookahead sample-peak ceiling; no oversampling, so it is not true-peak limiting. */
+const BINAURAL_PEAK_GUARD_CEILING_DB = -1;
+const BINAURAL_PEAK_GUARD_LOOKAHEAD_S = 0.005;
 /** LFE 单独约束峰值，避免底鼓等低频驱动最终全频 safety compressor。 */
 const BINAURAL_LFE_PEAK_THRESHOLD_DB = -3;
 const BINAURAL_LFE_PEAK_KNEE_DB = 0;
@@ -78,6 +79,83 @@ const BINAURAL_BANKS = ["off", "near", "mid", "far"] as const;
 type BinauralBank = (typeof BINAURAL_BANKS)[number];
 const BINAURAL_NOT_INDICATED_DEFAULT: BinauralBank = "mid";
 const PCM_RING_SAMPLES = 1 << 18;
+
+function biquadMagnitude(
+  type: BiquadFilterType,
+  frequency: number,
+  q: number,
+  gainDb: number,
+  sampleRate: number,
+  probeFrequency: number,
+): number {
+  const a = 10 ** (gainDb / 40);
+  const w0 = (2 * Math.PI * frequency) / sampleRate;
+  const cos0 = Math.cos(w0);
+  const sin0 = Math.sin(w0);
+  const alpha = type === "peaking" ? sin0 / (2 * q) : sin0 / Math.SQRT2;
+  const beta = 2 * Math.sqrt(a) * alpha;
+  let b0: number;
+  let b1: number;
+  let b2: number;
+  let a0: number;
+  let a1: number;
+  let a2: number;
+  if (type === "peaking") {
+    b0 = 1 + alpha * a;
+    b1 = -2 * cos0;
+    b2 = 1 - alpha * a;
+    a0 = 1 + alpha / a;
+    a1 = -2 * cos0;
+    a2 = 1 - alpha / a;
+  } else if (type === "lowshelf") {
+    b0 = a * ((a + 1) - (a - 1) * cos0 + beta);
+    b1 = 2 * a * ((a - 1) - (a + 1) * cos0);
+    b2 = a * ((a + 1) - (a - 1) * cos0 - beta);
+    a0 = (a + 1) + (a - 1) * cos0 + beta;
+    a1 = -2 * ((a - 1) + (a + 1) * cos0);
+    a2 = (a + 1) + (a - 1) * cos0 - beta;
+  } else {
+    b0 = a * ((a + 1) + (a - 1) * cos0 + beta);
+    b1 = -2 * a * ((a - 1) + (a + 1) * cos0);
+    b2 = a * ((a + 1) + (a - 1) * cos0 - beta);
+    a0 = (a + 1) - (a - 1) * cos0 + beta;
+    a1 = 2 * ((a - 1) - (a + 1) * cos0);
+    a2 = (a + 1) - (a - 1) * cos0 - beta;
+  }
+  const w = (2 * Math.PI * probeFrequency) / sampleRate;
+  const numeratorRe = b0 + b1 * Math.cos(w) + b2 * Math.cos(2 * w);
+  const numeratorIm = -b1 * Math.sin(w) - b2 * Math.sin(2 * w);
+  const denominatorRe = a0 + a1 * Math.cos(w) + a2 * Math.cos(2 * w);
+  const denominatorIm = -a1 * Math.sin(w) - a2 * Math.sin(2 * w);
+  return Math.hypot(numeratorRe, numeratorIm) / Math.hypot(denominatorRe, denominatorIm);
+}
+
+export function binauralEqHeadroomDb(bands: BinauralEqBands, sampleRate = 48000): number {
+  const nyquist = sampleRate / 2;
+  let maxMagnitude = 1;
+  for (let i = 0; i <= 2048; i++) {
+    const probeFrequency = 10 * (nyquist / 10) ** (i / 2048);
+    let magnitude = 1;
+    for (const filter of BINAURAL_EQ_BANDS) {
+      magnitude *= biquadMagnitude(filter.type, filter.frequency, filter.q, bands[filter.band], sampleRate, probeFrequency);
+    }
+    maxMagnitude = Math.max(maxMagnitude, magnitude);
+  }
+  const maxBoostDb = 20 * Math.log10(maxMagnitude);
+  return maxBoostDb > 1e-6 ? -maxBoostDb - 0.2 : 0;
+}
+
+export function stereoDownmixGains(speaker: Pick<VirtualSpeaker, "azimuth" | "isLfe">): [number, number] {
+  if (speaker.isLfe) return [0.25 * 0.7, 0.25 * 0.7];
+  const pan = Math.sin((speaker.azimuth * Math.PI) / 180);
+  return [Math.sqrt((1 + pan) / 2) * 0.7, Math.sqrt((1 - pan) / 2) * 0.7];
+}
+
+export function layoutLevelCompensationGain(layout: readonly VirtualSpeaker[]): number {
+  const referenceChannels = LAYOUTS["5.1"].filter((speaker) => !speaker.isLfe).length;
+  const activeChannels = layout.filter((speaker) => !speaker.isLfe).length;
+  return Math.min(1, Math.sqrt(referenceChannels / Math.max(referenceChannels, activeChannels)));
+}
 
 function binauralBank(mode: BinauralRenderMode | undefined, fallback: BinauralMode): BinauralBank {
   if (mode === "off" || mode === "near" || mode === "mid" || mode === "far") return mode;
@@ -120,6 +198,8 @@ interface SourceState {
   snapBus: number;
   lfeBus?: number;
   binauralMode?: BinauralRenderMode;
+  lifecycleEvents: { at: number; active: boolean; order: number }[];
+  lifecycleEventOrder: number;
 }
 
 export class SpatialRenderer {
@@ -131,6 +211,15 @@ export class SpatialRenderer {
   mode: OutputMode;
   /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
   private modeGains = new Map<OutputMode, GainNode>();
+  private modeVolumeGains = new Map<OutputMode, GainNode>();
+  private modeLayoutGains = new Map<OutputMode, GainNode>();
+  private modeProgramGains = new Map<OutputMode, GainNode>();
+  private multichannelOutput: GainNode | null = null;
+  private multichannelProjector: { id: string; gain: GainNode; nodes: AudioNode[] } | null = null;
+  private volume = 1;
+  private layoutLevelCompensationEnabled = true;
+  private volumeBalanceEnabled = false;
+  private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
   private node: AudioWorkletNode | null = null;
   /** 常驻最终 sample-peak guard；后级图重建时复用，不触碰播放时间线。 */
@@ -140,7 +229,10 @@ export class SpatialRenderer {
   /** Per-bank binaural convolution nodes; branches are created only when used. */
   private convs = new Map<BinauralBank, (ConvolverNode | null)[]>();
   private binauralMerger: ChannelMergerNode | null = null;
+  private binauralLfeInput: GainNode | null = null;
   private sources = new Map<string, SourceState>();
+  private retiringSources = new Map<string, number>();
+  private nextRetirementToken = 1;
   /** 独立 LFE 床声道的静音状态；与动态对象静音分开存储。 */
   private lfeMuted = false;
   private irSet: BinauralIrSet | null = null;
@@ -156,6 +248,7 @@ export class SpatialRenderer {
   private binauralEqBands: BinauralEqBands = { low: 0, mid: 0, high: 0 };
   /** 常驻最终双耳 EQ；实时滑动只改这些 AudioParam，不重建输出图。 */
   private binauralEqNodes = new Map<keyof BinauralEqBands, [BiquadFilterNode, BiquadFilterNode]>();
+  private binauralEqHeadroom: GainNode | null = null;
   /** 当前输出图 revision；迟到的 FIR 请求不得接回已重建的图。 */
   private outputGraphRevision = 0;
   /** 已就绪的 context-local FIR buffers；切 profile 或重建 context 时清空。 */
@@ -163,6 +256,9 @@ export class SpatialRenderer {
   /** Persistent final-output dry/wet insert. Profile changes never rebuild spatial BRIR paths. */
   private headphoneDry: [GainNode, GainNode] | null = null;
   private headphoneWet: [GainNode, GainNode] | null = null;
+  private headphoneInput: ChannelSplitterNode | null = null;
+  private headphoneOutput: ChannelMergerNode | null = null;
+  private headphonePreamp: [GainNode, GainNode] | null = null;
   private headphoneConvolvers: [ConvolverNode, ConvolverNode] | null = null;
   private onConsumedTick?: (stats: RendererStats) => void;
   private onBatchResult?: (result: { sequence: number; accepted: boolean; samples: number; reason?: string }) => void;
@@ -205,6 +301,69 @@ export class SpatialRenderer {
     feed("FrontRight", "WideRight", 0.35);
   }
 
+  private updateDestinationChannelCount(): void {
+    const destination = this.ctx.destination;
+    try {
+      destination.channelCountMode = "explicit";
+      destination.channelCount = Math.max(2, Math.min(this.layout.length, destination.maxChannelCount || this.layout.length));
+    } catch {
+      /* Device does not allow an explicit channel count. */
+    }
+  }
+
+  private layoutId(layout: readonly VirtualSpeaker[]): string {
+    return layout.map((speaker) => speaker.name).join(",");
+  }
+
+  private retirePostNodes(nodes: readonly AudioNode[], delayMs: number): void {
+    globalThis.setTimeout(() => {
+      nodes.forEach((node) => node.disconnect());
+      const retired = new Set(nodes);
+      this.postNodes = this.postNodes.filter((node) => !retired.has(node));
+    }, delayMs);
+  }
+
+  private createMultichannelProjector(layout: readonly VirtualSpeaker[], initialGain: number) {
+    const output = this.multichannelOutput;
+    if (!this.node || !output) return null;
+    const nodes: AudioNode[] = [];
+    const merger = this.ctx.createChannelMerger(layout.length);
+    BINAURAL_BANKS.forEach((_bank, outputIndex) => {
+      const splitter = this.ctx.createChannelSplitter(this.topology.length);
+      this.node!.connect(splitter, outputIndex);
+      physicalChannelOrder(layout).forEach((layoutBus, channel) => {
+        const topologyBus = this.topology.findIndex((speaker) => speaker.name === layout[layoutBus]!.name);
+        if (topologyBus >= 0) splitter.connect(merger, topologyBus, channel);
+      });
+      nodes.push(splitter);
+    });
+    const gain = this.ctx.createGain();
+    gain.gain.value = initialGain;
+    merger.connect(gain);
+    gain.connect(output);
+    nodes.push(merger, gain);
+    this.postNodes.push(...nodes);
+    return { id: this.layoutId(layout), gain, nodes };
+  }
+
+  private updateMultichannelLayout(): void {
+    const id = this.layoutId(this.layout);
+    if (!this.multichannelOutput || this.multichannelProjector?.id === id) return;
+    const next = this.createMultichannelProjector(this.layout, 0);
+    if (!next) return;
+    const previous = this.multichannelProjector;
+    this.multichannelProjector = next;
+    const now = this.ctx.currentTime;
+    next.gain.gain.setValueAtTime(0, now);
+    next.gain.gain.linearRampToValueAtTime(1, now + 0.05);
+    if (previous) {
+      previous.gain.gain.cancelScheduledValues(now);
+      previous.gain.gain.setValueAtTime(previous.gain.gain.value, now);
+      previous.gain.gain.linearRampToValueAtTime(0, now + 0.05);
+      this.retirePostNodes(previous.nodes, 100);
+    }
+  }
+
   /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头和卷积图继续
    * 存活；所有源通过短增益斜坡迁移到固定最大总线中的新位置。 */
   setLayout(layout: readonly VirtualSpeaker[]): void {
@@ -212,6 +371,9 @@ export class SpatialRenderer {
     this.layout = layout;
     this.vbap = new VbapSolver(layout);
     this.buildExpansion();
+    this.updateLayoutLevelCompensation();
+    this.updateMultichannelLayout();
+    this.updateDestinationChannelCount();
     for (const state of this.sources.values()) {
       if (state.bedLabel && !state.isLfe) {
         state.snapBus = this.layout.findIndex((speaker) => speaker.name === state.bedLabel);
@@ -240,6 +402,13 @@ export class SpatialRenderer {
           rejectedBatches: Number(e.data.rejectedBatches) || 0,
           rejectedSources: Number(e.data.rejectedSources) || 0,
         });
+      } else if (e.data?.type === "sourceRetired") {
+        const id = String(e.data.id ?? "");
+        const token = Number(e.data.token);
+        if (this.retiringSources.get(id) === token) {
+          this.retiringSources.delete(id);
+          this.sources.delete(id);
+        }
       } else if (e.data?.type === "batchAck") {
         this.onBatchResult?.({ sequence: e.data.sequence, accepted: true, samples: e.data.samples });
       } else if (e.data?.type === "batchRejected") {
@@ -251,6 +420,11 @@ export class SpatialRenderer {
       numberOfOutputs: 1,
       outputChannelCount: [2],
       processorOptions: { ceilingDb: BINAURAL_PEAK_GUARD_CEILING_DB },
+    });
+    this.peakGuard.port.postMessage({ type: "programEnabled", enabled: this.volumeBalanceEnabled });
+    this.peakGuard.port.postMessage({
+      type: "programGain",
+      gain: this.programLoudnessGainDb === null ? 1 : Math.pow(10, this.programLoudnessGainDb / 20),
     });
     this.buildOutputGraph();
   }
@@ -266,8 +440,10 @@ export class SpatialRenderer {
   setBinauralMode(mode: BinauralMode): void {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
+    this.buildBinauralBank(mode, this.topology.length);
+    const bank = BINAURAL_BANKS.indexOf(mode);
     for (const state of this.sources.values()) {
-      if (!state.binauralMode) this.setSourceBinauralMode(state.id, mode);
+      if (!state.binauralMode) this.node?.port.postMessage({ type: "binauralMode", id: state.id, bank });
     }
   }
 
@@ -296,7 +472,16 @@ export class SpatialRenderer {
     this.headphoneProfileId = profileId;
     if (!profileId) {
       this.headphoneBuffers = null;
+      const retired = [
+        ...(this.headphoneWet ?? []),
+        ...(this.headphonePreamp ?? []),
+        ...(this.headphoneConvolvers ?? []),
+      ];
       this.crossfadeHeadphoneCompensation(false);
+      this.headphoneWet = null;
+      this.headphonePreamp = null;
+      this.headphoneConvolvers = null;
+      this.retirePostNodes(retired, 250);
       return;
     }
     this.headphoneBuffers = null;
@@ -305,6 +490,17 @@ export class SpatialRenderer {
 
   get headphoneCompensationProfile(): HeadphoneCompensationProfile | null {
     return headphoneProfileById(this.headphoneProfileId);
+  }
+
+  private setEqHeadroom(bands: BinauralEqBands): void {
+    if (!this.binauralEqHeadroom) return;
+    const attenuationDb = binauralEqHeadroomDb(bands, this.ctx.sampleRate);
+    const target = Math.pow(10, attenuationDb / 20);
+    const now = this.ctx.currentTime;
+    const gain = this.binauralEqHeadroom.gain;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(target, now + (target < gain.value ? 0.01 : 0.1));
   }
 
   /** 设置最终双耳输出的低、中、高三段连续 EQ（-12 至 +12 dB）。 */
@@ -316,6 +512,7 @@ export class SpatialRenderer {
     };
     if (next.low === this.binauralEqBands.low && next.mid === this.binauralEqBands.mid && next.high === this.binauralEqBands.high) return;
     this.binauralEqBands = next;
+    this.setEqHeadroom(next);
     const now = this.ctx.currentTime;
     for (const [band, nodes] of this.binauralEqNodes) {
       for (const node of nodes) {
@@ -360,11 +557,21 @@ export class SpatialRenderer {
     this.postNodes = [];
     this.convs.clear();
     this.binauralMerger = null;
+    this.binauralLfeInput = null;
     this.headphoneDry = null;
     this.headphoneWet = null;
+    this.headphoneInput = null;
+    this.headphoneOutput = null;
+    this.headphonePreamp = null;
     this.headphoneConvolvers = null;
     this.binauralEqNodes.clear();
+    this.binauralEqHeadroom = null;
     this.modeGains.clear();
+    this.modeVolumeGains.clear();
+    this.modeLayoutGains.clear();
+    this.modeProgramGains.clear();
+    this.multichannelOutput = null;
+    this.multichannelProjector = null;
   }
 
   /** LR4（Linkwitz-Riley 四阶）滤波对：两个 Q=1/√2 的二阶 biquad 级联，
@@ -383,29 +590,49 @@ export class SpatialRenderer {
 
   private buildOutputGraph(): void {
     if (!this.node || !this.master) return;
+    this.peakGuard?.disconnect();
     this.teardownPostNodes();
     const n = this.topology.length;
     const master = this.master;
-    const dest = this.ctx.destination;
-    try {
-      dest.channelCountMode = "explicit";
-      dest.channelCount = Math.max(2, Math.min(n, dest.maxChannelCount || n));
-    } catch {
-      /* 设备不允许显式声道数：交由浏览器默认降混 */
-    }
+    this.updateDestinationChannelCount();
 
     const createModeOutput = (mode: OutputMode) => {
+      const volume = this.ctx.createGain();
+      const balance = this.ctx.createGain();
+      const program = this.ctx.createGain();
       const gain = this.ctx.createGain();
+      volume.gain.value = this.volume ** 2;
+      balance.gain.value = this.layoutLevelCompensationEnabled && mode !== "multichannel"
+        ? layoutLevelCompensationGain(this.layout)
+        : 1;
+      program.gain.value = 1;
       gain.gain.value = mode === this.mode ? 1 : 0;
-      gain.connect(master);
+      volume.connect(balance);
+      balance.connect(program);
+      program.connect(gain);
+      if (mode === "multichannel") {
+        const delay = this.ctx.createDelay(BINAURAL_PEAK_GUARD_LOOKAHEAD_S);
+        delay.delayTime.value = BINAURAL_PEAK_GUARD_LOOKAHEAD_S;
+        gain.connect(delay);
+        delay.connect(master);
+        this.postNodes.push(delay);
+      } else {
+        const peakGuard = this.peakGuard;
+        if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
+        gain.connect(peakGuard);
+      }
+      this.modeVolumeGains.set(mode, volume);
+      this.modeLayoutGains.set(mode, balance);
+      this.modeProgramGains.set(mode, program);
       this.modeGains.set(mode, gain);
-      this.postNodes.push(gain);
-      return gain;
+      this.postNodes.push(volume, balance, program, gain);
+      return volume;
     };
 
     this.buildMultichannelPath(n, createModeOutput("multichannel"));
     this.buildStereoPath(n, createModeOutput("stereo"));
     this.buildBinauralPath(n, createModeOutput("binaural"));
+    this.peakGuard?.connect(master);
     this.loadHeadphoneCompensation();
   }
 
@@ -424,16 +651,67 @@ export class SpatialRenderer {
   }
 
   private installHeadphoneCompensation(buffers: HeadphoneCompensationBuffers): void {
-    if (!this.headphoneConvolvers) return;
-    const [left, right] = this.headphoneConvolvers;
+    const profile = headphoneProfileById(this.headphoneProfileId);
+    if (!profile || !this.headphoneInput || !this.headphoneOutput || !this.headphoneDry) return;
+
+    const left = this.ctx.createConvolver();
+    const right = this.ctx.createConvolver();
+    const preampLeft = this.ctx.createGain();
+    const preampRight = this.ctx.createGain();
+    const wetLeft = this.ctx.createGain();
+    const wetRight = this.ctx.createGain();
+    left.normalize = false;
+    right.normalize = false;
     left.buffer = buffers.left;
     right.buffer = buffers.right;
-    this.crossfadeHeadphoneCompensation(true);
+    const preamp = Math.pow(10, profile.preampDb / 20);
+    preampLeft.gain.value = preamp;
+    preampRight.gain.value = preamp;
+    wetLeft.gain.value = 0;
+    wetRight.gain.value = 0;
+    this.headphoneInput.connect(left, 0);
+    this.headphoneInput.connect(right, 1);
+    left.connect(preampLeft);
+    right.connect(preampRight);
+    preampLeft.connect(wetLeft);
+    preampRight.connect(wetRight);
+    wetLeft.connect(this.headphoneOutput, 0, 0);
+    wetRight.connect(this.headphoneOutput, 0, 1);
+
+    const retired = [
+      ...(this.headphoneWet ?? []),
+      ...(this.headphonePreamp ?? []),
+      ...(this.headphoneConvolvers ?? []),
+    ];
+    const oldWet = this.headphoneWet;
+    this.headphoneWet = [wetLeft, wetRight];
+    this.headphonePreamp = [preampLeft, preampRight];
+    this.headphoneConvolvers = [left, right];
+    this.postNodes.push(left, right, preampLeft, preampRight, wetLeft, wetRight);
+
+    const now = this.ctx.currentTime;
+    for (const node of this.headphoneDry) {
+      node.gain.cancelScheduledValues(now);
+      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.linearRampToValueAtTime(0, now + 0.05);
+    }
+    for (const node of oldWet ?? []) {
+      node.gain.cancelScheduledValues(now);
+      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.linearRampToValueAtTime(0, now + 0.05);
+    }
+    for (const node of [wetLeft, wetRight]) node.gain.linearRampToValueAtTime(1, now + 0.05);
+
+    this.retirePostNodes(retired, 250);
   }
 
   private loadHeadphoneCompensation(): void {
     const profile = headphoneProfileById(this.headphoneProfileId);
-    if (!profile || this.headphoneBuffers) return;
+    if (!profile) return;
+    if (this.headphoneBuffers) {
+      this.installHeadphoneCompensation(this.headphoneBuffers);
+      return;
+    }
     const revision = this.outputGraphRevision;
     void getHeadphoneCompensationBuffers(this.ctx, profile)
       .then((buffers) => {
@@ -444,17 +722,11 @@ export class SpatialRenderer {
       .catch((error) => console.warn(`[SDA] 耳机补偿加载失败，保持 bypass: ${profile.id}`, error));
   }
 
-  /** 物理声道直出固定使用最大拓扑和 WASAPI 规范顺序；未激活总线由 worklet 增益归零。 */
-  private buildMultichannelPath(n: number, output: GainNode): void {
-    const merger = this.ctx.createChannelMerger(n);
-    BINAURAL_BANKS.forEach((_bank, outputIndex) => {
-      const splitter = this.ctx.createChannelSplitter(n);
-      this.node!.connect(splitter, outputIndex);
-      physicalChannelOrder(this.topology).forEach((bus, i) => splitter.connect(merger, bus, i));
-      this.postNodes.push(splitter);
-    });
-    merger.connect(output);
-    this.postNodes.push(merger);
+  /** Physical output keeps the 16-bus worklet topology internal, then compacts
+   * the selected layout into contiguous WASAPI-mask order. */
+  private buildMultichannelPath(_n: number, output: GainNode): void {
+    this.multichannelOutput = output;
+    this.multichannelProjector = this.createMultichannelProjector(this.layout, 1);
   }
 
   /** 常驻立体声 downmix，输出只占固定物理通道 0/1。 */
@@ -467,9 +739,9 @@ export class SpatialRenderer {
         const spk = this.topology[bus]!;
         const gainL = this.ctx.createGain();
         const gainR = this.ctx.createGain();
-        const az = (spk.azimuth * Math.PI) / 180;
-        gainL.gain.value = (spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az - Math.PI / 2) / 2))) * 0.7;
-        gainR.gain.value = (spk.isLfe ? 0.25 : Math.max(0.05, Math.cos((az + Math.PI / 2) / 2))) * 0.7;
+        const [left, right] = stereoDownmixGains(spk);
+        gainL.gain.value = left;
+        gainR.gain.value = right;
         splitter.connect(gainL, bus);
         splitter.connect(gainR, bus);
         gainL.connect(merger, 0, 0);
@@ -496,10 +768,9 @@ export class SpatialRenderer {
         const lfeGain = this.ctx.createGain();
         const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
         splitter.connect(lpIn, bus);
-        lfeGain.gain.value = BINAURAL_LFE_INBAND_GAIN * 0.5;
+        lfeGain.gain.value = BINAURAL_LFE_INBAND_GAIN;
         lpOut.connect(lfeGain);
-        lfeGain.connect(this.binauralMerger, 0, 0);
-        lfeGain.connect(this.binauralMerger, 0, 1);
+        if (this.binauralLfeInput) lfeGain.connect(this.binauralLfeInput);
         this.postNodes.push(lpIn, lpOut, lfeGain);
         convs.push(null);
         continue;
@@ -558,48 +829,53 @@ export class SpatialRenderer {
     makeup.gain.value = BINAURAL_MAKEUP_GAIN;
     const peakGuard = this.peakGuard;
     if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
-    peakGuard.disconnect();
 
     this.binauralMerger = merger;
-    this.buildBinauralBank("near", n);
+    const lfeSum = this.ctx.createGain();
+    const lfePeak = this.ctx.createDynamicsCompressor();
+    const lfeOut = this.ctx.createGain();
+    lfePeak.threshold.value = BINAURAL_LFE_PEAK_THRESHOLD_DB;
+    lfePeak.knee.value = BINAURAL_LFE_PEAK_KNEE_DB;
+    lfePeak.ratio.value = BINAURAL_LFE_PEAK_RATIO;
+    lfePeak.attack.value = BINAURAL_LFE_PEAK_ATTACK_S;
+    lfePeak.release.value = BINAURAL_LFE_PEAK_RELEASE_S;
+    lfeOut.gain.value = 0.5;
+    lfeSum.connect(lfePeak);
+    lfePeak.connect(lfeOut);
+    lfeOut.connect(merger, 0, 0);
+    lfeOut.connect(merger, 0, 1);
+    this.binauralLfeInput = lfeSum;
+    this.postNodes.push(lfeSum, lfePeak, lfeOut);
+    const activeBanks = new Set<BinauralBank>([this.binauralMode]);
+    for (const source of this.sources.values()) activeBanks.add(binauralBank(source.binauralMode, this.binauralMode));
+    for (const bank of activeBanks) this.buildBinauralBank(bank, n);
     let finalBinaural: AudioNode = merger;
     const compensationSplit = this.ctx.createChannelSplitter(2);
     const compensationMerge = this.ctx.createChannelMerger(2);
     const dryLeft = this.ctx.createGain();
     const dryRight = this.ctx.createGain();
-    const wetLeft = this.ctx.createGain();
-    const wetRight = this.ctx.createGain();
-    const left = this.ctx.createConvolver();
-    const right = this.ctx.createConvolver();
-    left.normalize = false;
-    right.normalize = false;
-    dryLeft.gain.value = this.headphoneBuffers ? 0 : 1;
-    dryRight.gain.value = this.headphoneBuffers ? 0 : 1;
-    wetLeft.gain.value = this.headphoneBuffers ? 1 : 0;
-    wetRight.gain.value = this.headphoneBuffers ? 1 : 0;
-    if (this.headphoneBuffers) {
-      left.buffer = this.headphoneBuffers.left;
-      right.buffer = this.headphoneBuffers.right;
-    }
+    dryLeft.gain.value = 1;
+    dryRight.gain.value = 1;
     merger.connect(compensationSplit);
     compensationSplit.connect(dryLeft, 0);
     compensationSplit.connect(dryRight, 1);
     dryLeft.connect(compensationMerge, 0, 0);
     dryRight.connect(compensationMerge, 0, 1);
-    compensationSplit.connect(left, 0);
-    compensationSplit.connect(right, 1);
-    left.connect(wetLeft);
-    right.connect(wetRight);
-    wetLeft.connect(compensationMerge, 0, 0);
-    wetRight.connect(compensationMerge, 0, 1);
+    this.headphoneInput = compensationSplit;
+    this.headphoneOutput = compensationMerge;
     this.headphoneDry = [dryLeft, dryRight];
-    this.headphoneWet = [wetLeft, wetRight];
-    this.headphoneConvolvers = [left, right];
-    this.postNodes.push(compensationSplit, compensationMerge, dryLeft, dryRight, wetLeft, wetRight, left, right);
+    this.headphoneWet = null;
+    this.headphonePreamp = null;
+    this.headphoneConvolvers = null;
+    this.postNodes.push(compensationSplit, compensationMerge, dryLeft, dryRight);
     finalBinaural = compensationMerge;
     const eqSplit = this.ctx.createChannelSplitter(2);
     const eqMerge = this.ctx.createChannelMerger(2);
-    finalBinaural.connect(eqSplit);
+    const eqHeadroom = this.ctx.createGain();
+    this.binauralEqHeadroom = eqHeadroom;
+    this.setEqHeadroom(this.binauralEqBands);
+    finalBinaural.connect(eqHeadroom);
+    eqHeadroom.connect(eqSplit);
     for (const filter of BINAURAL_EQ_BANDS) {
       const left = this.ctx.createBiquadFilter();
       const right = this.ctx.createBiquadFilter();
@@ -623,18 +899,55 @@ export class SpatialRenderer {
     low[1].connect(mid[1]);
     mid[1].connect(high[1]);
     high[1].connect(eqMerge, 0, 1);
-    this.postNodes.push(eqSplit, eqMerge);
+    this.postNodes.push(eqHeadroom, eqSplit, eqMerge);
     eqMerge.connect(makeup);
-    makeup.connect(peakGuard);
-    peakGuard.connect(output);
+    makeup.connect(output);
+    const balance = this.modeLayoutGains.get("binaural")!;
+    const program = this.modeProgramGains.get("binaural")!;
+    output.disconnect();
+    output.connect(balance);
+    balance.disconnect();
+    balance.connect(program);
     this.postNodes.push(merger, makeup);
+  }
+
+  rebindBedSource(id: string, bedLabel: string, atSample: number): void {
+    const state = this.sources.get(id);
+    if (!state) {
+      this.addSource(id, { bedLabel, atSample });
+      return;
+    }
+    const normalized = aliasLabel(bedLabel);
+    if (state.bedLabel === normalized) return;
+    state.bedLabel = normalized;
+    state.isLfe = isLfeLabel(bedLabel);
+    state.position = positionForLabel(bedLabel);
+    state.snapBus = state.isLfe ? -1 : this.layout.findIndex((speaker) => speaker.name === normalized);
+    this.recomputeBedGainsAt(Math.trunc(atSample), 32);
   }
 
   /** Register a source. Bed channels pass their speaker label; objects an event id.
    *  重复声明同一 id（稀疏声明变化时 player 会重放整组）完全幂等：保留
    *  SourceState/元数据/静音状态，也不向 worklet 重发即时 gains。 */
-  addSource(id: string, opts: { bedLabel?: string } = {}): void {
-    if (this.sources.has(id)) return;
+  addSource(id: string, opts: { bedLabel?: string; atSample?: number } = {}): void {
+    if (this.sources.has(id)) {
+      if (this.retiringSources.delete(id)) {
+        const at = Number.isSafeInteger(opts.atSample) ? Math.trunc(opts.atSample!) : this.consumedSamples;
+        const state = this.sources.get(id)!;
+        this.scheduleSourceLifecycle(state, at, true);
+        this.node?.port.postMessage({ type: "add", id });
+        this.node?.port.postMessage({
+          type: "binauralMode",
+          id,
+          bank: BINAURAL_BANKS.indexOf(binauralBank(state.binauralMode, this.binauralMode)),
+        });
+        if (state.muted) this.node?.port.postMessage({ type: "mute", id, muted: true, ramp: 32 });
+        this.node?.port.postMessage({ type: "resumeAt", id, at });
+        if (state.bedLabel) this.recomputeBedGainsAt(at, 32);
+        else this.applyGains(state, 32, at);
+      }
+      return;
+    }
     if (!this.node) throw new Error("SpatialRenderer.init() first");
     const state: SourceState = {
       id,
@@ -645,6 +958,9 @@ export class SpatialRenderer {
       muted: false,
       bedLabel: opts.bedLabel ? aliasLabel(opts.bedLabel) : undefined,
       snapBus: -1,
+      binauralMode: undefined,
+      lifecycleEvents: [],
+      lifecycleEventOrder: 0,
     };
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
@@ -657,8 +973,27 @@ export class SpatialRenderer {
     this.sources.set(id, state);
     this.node.port.postMessage({ type: "add", id });
     this.node.port.postMessage({ type: "binauralMode", id, bank: BINAURAL_BANKS.indexOf(binauralBank(state.binauralMode, this.binauralMode)) });
-    this.applyGains(state, 0);
-    if (state.snapBus >= 0) this.recomputeBedGains(id);
+    const atSample = Number.isSafeInteger(opts.atSample) ? Math.trunc(opts.atSample!) : undefined;
+    if (state.bedLabel && atSample !== undefined) {
+      this.recomputeBedGainsAt(atSample, 32);
+    } else {
+      this.applyGains(state, 0);
+      if (state.snapBus >= 0) this.recomputeBedGains(id);
+    }
+  }
+
+  private scheduleSourceLifecycle(state: SourceState, at: number, active: boolean): void {
+    state.lifecycleEvents.push({ at, active, order: state.lifecycleEventOrder++ });
+    state.lifecycleEvents.sort((left, right) => left.at - right.at || left.order - right.order);
+  }
+
+  private sourceActiveAt(state: SourceState, samplePos: number): boolean {
+    let active = true;
+    for (const event of state.lifecycleEvents) {
+      if (event.at > samplePos) break;
+      active = event.active;
+    }
+    return active;
   }
 
   /** 床声道集合变化（新床声道占用/释放了扩展目标总线）→ 重推其余床声道的增益，
@@ -669,11 +1004,20 @@ export class SpatialRenderer {
     }
   }
 
-  /** 其余床声道吸附占用的总线（扩展馈送要避开）。 */
-  private bedOccupiedBuses(excludeId: string): Set<number> {
+  private recomputeBedGainsAt(atSample: number, rampSamples: number): void {
+    for (const state of this.sources.values()) {
+      if (state.bedLabel && this.sourceActiveAt(state, atSample)) {
+        this.applyGains(state, rampSamples, atSample);
+      }
+    }
+  }
+
+  /** 其余床声道在指定 sample 占用的总线（扩展馈送要避开）。 */
+  private bedOccupiedBuses(excludeId: string, atSample?: number): Set<number> {
     const occ = new Set<number>();
-    for (const s of this.sources.values()) {
-      if (s.id !== excludeId && s.snapBus >= 0) occ.add(s.snapBus);
+    for (const state of this.sources.values()) {
+      const active = atSample === undefined || this.sourceActiveAt(state, atSample);
+      if (state.id !== excludeId && state.snapBus >= 0 && active) occ.add(state.snapBus);
     }
     return occ;
   }
@@ -702,9 +1046,21 @@ export class SpatialRenderer {
     }
   }
 
+  retireSourceAt(id: string, samplePos: number): void {
+    const state = this.sources.get(id);
+    if (!state) return;
+    const at = Math.trunc(samplePos);
+    const token = this.nextRetirementToken++;
+    this.scheduleSourceLifecycle(state, at, false);
+    this.retiringSources.set(id, token);
+    this.node?.port.postMessage({ type: "removeAt", id, at, token });
+    if (state.bedLabel) this.recomputeBedGainsAt(at, 32);
+  }
+
   removeSource(id: string): void {
     const state = this.sources.get(id);
     this.sources.delete(id);
+    this.retiringSources.delete(id);
     this.node?.port.postMessage({ type: "remove", id });
     if (state && state.snapBus >= 0) this.recomputeBedGains(id);
   }
@@ -715,7 +1071,9 @@ export class SpatialRenderer {
   }
 
   startAt(samplePos: number): void {
-    this.node?.port.postMessage({ type: "start", origin: Math.trunc(samplePos) });
+    const origin = Math.trunc(samplePos);
+    this.node?.port.postMessage({ type: "start", origin });
+    this.peakGuard?.port.postMessage({ type: "start", origin });
   }
 
   /** Feed PCM for a source (legacy single-source path). */
@@ -797,7 +1155,7 @@ export class SpatialRenderer {
       gains.fill(0);
       gains[state.snapBus] = 1;
       if (this.mode === "multichannel") {
-        const occupied = this.bedOccupiedBuses(state.id);
+        const occupied = this.bedOccupiedBuses(state.id, atSample);
         for (const e of this.expansion.get(state.snapBus) ?? []) {
           if (!occupied.has(e.bus)) gains[e.bus] = e.gain;
         }
@@ -829,7 +1187,17 @@ export class SpatialRenderer {
   resetBuffers(): void {
     this.epoch++;
     this.consumedSamples = 0;
+    for (const id of this.retiringSources.keys()) {
+      this.sources.delete(id);
+      this.node?.port.postMessage({ type: "remove", id });
+    }
+    this.retiringSources.clear();
+    for (const state of this.sources.values()) {
+      state.lifecycleEvents.length = 0;
+      state.lifecycleEventOrder = 0;
+    }
     this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
+    this.peakGuard?.port.postMessage({ type: "reset" });
   }
 
   /** Playhead in seconds: frames the worklet actually rendered. */
@@ -841,11 +1209,54 @@ export class SpatialRenderer {
    *  so resume continues from the exact sample. */
   setPaused(paused: boolean): void {
     this.node?.port.postMessage({ type: "pause", paused });
+    this.peakGuard?.port.postMessage({ type: "pause", paused });
+  }
+
+  setVolumeBalance(enabled: boolean): void {
+    this.volumeBalanceEnabled = enabled;
+    this.peakGuard?.port.postMessage({ type: "programEnabled", enabled });
+  }
+
+  setProgramLoudnessGainDb(gainDb: number | null, atSample?: number): void {
+    this.programLoudnessGainDb = gainDb === null || !Number.isFinite(gainDb) ? null : Math.min(0, gainDb);
+    const gain = this.programLoudnessGainDb === null ? 1 : Math.pow(10, this.programLoudnessGainDb / 20);
+    this.peakGuard?.port.postMessage({
+      type: atSample === undefined ? "programGain" : "scheduleProgramGain",
+      gain,
+      at: atSample === undefined ? undefined : Math.trunc(atSample),
+    });
+  }
+
+  /** Keep stereo/binaural loudness stable as layouts add more simultaneous buses. */
+  setLayoutLevelCompensation(enabled: boolean): void {
+    this.layoutLevelCompensationEnabled = enabled;
+    this.updateLayoutLevelCompensation();
+  }
+
+  get layoutLevelCompensation(): boolean {
+    return this.layoutLevelCompensationEnabled;
+  }
+
+  private updateLayoutLevelCompensation(): void {
+    const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(this.layout) : 1;
+    const now = this.ctx.currentTime;
+    for (const [mode, node] of this.modeLayoutGains) {
+      const value = mode === "multichannel" ? 1 : target;
+      node.gain.cancelScheduledValues(now);
+      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.linearRampToValueAtTime(value, now + 0.05);
+    }
   }
 
   /** Master output volume, 0..1 (applied perceptually: gain = v²). */
   setVolume(v: number): void {
-    if (this.master) this.master.gain.value = Math.max(0, Math.min(1, v)) ** 2;
+    this.volume = Math.max(0, Math.min(1, v));
+    const now = this.ctx.currentTime;
+    for (const node of this.modeVolumeGains.values()) {
+      node.gain.cancelScheduledValues(now);
+      node.gain.setValueAtTime(node.gain.value, now);
+      node.gain.linearRampToValueAtTime(this.volume ** 2, now + 0.02);
+    }
   }
 
   async close(): Promise<void> {

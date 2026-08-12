@@ -30,6 +30,8 @@ export interface HeadphoneCompensationProfile {
   /** Source revision and FIR derivation summary for average-dual-mono profiles. */
   derivation?: string;
   sampleRate: number;
+  /** Static attenuation derived from the published FIR's maximum frequency-response boost. */
+  preampDb: number;
   /** Final stereo-output FIR asset URLs. Left/right may intentionally differ. */
   leftFirUrl: string;
   rightFirUrl: string;
@@ -90,6 +92,7 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/7ae0f56d53074872b028649617a22bbb4232feb7/results/HypetheSonics/over-ear/Sennheiser%20HD%20820",
     derivation: "scripts/build-sennheiser-hd-820-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.4 dB preamp excluded",
     sampleRate: 48000,
+    preampDb: -8.3,
     leftFirUrl: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
     rightFirUrl: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
   },
@@ -106,6 +109,7 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/GRAS%20RA0045%20in-ear/Beyerdynamic%20Xelento%20%282nd%20Gen%29",
     derivation: "scripts/build-beyerdynamic-xelento-2nd-gen-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.3 dB preamp excluded",
     sampleRate: 48000,
+    preampDb: -6.3,
     leftFirUrl: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
     rightFirUrl: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
   },
@@ -122,6 +126,7 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/Bruel%20%26%20Kjaer%205128%20in-ear/Beyerdynamic%20Xelento",
     derivation: "scripts/build-beyerdynamic-xelento-wired-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.6 dB preamp excluded",
     sampleRate: 48000,
+    preampDb: -5.2,
     leftFirUrl: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
     rightFirUrl: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
   },
@@ -138,6 +143,7 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/Super%20Review/over-ear/Sony%20MDR-7506",
     derivation: "scripts/build-sony-mdr-7506-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -4.1 dB preamp excluded",
     sampleRate: 48000,
+    preampDb: -6.1,
     leftFirUrl: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
     rightFirUrl: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
   },
@@ -190,6 +196,7 @@ function validateCommonProfile(profile: HeadphoneCompensationProfile): string[] 
   if (!profile.source.trim()) errors.push("缺少测量来源");
   if (!profile.target.trim()) errors.push("缺少目标曲线说明");
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("采样率无效");
+  if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb 必须是有限非正值");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("必须提供左右 FIR 资产");
   return errors;
 }
@@ -266,7 +273,7 @@ function resampleLinear(taps: Float32Array, fromRate: number, toRate: number): F
     const fraction = pos - floor;
     const a = taps[floor] ?? 0;
     const b = taps[Math.min(taps.length - 1, floor + 1)] ?? 0;
-    output[i] = a + (b - a) * fraction;
+    output[i] = (a + (b - a) * fraction) * ratio;
   }
   return output;
 }

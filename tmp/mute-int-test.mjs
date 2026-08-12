@@ -48,6 +48,7 @@ class FakeAudioContext {
     this.destination = fakeNode();
     this.listener = {};
   }
+  createDelay() { const delay = fakeNode(); delay.delayTime = fakeParam(); return delay; }
   createGain() { return fakeNode(); }
   createBiquadFilter() { return fakeNode(); }
   createConvolver() { return fakeNode(); }
