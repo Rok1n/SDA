@@ -191,8 +191,11 @@ AutoEq 十段修正建议的 `-3.4 dB` FIR 前 preamp；FIR 后以等额 `+3.4 d
 SDA 的最终双耳输出标定。该平均 FIR 在 `250 Hz–2 kHz` 的 pink/program-weighted RMS
 平均为 `-4.5764 dB`，因此在 recovery 后加 profile 专属 `+4.58 dB` 静态 EQ 电平匹配，
 使人声和主体音乐频段在开启/关闭补偿时电平对齐；它是应用级电平匹配，不是 AutoEq 的
-个体耳朵校正。随后仍进入全局 `+6 dB` makeup 与 final safety compressor。高峰值或密集
-内容可能更早触发该 final safety compressor，故不保证获得全部 `+4.58 dB` 峰值增益。
+个体耳朵校正。其后以 `-7 dBFS` threshold、`12:1` ratio、`1 ms` attack、`40 ms`
+release 的 profile-local peak control 约束 FIR/trim 产生的峰值，再进入全局 `+6 dB`
+makeup 与 final safety compressor。局部控制避免校正峰值长时间驱动共享 final safety
+compressor 而压低整段人声/主体音乐；它不是 true-peak limiter。高峰值或密集内容仍可能
+触发 final safety compressor，故不保证获得全部 `+4.58 dB` 峰值增益。
 不同耳塞、固件或佩戴贴合。资产来源、校验和与转换方法见
 `apps/web/public/headphone-compensation/airpods-pro-2-anc-averaged/README.md`。
 

@@ -652,6 +652,11 @@ var BINAURAL_LFE_PEAK_KNEE_DB = 0;
 var BINAURAL_LFE_PEAK_RATIO = 8;
 var BINAURAL_LFE_PEAK_ATTACK_S = 3e-3;
 var BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
+var HEADPHONE_PROFILE_PEAK_THRESHOLD_DB = -7;
+var HEADPHONE_PROFILE_PEAK_KNEE_DB = 0;
+var HEADPHONE_PROFILE_PEAK_RATIO = 12;
+var HEADPHONE_PROFILE_PEAK_ATTACK_S = 1e-3;
+var HEADPHONE_PROFILE_PEAK_RELEASE_S = 0.04;
 function sizeToSpread(size) {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
 }
@@ -989,6 +994,12 @@ var SpatialRenderer = class {
       recovery.gain.value = Math.pow(10, -profile.preampDb / 20);
       const loudnessTrim = this.ctx.createGain();
       loudnessTrim.gain.value = Math.pow(10, profile.postFirLoudnessTrimDb / 20);
+      const profilePeak = this.ctx.createDynamicsCompressor();
+      profilePeak.threshold.value = HEADPHONE_PROFILE_PEAK_THRESHOLD_DB;
+      profilePeak.knee.value = HEADPHONE_PROFILE_PEAK_KNEE_DB;
+      profilePeak.ratio.value = HEADPHONE_PROFILE_PEAK_RATIO;
+      profilePeak.attack.value = HEADPHONE_PROFILE_PEAK_ATTACK_S;
+      profilePeak.release.value = HEADPHONE_PROFILE_PEAK_RELEASE_S;
       merger.connect(preamp);
       preamp.connect(earSplit);
       earSplit.connect(left, 0);
@@ -997,8 +1008,9 @@ var SpatialRenderer = class {
       right.connect(earMerge, 0, 1);
       earMerge.connect(recovery);
       recovery.connect(loudnessTrim);
-      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery, loudnessTrim);
-      finalBinaural = loudnessTrim;
+      loudnessTrim.connect(profilePeak);
+      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery, loudnessTrim, profilePeak);
+      finalBinaural = profilePeak;
     }
     finalBinaural.connect(makeup);
     makeup.connect(safety);

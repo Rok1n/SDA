@@ -12,7 +12,10 @@
 - Recovery: +3.4 dB after FIR restores SDA's final binaural output calibration.
 - Loudness trim: +4.58 dB after recovery matches the FIR's 250Hz-2kHz
   pink-weighted RMS level. It is an SDA static EQ level match, not AutoEq
-  correction data; high-peak content can still be reduced by final safety compression.
+  correction data.
+- Profile peak control: a short-release peak controller follows the trim before
+  SDA's global makeup. It contains FIR-created peaks locally so they do not hold
+  down the shared final safety compressor; it is not a true-peak limiter.
 
 The source result is an averaged response. SDA intentionally writes identical files
 and applies them through two independent final-output convolvers. This is not an
