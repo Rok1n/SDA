@@ -447,6 +447,8 @@ export class SpatialRenderer {
       const earMerge = this.ctx.createChannelMerger(2);
       const recovery = this.ctx.createGain();
       recovery.gain.value = Math.pow(10, -profile.preampDb / 20);
+      const loudnessTrim = this.ctx.createGain();
+      loudnessTrim.gain.value = Math.pow(10, profile.postFirLoudnessTrimDb / 20);
       merger.connect(preamp);
       preamp.connect(earSplit);
       earSplit.connect(left, 0);
@@ -454,8 +456,9 @@ export class SpatialRenderer {
       left.connect(earMerge, 0, 0);
       right.connect(earMerge, 0, 1);
       earMerge.connect(recovery);
-      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery);
-      finalBinaural = recovery;
+      recovery.connect(loudnessTrim);
+      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery, loudnessTrim);
+      finalBinaural = loudnessTrim;
     }
     finalBinaural.connect(makeup);
     makeup.connect(safety);

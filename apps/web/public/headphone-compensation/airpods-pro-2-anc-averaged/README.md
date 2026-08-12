@@ -9,8 +9,10 @@
 - Measurement provenance: crinacle 711 in-ear measurement as identified by AutoEq.
 - Target: AutoEq in-ear target used by the referenced output.
 - Preamp: -3.4 dB before FIR, matching AutoEq's ten-filter headroom recommendation.
-- Recovery: +3.4 dB after FIR restores SDA's final binaural output calibration; the
-  existing final safety compressor remains after this recovery stage.
+- Recovery: +3.4 dB after FIR restores SDA's final binaural output calibration.
+- Loudness trim: +2.0 dB after recovery matches the averaged FIR's subjective
+  broadband level; it is an SDA profile preference, not AutoEq correction data.
+  The existing final safety compressor remains after both stages.
 
 The source result is an averaged response. SDA intentionally writes identical files
 and applies them through two independent final-output convolvers. This is not an

@@ -568,7 +568,8 @@ var HEADPHONE_COMPENSATION_PROFILES = [
     sampleRate: 48e3,
     leftFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
     rightFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
-    preampDb: -3.4
+    preampDb: -3.4,
+    postFirLoudnessTrimDb: 2
   }
 ];
 var rawCache = /* @__PURE__ */ new Map();
@@ -585,6 +586,9 @@ function validateHeadphoneProfile(profile) {
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("\u91C7\u6837\u7387\u65E0\u6548");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
   if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb \u5FC5\u987B\u4E3A 0 \u6216\u8D1F\u503C");
+  if (!Number.isFinite(profile.postFirLoudnessTrimDb) || profile.postFirLoudnessTrimDb < 0 || profile.postFirLoudnessTrimDb > 3) {
+    errors.push("postFirLoudnessTrimDb \u5FC5\u987B\u5728 0..3dB");
+  }
   return errors;
 }
 function decodeRawFir(buffer, url) {
@@ -979,6 +983,8 @@ var SpatialRenderer = class {
       const earMerge = this.ctx.createChannelMerger(2);
       const recovery = this.ctx.createGain();
       recovery.gain.value = Math.pow(10, -profile.preampDb / 20);
+      const loudnessTrim = this.ctx.createGain();
+      loudnessTrim.gain.value = Math.pow(10, profile.postFirLoudnessTrimDb / 20);
       merger.connect(preamp);
       preamp.connect(earSplit);
       earSplit.connect(left, 0);
@@ -986,8 +992,9 @@ var SpatialRenderer = class {
       left.connect(earMerge, 0, 0);
       right.connect(earMerge, 0, 1);
       earMerge.connect(recovery);
-      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery);
-      finalBinaural = recovery;
+      recovery.connect(loudnessTrim);
+      this.postNodes.push(preamp, earSplit, left, right, earMerge, recovery, loudnessTrim);
+      finalBinaural = loudnessTrim;
     }
     finalBinaural.connect(makeup);
     makeup.connect(safety);

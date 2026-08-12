@@ -74,9 +74,11 @@ const rightInput = wiring.find((edge) => edge.to === "profile-conv-1" && edge.ou
 const leftOutput = wiring.find((edge) => edge.from === "profile-conv-0" && edge.to?.startsWith("merge2-") && edge.input === 0);
 const rightOutput = wiring.find((edge) => edge.from === "profile-conv-1" && edge.to === leftOutput?.to && edge.input === 1);
 const recovery = leftOutput && wiring.find((edge) => edge.from === leftOutput.to && edge.to?.startsWith("gain-"));
-const makeupAfterRecovery = recovery && wiring.find((edge) => edge.from === recovery.to && edge.to?.startsWith("gain-"));
+const loudnessTrim = recovery && wiring.find((edge) => edge.from === recovery.to && edge.to?.startsWith("gain-"));
+const makeup = loudnessTrim && wiring.find((edge) => edge.from === loudnessTrim.to && edge.to?.startsWith("gain-"));
+const safety = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to?.startsWith("compressor-"));
 check(!!leftInput && !!rightInput && !!leftOutput && !!rightOutput, "左右 FIR 保持通道身份，不交叉馈送");
-check(!!recovery && !!makeupAfterRecovery, "FIR merger 后先经 profile recovery，再进入全局 makeup");
+check(!!recovery && !!loudnessTrim && !!makeup && !!safety, "FIR 后依次经过 recovery、profile +2dB trim、全局 makeup 与最终 safety");
 renderer.setHeadphoneCompensation(null);
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(worklets === initialWorklets, "切回 bypass 不重建 worklet");

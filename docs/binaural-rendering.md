@@ -188,8 +188,11 @@ SDA 默认仍是 `无补偿`，即最终双耳 merger 到输出标定的 literal
 `AirPods Pro 2（ANC，平均测量近似）` 是唯一例外：它使用 AutoEq 基于 crinacle 711
 in-ear 的 AirPods Pro 2 **ANC mode** 测量所生成的 48 kHz minimum-phase FIR，并采用
 AutoEq 十段修正建议的 `-3.4 dB` FIR 前 preamp；FIR 后以等额 `+3.4 dB` recovery 恢复
-SDA 的最终双耳输出标定，随后仍进入全局 `+6 dB` makeup 与 final safety compressor。测量为单条平均响应，因此 SDA 将相同 FIR 接到
-两个独立的最终耳道卷积器；它**不是**左右独立补偿，也不保证适用于关闭 ANC、通透模式、
+SDA 的最终双耳输出标定。该平均 FIR 的 A 加权宽带损失约为 `-2.17 dB`，因此在
+recovery 后另加 profile 专属 `+2.0 dB` loudness trim，以匹配 SDA 的主观响度；它是
+应用级偏好，不是 AutoEq 的个体耳朵校正。随后仍进入全局 `+6 dB` makeup 与 final safety
+compressor。高峰值或密集内容可能更早触发该 final safety compressor，故不保证获得完整的
+`+2 dB` 峰值增益。
 不同耳塞、固件或佩戴贴合。资产来源、校验和与转换方法见
 `apps/web/public/headphone-compensation/airpods-pro-2-anc-averaged/README.md`。
 
