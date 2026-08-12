@@ -143,10 +143,14 @@ ceiling 以下严格 unity gain，峰值后的正常样本立即恢复，因此�
    所以不自动低通对象。空气吸收只能在输入包含明确物理距离元数据时再启用，避免
    将正常的沉浸声对象渲染得发闷。
 
-> 注意：harletty 解码出的事件流（OAMD）**不携带** binauralRenderMode —
-> 它只存在于 DAMF/dbmd。所以 SDA 的距离档位是全局固定值；网页 UI 目前固定
-> `near`，引擎保留三档 API，切换时只重混 IR，不中断音频。
-> 若将来接入 harletty CLI 的 .atmos.metadata 文件，可按对象应用真实模式。
+> 注意：harletty 解码出的事件流（OAMD）**不携带** `binauralRenderMode`。
+> SDA 仅在 BWF/RF64 的 `dbmd` chunk 中发现、且由 Dolby 公开 1.0.0.7 parser
+> 布局成功验证的 Supplemental Metadata 时，才按 program object ordinal 应用
+> `off` / `near` / `mid` / `far`。这是静态 program metadata，不随 sample event
+> 自动化；`not-indicated` 明确采用 Mid 默认策略。公开 Supplemental 段 parser
+> 不提供可绑定的 bed channel-position table，因此床层不会伪造模式。MKV、MP4、
+> raw EC-3/TrueHD 等没有该可读 DBMD 输入时保留默认 Near，并在 UI 显示不可读取，
+> 从不根据 OAMD 物理距离推断 Near/Mid/Far。
 
 参考：
 - Dolby 官方 dbmd 解析器: https://github.com/DolbyLaboratories/dbmd-atmos-parser

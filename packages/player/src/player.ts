@@ -21,10 +21,12 @@ import {
   unregisterLocalHeadphoneCompensation,
   type LocalHeadphoneCompensationData,
   type BinauralMode,
+  type BinauralEqBands,
   type OutputMode,
   type VirtualSpeaker,
 } from "@sda/renderer";
 import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent } from "@sda/core";
+import type { BinauralRenderMetadata, BinauralRenderMode } from "@sda/demux";
 import { placeholderVisualObject, visualObjectFromEvent } from "./control.js";
 
 export interface VisualObject {
@@ -33,10 +35,16 @@ export interface VisualObject {
   hasPos: boolean;
   size: [number, number, number];
   gainDb: number;
+  anchor: "room" | "screen" | "speaker";
+  distanceM: number | null;
+  distanceInfinite: boolean;
 }
 
 export interface PlayerCallbacks {
   onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
+  /** Program-level DBMD metadata. It never follows the sample event timeline. */
+  onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
+  onBinauralObjectModes?: (modes: ReadonlyMap<number, BinauralRenderMode>) => void;
   /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
   onDecodedFormat?: (info: { rawBedLabels: string[]; bedLabels: string[]; objectChannels: number }) => void;
   /** Throttled (~per frame batch) object-state snapshot for the 3D view. */
@@ -53,6 +61,9 @@ export type LayoutResolver = (
 ) => readonly VirtualSpeaker[] | null;
 
 const TARGET_AHEAD_SECONDS = 2;
+const STARTUP_AHEAD_SECONDS = 0.5;
+const MAX_IN_FLIGHT_BATCHES = 32;
+const MAX_IN_FLIGHT_SECONDS = 0.25;
 const CHUNK_SIZE = 1 << 20; // 1 MiB reads
 
 export class SdaPlayer {
@@ -72,7 +83,14 @@ export class SdaPlayer {
   private decodedFormatKey = "";
   private trackReported = false;
   private knownBedLabels: string[] = [];
-  private fedSamples = 0;
+  private acceptedEndSample = 0;
+  private startupOrigin: number | null = null;
+  private startupAcceptedEnd = 0;
+  private playbackStarted = false;
+  private nextBatchSequence = 1;
+  private inFlight = new Map<number, { sequence: number; frame: DecodedFrameData; samples: number }>();
+  private submittedFrames = new Set<DecodedFrameData>();
+  private batchResults = new Map<DecodedFrameData, { accepted: boolean; samples: number; reason?: string }>();
   /** 已解码但尚未喂入 worklet 的帧队列（背压：环形缓冲只有 ~5.5s，
    *  直接灌会被静默丢弃，必须按播放头消耗速度泵入）。 */
   private pcmQueue: DecodedFrameData[] = [];
@@ -81,6 +99,9 @@ export class SdaPlayer {
   private containerDurationSec: number | null = null;
   private sampleRate = 48000;
   private objects = new Map<number, VisualObject>();
+  /** DBMD is static program metadata and is intentionally never sample-scheduled. */
+  private binauralMetadata: BinauralRenderMetadata | null = null;
+  private objectBinauralModes = new Map<number, BinauralRenderMode>();
   /** Visual metadata waits for the same codec sample clock as audio gains. */
   private pendingVisualEvents: ObjectEvent[] = [];
   private visualTimer: ReturnType<typeof setInterval> | null = null;
@@ -95,6 +116,8 @@ export class SdaPlayer {
   } | null = null;
   /** 是否已按码流内容做过布局自动检测（每次播放只检测一次）。 */
   private layoutChecked = false;
+  /** 用户选择的最终双耳三段 EQ；renderer 重建后恢复。 */
+  private binauralEqBands: BinauralEqBands = { low: 0, mid: 0, high: 0 };
   /** 上次布局检测时是否已有动态对象（对象迟到的码流允许再检测一次）。 */
   private layoutHadDynamics = false;
   /** renderer 重建串行链：采样率对齐与布局自动检测可能在同一帧同时
@@ -114,6 +137,7 @@ export class SdaPlayer {
   private headphoneProfileId: string | null = null;
   /** 是否已按码流采样率校准过 AudioContext（每次播放只校准一次）。 */
   private rateChecked = false;
+  private lastUnderrunReport = 0;
   private disposed = false;
 
   constructor(cb: PlayerCallbacks = {}) {
@@ -121,6 +145,8 @@ export class SdaPlayer {
     this.worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), { type: "module" });
     this.ready = new Promise<void>((res) => (this.readyResolve = res));
     this.worker.onmessage = (e) => this.onWorkerMessage(e.data);
+    this.worker.onerror = (e) => this.handleWorkerFailure(`解码 worker 异常：${e.message || "未知错误"}`);
+    this.worker.onmessageerror = () => this.handleWorkerFailure("解码 worker 消息传输失败");
   }
 
   async init(mode: OutputMode, workletUrl: string | URL, layout?: readonly VirtualSpeaker[], binauralBaseUrl = "/hrtf", layoutResolver?: LayoutResolver): Promise<void> {
@@ -135,11 +161,16 @@ export class SdaPlayer {
     this.renderer = new SpatialRenderer(ctx, {
       mode,
       layout,
-      onConsumedTick: () => this.pumpPcm(),
+      onConsumedTick: (stats) => {
+        this.reportRendererHealth(stats);
+        this.pumpPcm();
+      },
+      onBatchResult: (result) => this.handleBatchResult(result),
     });
     await this.renderer.init(workletUrl);
     this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
-    void this.attachBinauralIrs(this.renderer);
+    this.renderer.setBinauralEqBands(this.binauralEqBands);
+    await this.attachBinauralIrs(this.renderer);
     this.worker.postMessage({ type: "init" });
     await this.ready;
   }
@@ -223,6 +254,16 @@ export class SdaPlayer {
     return this.headphoneProfileId;
   }
 
+  /** 设置最终双耳的低、中、高三段 EQ，不改变空间化或耳机补偿 FIR。 */
+  setBinauralEqBands(bands: BinauralEqBands): void {
+    this.binauralEqBands = bands;
+    this.renderer?.setBinauralEqBands(bands);
+  }
+
+  get binauralEq(): Readonly<BinauralEqBands> {
+    return this.binauralEqBands;
+  }
+
   /** 静音/取消静音一个对象（Omniphony 式 per-object mute 原语；
    * solo 由 UI 层用“mute 其他全部”组合实现）。对象尚未声明时只记录状态，
    * 声源声明到达/renderer 重建时自动应用。 */
@@ -280,6 +321,9 @@ export class SdaPlayer {
     try {
       const { mode, workletUrl, layout } = this.initArgs!;
       const old = this.renderer;
+      this.inFlight.clear();
+      this.submittedFrames.clear();
+      this.batchResults.clear();
       this.renderer = null; // pump/feed 暂停，帧在队列里堆积
       await old?.close();
       let ctx: AudioContext;
@@ -289,7 +333,15 @@ export class SdaPlayer {
         // 设备不接受该采样率：退回默认速率（仍会变速，但优于无声）
         ctx = new AudioContext({ latencyHint: "playback" });
       }
-      const r = new SpatialRenderer(ctx, { mode, layout, onConsumedTick: () => this.pumpPcm() });
+      const r = new SpatialRenderer(ctx, {
+        mode,
+        layout,
+        onConsumedTick: (stats) => {
+          this.reportRendererHealth(stats);
+          this.pumpPcm();
+        },
+        onBatchResult: (result) => this.handleBatchResult(result),
+      });
       await r.init(workletUrl);
       if (this.disposed) {
         await r.close();
@@ -297,6 +349,7 @@ export class SdaPlayer {
       }
       r.setVolume(this.lastVolume);
       r.setHeadphoneCompensation(this.headphoneCompensationProfileId);
+      r.setBinauralEqBands(this.binauralEqBands);
       r.setLfeMuted(this.lfeMuted);
       this.renderer = r;
       // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
@@ -304,12 +357,18 @@ export class SdaPlayer {
       if (this.pausedState) {
         r.setPaused(true);
         void r.ctx.suspend().catch(() => {});
+      } else {
+        await r.ctx.resume();
       }
       // 采样率对齐重建后：重新注入双耳 IR（原始数据有缓存，不会重复下载）
       void this.attachBinauralIrs(r);
       // 床层/对象源在新 worklet 里重新声明
       this.knownBedLabels = [];
-      for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);
+      for (const id of this.objectChannels.keys()) {
+        r.addSource(`obj:${id}`);
+        const mode = this.objectBinauralModes.get(id);
+        if (mode) r.setSourceBinauralMode(`obj:${id}`, mode);
+      }
       // 新 renderer 中恢复对象静音状态。
       for (const id of this.mutedObjects) r.setSourceMuted(`obj:${id}`, true);
     } finally {
@@ -318,7 +377,11 @@ export class SdaPlayer {
         // 新 worklet 的 consumed 从 0 起计，fedSamples 同步归零 —— 否则
         // fedBufferedSeconds 虚高 TARGET 秒，pump 停摆数秒（表现为开播卡死）。
         // 此刻才喂入的帧全部来自队列，播放内容无损。
-        this.fedSamples = 0;
+        this.acceptedEndSample = 0;
+        this.inFlight.clear();
+        this.submittedFrames.clear();
+        this.batchResults.clear();
+        this.resetStartupGate();
         this.pumpPcm();
       }
     }
@@ -345,7 +408,7 @@ export class SdaPlayer {
       this.worker.postMessage({ type: "push", chunk: value.buffer }, [value.buffer]);
       await this.pace();
     }
-    this.ended = true;
+    this.worker.postMessage({ type: "flush" });
   }
 
   /** Push raw bytes manually (Electron fs stream / network fetch). */
@@ -358,6 +421,11 @@ export class SdaPlayer {
     const copy = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
     this.worker.postMessage({ type: "push", chunk: copy }, [copy]);
     await this.pace();
+  }
+
+  /** Signal end of a manually pushed stream and drain remaining demuxed PCM. */
+  end(): void {
+    this.worker.postMessage({ type: "flush" });
   }
 
   stop(): void {
@@ -376,11 +444,17 @@ export class SdaPlayer {
     this.renderer?.setPaused(false);
     void this.renderer?.ctx.resume();
     this.objects.clear();
+    this.binauralMetadata = null;
+    this.objectBinauralModes.clear();
     this.pendingVisualEvents = [];
     this.objectChannels.clear();
     this.decodedFormatKey = "";
     this.emitVisual();
-    this.fedSamples = 0;
+    this.acceptedEndSample = 0;
+    this.inFlight.clear();
+    this.submittedFrames.clear();
+    this.batchResults.clear();
+    this.resetStartupGate();
     this.pcmQueue = [];
     this.queuedSamples = 0;
     this.containerDurationSec = null;
@@ -448,16 +522,85 @@ export class SdaPlayer {
   }
 
   durationSeconds(): number {
-    return this.containerDurationSec ?? this.fedSamples / this.sampleRate;
+    return this.containerDurationSec ?? Math.max(0, this.acceptedEndSample - (this.startupOrigin ?? 0)) / this.sampleRate;
   }
 
   // ---- internals ----
+
+  private resetStartupGate(): void {
+    this.startupOrigin = null;
+    this.startupAcceptedEnd = 0;
+    this.playbackStarted = false;
+  }
+
+  private startPlaybackIfReady(force = false): void {
+    if (this.playbackStarted || this.startupOrigin === null) return;
+    const required = Math.min(STARTUP_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? STARTUP_AHEAD_SECONDS) * this.sampleRate;
+    if (!force && this.startupAcceptedEnd - this.startupOrigin < required) return;
+    this.renderer?.startAt(this.startupOrigin);
+    this.playbackStarted = true;
+  }
+
+  private commitBatchResults(): void {
+    while (this.pcmQueue.length > 0) {
+      const frame = this.pcmQueue[0]!;
+      const result = this.batchResults.get(frame);
+      if (!result) break;
+      this.batchResults.delete(frame);
+      this.submittedFrames.delete(frame);
+      this.pcmQueue.shift();
+      const samples = frame.channels[0]?.length ?? 0;
+      this.queuedSamples -= samples;
+      if (!result.accepted) {
+        this.cb.onError?.(`PCM frame 被 worklet 跳过：${result.reason ?? "unknown"}`);
+        continue;
+      }
+      const end = frame.samplePos + result.samples;
+      this.acceptedEndSample = Math.max(this.acceptedEndSample, end);
+      if (!this.playbackStarted) {
+        this.startupOrigin ??= frame.samplePos;
+        this.startupAcceptedEnd = Math.max(this.startupAcceptedEnd, end);
+      }
+    }
+    this.startPlaybackIfReady();
+  }
+
+  private handleBatchResult(result: { sequence: number; accepted: boolean; samples: number; reason?: string }): void {
+    const pending = this.inFlight.get(result.sequence);
+    if (!pending) return;
+    this.inFlight.delete(result.sequence);
+    if (!result.accepted && result.reason === "ring-full") {
+      this.submittedFrames.delete(pending.frame);
+    } else {
+      this.batchResults.set(pending.frame, result);
+    }
+    this.commitBatchResults();
+    this.pumpPcm();
+  }
+
+  private targetAheadSeconds(): number {
+    return Math.min(TARGET_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? TARGET_AHEAD_SECONDS);
+  }
+
+  private reportRendererHealth(stats: { underrunSamples: number; rejectedBatches: number; rejectedSources: number }): void {
+    if (stats.underrunSamples === 0 && stats.rejectedBatches === 0 && stats.rejectedSources === 0) return;
+    const now = performance.now();
+    if (now - this.lastUnderrunReport < 1000) return;
+    this.lastUnderrunReport = now;
+    const details = [
+      stats.underrunSamples ? `断供 ${stats.underrunSamples} samples` : "",
+      stats.rejectedBatches ? `拒绝 ${stats.rejectedBatches} PCM frame` : "",
+      stats.rejectedSources ? `拒绝 ${stats.rejectedSources} source` : "",
+      `缓冲 ${Math.max(0, this.fedBufferedSeconds()).toFixed(2)}s`,
+    ].filter(Boolean).join("，");
+    this.cb.onError?.(`音频实时供给不足：${details}`);
+  }
 
   private async pace(): Promise<void> {
     // renderer 为 null（重建中）也要继续节流：queuedSamples 仍在累计，
     // 否则整个文件会在重建窗口内灌进 worker 解码（帧随即因 renderer 缺席堆积，
     // 缓冲爆炸）。disposed 时退出避免死等。
-    while (!this.disposed && this.aheadSeconds() > TARGET_AHEAD_SECONDS) {
+    while (!this.disposed && this.aheadSeconds() > this.targetAheadSeconds()) {
       await new Promise((r) => setTimeout(r, 50));
     }
   }
@@ -465,6 +608,15 @@ export class SdaPlayer {
   private aheadSeconds(): number {
     // 读取节流看的是"已解码但未播出"总量 = 队列里的 + 环形缓冲里的。
     return this.queuedSamples / this.sampleRate + this.fedBufferedSeconds();
+  }
+
+  private handleWorkerFailure(message: string): void {
+    if (this.disposed) return;
+    this.cb.onError?.(message);
+    this.ended = true;
+    this.pcmQueue = [];
+    this.queuedSamples = 0;
+    this.checkEnded();
   }
 
   private onWorkerMessage(msg: { type: string; [k: string]: unknown }): void {
@@ -482,8 +634,19 @@ export class SdaPlayer {
         this.cb.onTrack?.(track);
         break;
       }
+      case "binaural-metadata": {
+        this.binauralMetadata = msg.metadata as BinauralRenderMetadata;
+        this.objectBinauralModes.clear();
+        this.cb.onBinauralMetadata?.(this.binauralMetadata);
+        break;
+      }
       case "frame":
         this.handleFrame(msg.frame as DecodedFrameData);
+        break;
+      case "flushed":
+        this.ended = true;
+        this.startPlaybackIfReady(true);
+        this.checkEnded();
         break;
       case "error":
         this.cb.onError?.(String(msg.message));
@@ -519,15 +682,30 @@ export class SdaPlayer {
     this.checkEnded();
   }
 
+  private submittedEndSample(): number {
+    let end = this.acceptedEndSample;
+    for (const pending of this.inFlight.values()) end = Math.max(end, pending.frame.samplePos + pending.samples);
+    return end;
+  }
+
+  private submittedBufferedSeconds(): number {
+    const origin = this.startupOrigin ?? this.pcmQueue[0]?.samplePos ?? 0;
+    const cursor = this.playbackStarted ? (this.renderer?.consumedSamples ?? origin) : origin;
+    return Math.max(0, this.submittedEndSample() - cursor) / this.sampleRate;
+  }
+
   /** 把队列里的帧泵入 worklet 环形缓冲，保持喂入量领先播放头 ~TARGET 秒。 */
   private pumpPcm(): void {
     if (!this.renderer || this.recreatePending > 0) return;
-    while (this.pcmQueue.length > 0 && this.fedBufferedSeconds() <= TARGET_AHEAD_SECONDS) {
-      const frame = this.pcmQueue.shift()!;
-      // 注意：必须先取帧长再 feed —— feed 会转移（detach）ArrayBuffer，
-      // 转移后主线程读到的 length 是 0，fedSamples 永远计不上。
+    let outstandingSamples = [...this.inFlight.values()].reduce((sum, pending) => sum + pending.samples, 0);
+    while (
+      this.inFlight.size < MAX_IN_FLIGHT_BATCHES &&
+      outstandingSamples < MAX_IN_FLIGHT_SECONDS * this.sampleRate &&
+      this.submittedBufferedSeconds() <= this.targetAheadSeconds()
+    ) {
+      const frame = this.pcmQueue.find((candidate) => !this.submittedFrames.has(candidate));
+      if (!frame) break;
       const frameSamples = frame.channels[0]?.length ?? 0;
-      this.queuedSamples -= frameSamples;
 
       // (Re)declare bed sources when labels change.
       if (frame.labels.join() !== this.knownBedLabels.join()) {
@@ -569,10 +747,15 @@ export class SdaPlayer {
         // change or a presentation switch.
         this.objectChannels.clear();
         const declaredIds = new Set<number>();
-        for (const decl of declarations) {
+        for (const [ordinal, decl] of declarations.entries()) {
           declaredIds.add(decl.id);
           this.objectChannels.set(decl.id, decl.channel);
           this.renderer.addSource(`obj:${decl.id}`);
+          const mode = this.binauralMetadata?.available ? this.binauralMetadata.objectModes[ordinal] : undefined;
+          if (mode) {
+            this.objectBinauralModes.set(decl.id, mode);
+            this.renderer.setSourceBinauralMode(`obj:${decl.id}`, mode);
+          }
           // 声明可能是整组重放；addSource 对已有 id 幂等，此处只同步独立
           // mute 包络，不触碰该源已经排队/生效的位置、增益等元数据。
           this.renderer.setSourceMuted(`obj:${decl.id}`, this.mutedObjects.has(decl.id));
@@ -589,6 +772,7 @@ export class SdaPlayer {
             visualChanged = true;
           }
         }
+        this.cb.onBinauralObjectModes?.(this.objectBinauralModes);
       }
       const channelToObject = new Map<number, number>();
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
@@ -625,14 +809,17 @@ export class SdaPlayer {
       // consume a partial frame and permanently desynchronise late objects.
       const entries = frame.channels.map((samples, ch) => {
         const objectId = channelToObject.get(ch);
-        return {
-          id: objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`,
-          samples,
-        };
+        const id = objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`;
+        if (objectId === undefined) this.renderer!.addSource(id, { bedLabel: frame.labels[ch] ?? `Bed_${ch}` });
+        return { id, samples };
       });
-      this.renderer.feedBatch(frame.samplePos, entries);
+      const sequence = this.nextBatchSequence++;
+      const pending = { sequence, frame, samples: frameSamples };
+      this.inFlight.set(sequence, pending);
+      this.submittedFrames.add(frame);
+      outstandingSamples += frameSamples;
+      this.renderer.feedBatch(sequence, frame.samplePos, entries);
 
-      this.fedSamples += frameSamples;
       if (visualChanged) this.emitVisual();
     }
     this.checkEnded();
@@ -640,8 +827,9 @@ export class SdaPlayer {
 
   /** 已喂入 worklet 但尚未播出的秒数（真实占着环形缓冲的部分）。 */
   private fedBufferedSeconds(): number {
-    if (!this.renderer) return 0;
-    return this.fedSamples / this.sampleRate - this.renderer.consumedSeconds();
+    if (!this.renderer || this.startupOrigin === null) return 0;
+    const cursor = this.playbackStarted ? this.renderer.consumedSamples : this.startupOrigin;
+    return Math.max(0, this.acceptedEndSample - cursor) / this.sampleRate;
   }
 
   private checkEnded(): void {

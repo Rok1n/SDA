@@ -216,16 +216,33 @@ fn extract_events(oamd: &ObjectAudioMetadataPayload, base_sample_pos: u64) -> Ex
             Some(raw) if raw.len() >= 3 => (true, [raw[0], raw[1], raw[2]], render.object_size),
             _ => (false, [0.0; 3], [0.0; 3]),
         };
+        let (distance_m, distance_infinite) = match render.distance_factor {
+            Some(distance) if distance.is_infinite() => (None, true),
+            Some(distance) => (Some(distance), false),
+            None => (None, false),
+        };
+        let anchor = if object_data.b_object_in_bed_or_isf {
+            "speaker"
+        } else if render.b_object_use_screen_ref {
+            "screen"
+        } else {
+            "room"
+        }.to_string();
 
         objects.push((id, i));
         events.push(ObjectEvent {
-            id,
-            sample_pos,
-            has_pos,
-            pos,
-            gain_db: object_data.object_basic_info.object_gain,
-            size,
-            ramp_duration,
+          id,
+          sample_pos,
+          has_pos,
+          pos,
+          gain_db: object_data.object_basic_info.object_gain,
+          size,
+          anchor,
+          distance_m,
+          distance_infinite,
+          screen_factor: render.b_object_use_screen_ref.then_some(render.screen_factor),
+          depth_factor: render.b_object_use_screen_ref.then_some(render.depth_factor),
+          ramp_duration,
         });
     }
 

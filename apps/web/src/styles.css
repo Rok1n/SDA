@@ -196,6 +196,201 @@ h1 {
   gap: 8px;
 }
 
+.settings-toggle,
+.settings-close {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+
+.settings-toggle {
+  width: 30px;
+  height: 30px;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.settings-layer {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  background: color-mix(in srgb, #000 28%, transparent);
+}
+
+.settings-panel {
+  position: absolute;
+  top: 54px;
+  right: 16px;
+  width: min(320px, calc(100vw - 32px));
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.3);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-close {
+  width: 26px;
+  height: 26px;
+  font-size: 21px;
+  line-height: 1;
+}
+
+.settings-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-group legend {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--subtle);
+}
+
+.settings-description,
+.settings-disabled {
+  margin: 5px 0 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--dim);
+}
+
+.settings-switch,
+.soft-sound-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.settings-switch input {
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  accent-color: #4a7fd4;
+}
+
+.settings-subgroup {
+  margin-top: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-subgroup[aria-disabled="true"] {
+  opacity: 0.45;
+}
+
+.settings-label {
+  display: block;
+  padding: 0 8px 3px;
+  color: var(--subtle);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.soft-sound-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: #4a7fd4;
+}
+
+.soft-sound-control output {
+  width: 38px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.eq-band-control {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.eq-band-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.eq-band-label small {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.eq-band-control input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: #4a7fd4;
+}
+
+.eq-band-control output {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.eq-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.eq-option:hover {
+  background: var(--btn-hover);
+}
+
+.eq-option input {
+  margin: 0;
+  accent-color: #4a7fd4;
+}
+
+.settings-group:disabled .eq-option {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.settings-group:disabled .eq-option:hover {
+  background: transparent;
+}
+
+.eq-option:has(input:focus-visible),
+.eq-band-control:has(input:focus-visible),
+.settings-switch:has(input:focus-visible),
+.soft-sound-control:has(input:focus-visible),
+.settings-close:focus-visible,
+.settings-toggle:focus-visible {
+  outline: 2px solid #4a7fd4;
+  outline-offset: 2px;
+}
+
 button,
 select {
   background: var(--btn-bg);
@@ -314,6 +509,10 @@ aside {
 .objects li.obj-muted > b,
 .objects li.obj-muted {
   color: var(--dim);
+}
+
+.obj-metadata {
+  color: var(--subtle);
 }
 
 /* 对象级 mute/solo（Omniphony Studio 式） */

@@ -6,6 +6,7 @@
  * those stale samples later and drift away from the other object channels.
  */
 
+const WORKLET_BUILD = "startup-window-v2";
 const MAX_SOURCES = 64;
 const RING_SIZE = 1 << 18; // 262144 samples ≈ 5.5 s @48k per source
 const RING_MASK = RING_SIZE - 1;
@@ -20,7 +21,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     this.lastTick = 0;
     this.epoch = Number.isSafeInteger(opts.epoch) ? opts.epoch : 0;
     this.timelineStarted = false;
+    this.timelineOrigin = null;
     this.sources = new Map();
+    this.underrunSamples = 0;
+    this.rejectedBatches = 0;
+    this.rejectedSources = 0;
+    this.port.postMessage({ type: "ready", ringSize: RING_SIZE, maxSources: MAX_SOURCES, build: WORKLET_BUILD });
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
 
@@ -43,6 +49,10 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       scheduledGains: [],
       lpA: 1,
       lpY: 0,
+      binauralBank: 1,
+      availabilityGain: 0,
+      availabilityTarget: 0,
+      hasReceivedPcm: false,
     };
   }
 
@@ -90,24 +100,40 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     }
   }
 
-  feedBatch(start, entries) {
-    if (!Number.isSafeInteger(start) || entries.length === 0) return;
+  rejectBatch(sequence, reason) {
+    this.rejectedBatches++;
+    this.port.postMessage({ type: "batchRejected", sequence, reason });
+  }
+
+  feedBatch(start, entries, sequence) {
+    if (!Number.isSafeInteger(start) || entries.length === 0) {
+      this.rejectBatch(sequence, "invalid");
+      return;
+    }
     const sources = entries.map((entry) => this.sources.get(entry.id));
     // Port messages are FIFO, so adds normally precede the batch. Never accept
     // only part of a frame if a declaration is missing: partial writes would
     // destroy inter-object phase and time alignment.
-    if (sources.some((source) => !source)) return;
+    if (sources.some((source) => !source)) {
+      this.rejectBatch(sequence, "missing-source");
+      return;
+    }
 
     const inputLength = entries.reduce(
       (length, entry) => Math.min(length, entry.samples.length),
       Number.POSITIVE_INFINITY,
     );
-    const skipped = Math.min(inputLength, Math.max(0, this.consumed - start));
+    const skipped = this.timelineStarted
+      ? Math.min(inputLength, Math.max(0, this.consumed - start))
+      : 0;
     const writeStart = start + skipped;
-    const ahead = Math.max(0, writeStart - this.consumed);
-    const count = Math.max(0, Math.min(inputLength - skipped, RING_SIZE - ahead));
-    if (count === 0) return;
-    this.timelineStarted = true;
+    if (!this.timelineStarted && !Number.isFinite(this.timelineOrigin)) this.timelineOrigin = writeStart;
+    const ahead = this.timelineStarted ? Math.max(0, writeStart - this.consumed) : writeStart - this.timelineOrigin;
+    const count = inputLength - skipped;
+    if (count <= 0 || ahead < 0 || ahead + count > RING_SIZE) {
+      this.rejectBatch(sequence, count <= 0 ? "late" : "ring-full");
+      return;
+    }
 
     for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
       const source = sources[entryIndex];
@@ -129,13 +155,18 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       source.validEnd = Number.isFinite(source.validEnd)
         ? Math.max(source.validEnd, writeStart + count)
         : writeStart + count;
+      source.hasReceivedPcm = true;
     }
+    this.port.postMessage({ type: "batchAck", sequence, samples: count });
   }
 
   onMessage(msg) {
     switch (msg.type) {
       case "add":
-        if (this.sources.size < MAX_SOURCES && !this.sources.has(msg.id)) {
+        if (this.sources.size >= MAX_SOURCES && !this.sources.has(msg.id)) {
+          this.rejectedSources++;
+          this.port.postMessage({ type: "sourceRejected", id: msg.id, maxSources: MAX_SOURCES });
+        } else if (!this.sources.has(msg.id)) {
           this.sources.set(msg.id, this.createSource());
         }
         break;
@@ -146,11 +177,11 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         const src = this.sources.get(msg.id);
         if (!src) break;
         const start = Number.isFinite(src.validEnd) ? src.validEnd : this.consumed;
-        this.feedBatch(start, [{ id: msg.id, samples: msg.samples }]);
+        this.feedBatch(start, [{ id: msg.id, samples: msg.samples }], -1);
         break;
       }
       case "feedBatch":
-        this.feedBatch(msg.start, msg.entries || []);
+        this.feedBatch(msg.start, msg.entries || [], msg.sequence);
         break;
       case "gains": {
         const src = this.sources.get(msg.id);
@@ -175,18 +206,38 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         src.muteRampLeft = ramp;
         break;
       }
+      case "binauralMode": {
+        const src = this.sources.get(msg.id);
+        if (src) src.binauralBank = Math.max(0, Math.min(3, msg.bank | 0));
+        break;
+      }
+      case "start":
+        if (!this.timelineStarted && Number.isSafeInteger(msg.origin)) {
+          this.consumed = msg.origin;
+          this.lastTick = msg.origin;
+          this.timelineOrigin = msg.origin;
+          this.timelineStarted = true;
+        }
+        break;
       case "reset":
         for (const src of this.sources.values()) {
           src.validStart = Number.POSITIVE_INFINITY;
           src.validEnd = Number.NEGATIVE_INFINITY;
           src.scheduledGains.length = 0;
           src.lpY = 0;
+          src.availabilityGain = 0;
+          src.availabilityTarget = 0;
+          src.hasReceivedPcm = false;
         }
         this.paused = false;
         this.consumed = 0;
         this.lastTick = 0;
         this.epoch = Number.isSafeInteger(msg.epoch) ? msg.epoch : this.epoch + 1;
         this.timelineStarted = false;
+        this.timelineOrigin = null;
+        this.underrunSamples = 0;
+        this.rejectedBatches = 0;
+        this.rejectedSources = 0;
         this.port.postMessage({ type: "resetAck", epoch: this.epoch });
         break;
       case "pause":
@@ -203,14 +254,16 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs, outputs) {
-    const buses = outputs[0];
-    const blockSize = buses[0] ? buses[0].length : 128;
-    for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) {
-      buses[bus].fill(0);
+    const busesByBank = outputs;
+    const primaryBuses = busesByBank[0] || [];
+    const blockSize = primaryBuses[0] ? primaryBuses[0].length : 128;
+    for (const buses of busesByBank) {
+      for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) buses[bus].fill(0);
     }
     if (this.paused || !this.timelineStarted) return true;
 
     for (const src of this.sources.values()) {
+      const buses = busesByBank[src.binauralBank] || primaryBuses;
       let gain = src.gain;
       let muteGain = src.muteGain;
       let lpY = src.lpY;
@@ -225,9 +278,17 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         gain = src.gain;
 
         let sample = 0;
-        if (samplePosition >= src.validStart && samplePosition < src.validEnd) {
+        const available = samplePosition >= src.validStart && samplePosition < src.validEnd;
+        src.availabilityTarget = available ? 1 : 0;
+        if (available) {
           sample = src.ring[samplePosition & RING_MASK];
+        } else if (src.hasReceivedPcm && samplePosition >= src.validStart) {
+          this.underrunSamples++;
         }
+        // A 32-sample envelope avoids an instantaneous non-zero ↔ zero step when
+        // decoder/main-thread delivery briefly misses a render quantum.
+        src.availabilityGain += (src.availabilityTarget - src.availabilityGain) / 32;
+        sample *= src.availabilityGain;
         if (src.lpA < 0.999) {
           lpY += src.lpA * (sample - lpY);
           sample = lpY;
@@ -258,7 +319,17 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     const tickEvery = (typeof sampleRate === "number" ? sampleRate : 48000) >> 3;
     if (this.consumed - this.lastTick >= tickEvery) {
       this.lastTick = this.consumed;
-      this.port.postMessage({ type: "tick", consumed: this.consumed, epoch: this.epoch });
+      this.port.postMessage({
+        type: "tick",
+        consumed: this.consumed,
+        epoch: this.epoch,
+        underrunSamples: this.underrunSamples,
+        rejectedBatches: this.rejectedBatches,
+        rejectedSources: this.rejectedSources,
+      });
+      this.underrunSamples = 0;
+      this.rejectedBatches = 0;
+      this.rejectedSources = 0;
     }
     return true;
   }

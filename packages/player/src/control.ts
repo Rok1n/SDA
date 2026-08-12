@@ -4,7 +4,7 @@ import type { ObjectEvent } from "@sda/core";
 import type { VisualObject } from "./player.js";
 
 export function placeholderVisualObject(id: number): VisualObject {
-  return { id, pos: [0, 0, 0], hasPos: false, size: [0, 0, 0], gainDb: 0 };
+  return { id, pos: [0, 0, 0], hasPos: false, size: [0, 0, 0], gainDb: 0, anchor: "room", distanceM: null, distanceInfinite: false };
 }
 
 export function visualObjectFromEvent(event: ObjectEvent): VisualObject {
@@ -14,6 +14,9 @@ export function visualObjectFromEvent(event: ObjectEvent): VisualObject {
     hasPos: event.hasPos,
     size: event.size,
     gainDb: event.gainDb,
+    anchor: event.anchor,
+    distanceM: event.distanceM,
+    distanceInfinite: event.distanceInfinite,
   };
 }
 

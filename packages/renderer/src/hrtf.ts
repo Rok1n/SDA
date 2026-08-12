@@ -170,8 +170,8 @@ function argmaxAbs(x: Float32Array, limit: number): number {
  * 两者起点对齐到各自直达声峰值（HRIR 通常无预延迟，BRIR 含直达+房间），
  * 再重采样到 ctx 速率。
  */
-export function mixIrForMode(ctx: AudioContext, set: BinauralIrSet, raw: RawBinauralIr, mode: BinauralMode): AudioBuffer {
-  const w = BINAURAL_MODES[mode].wet;
+export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinauralIr, wet: number): AudioBuffer {
+  const w = Math.max(0, Math.min(1, wet));
   const rate = ctx.sampleRate;
 
   let dryL = raw.dry.subarray(0, raw.dryLen) as Float32Array;
@@ -223,8 +223,11 @@ export function mixIrForMode(ctx: AudioContext, set: BinauralIrSet, raw: RawBina
   return buf;
 }
 
+export function mixIrForMode(ctx: AudioContext, set: BinauralIrSet, raw: RawBinauralIr, mode: BinauralMode): AudioBuffer {
+  return mixIrForWet(ctx, set, raw, BINAURAL_MODES[mode].wet);
+}
+
 /**
- * 为整个虚拟音箱布局构建每总线一条立体声 IR（按最近测量方向匹配）。
  * LFE 不返回（低频无方向性，由渲染器直接分送双耳）。
  */
 export function buildBusIrs(

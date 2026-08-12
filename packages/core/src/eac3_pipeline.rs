@@ -360,6 +360,16 @@ fn extract_events(
                     .size
                     .map(|s| [s[0] as f64, s[1] as f64, s[2] as f64])
                     .unwrap_or([0.0; 3]);
+                let (distance_m, distance_infinite) = match block.distance {
+                    Some(distance) if distance.is_infinite() => (None, true),
+                    Some(distance) => (Some(distance as f64), false),
+                    None => (None, false),
+                };
+                let anchor = match block.anchor {
+                    eac3::ObjectAnchor::Room => "room",
+                    eac3::ObjectAnchor::Screen => "screen",
+                    eac3::ObjectAnchor::Speaker => "speaker",
+                }.to_string();
 
                 events.push(ObjectEvent {
                     id,
@@ -368,6 +378,11 @@ fn extract_events(
                     pos,
                     gain_db: object_gain_db(block.gain, block.inactive),
                     size,
+                    anchor,
+                    distance_m,
+                    distance_infinite,
+                    screen_factor: block.screen_factor.map(f64::from),
+                    depth_factor: block.depth_factor.map(f64::from),
                     ramp_duration,
                 });
             }

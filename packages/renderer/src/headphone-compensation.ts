@@ -90,8 +90,8 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/7ae0f56d53074872b028649617a22bbb4232feb7/results/HypetheSonics/over-ear/Sennheiser%20HD%20820",
     derivation: "scripts/build-sennheiser-hd-820-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.4 dB preamp excluded",
     sampleRate: 48000,
-    leftFirUrl: "/headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
-    rightFirUrl: "/headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
+    leftFirUrl: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
+    rightFirUrl: "headphone-compensation/sennheiser-hd-820-average-autoeq/average.f32",
   },
   {
     id: "beyerdynamic-xelento-2nd-gen-average-autoeq",
@@ -106,8 +106,8 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/GRAS%20RA0045%20in-ear/Beyerdynamic%20Xelento%20%282nd%20Gen%29",
     derivation: "scripts/build-beyerdynamic-xelento-2nd-gen-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.3 dB preamp excluded",
     sampleRate: 48000,
-    leftFirUrl: "/headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
-    rightFirUrl: "/headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
+    leftFirUrl: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
+    rightFirUrl: "headphone-compensation/beyerdynamic-xelento-2nd-gen-average-autoeq/average.f32",
   },
   {
     id: "beyerdynamic-xelento-wired-average-autoeq",
@@ -122,8 +122,8 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/HypetheSonics/Bruel%20%26%20Kjaer%205128%20in-ear/Beyerdynamic%20Xelento",
     derivation: "scripts/build-beyerdynamic-xelento-wired-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -6.6 dB preamp excluded",
     sampleRate: 48000,
-    leftFirUrl: "/headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
-    rightFirUrl: "/headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
+    leftFirUrl: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
+    rightFirUrl: "headphone-compensation/beyerdynamic-xelento-wired-average-autoeq/average.f32",
   },
   {
     id: "sony-mdr-7506-average-autoeq",
@@ -138,8 +138,8 @@ export const HEADPHONE_COMPENSATION_PROFILES: readonly HeadphoneCompensationProf
     averageMeasurement: "https://github.com/jaakkopasanen/AutoEq/tree/master/results/Super%20Review/over-ear/Sony%20MDR-7506",
     derivation: "scripts/build-sony-mdr-7506-average-profile.mjs; published 10-band PEQ synthesized at 48 kHz, 8192 taps, 1 kHz normalized; source -4.1 dB preamp excluded",
     sampleRate: 48000,
-    leftFirUrl: "/headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
-    rightFirUrl: "/headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
+    leftFirUrl: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
+    rightFirUrl: "headphone-compensation/sony-mdr-7506-average-autoeq/average.f32",
   },
 ];
 

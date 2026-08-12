@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SdaPlayer, nextSoloMuteSet, type VisualObject } from "@sda/player";
+import type { BinauralRenderMetadata, BinauralRenderMode } from "@sda/demux";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
@@ -8,6 +9,7 @@ import {
   detectLayoutId,
   type LayoutId,
   type OutputMode,
+  type BinauralEqBands,
 } from "@sda/renderer";
 // @ts-ignore — plain JS asset served by Vite
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
@@ -26,6 +28,8 @@ export function App() {
   const [detectedLayout, setDetectedLayout] = useState<LayoutId | null>(null);
   const [theme, setTheme] = useState<Theme>("dark");
   const [track, setTrack] = useState<TrackInfo | null>(null);
+  const [binauralMetadata, setBinauralMetadata] = useState<BinauralRenderMetadata | null>(null);
+  const [objectBinauralModes, setObjectBinauralModes] = useState<ReadonlyMap<number, BinauralRenderMode>>(new Map());
   const [objects, setObjects] = useState<VisualObject[]>([]);
   /** 被静音的对象 id（Omniphony Studio 语义：mute 独立切换；
    *  solo = mute 其他全部对象，独奏态由"只剩一个未静音"导出）。 */
@@ -40,6 +44,14 @@ export function App() {
    *  playerRef 是空的、pause() 会丢 —— play() 建好 player 后按此补发。 */
   const pausedRef = useRef(false);
   const [volume, setVolume] = useState(1);
+  const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
+    const readBand = (band: keyof BinauralEqBands) => {
+      const value = Number(localStorage.getItem(`sda-binaural-eq-${band}-db`));
+      return Number.isFinite(value) ? Math.max(-12, Math.min(12, value)) : 0;
+    };
+    return { low: readBand("low"), mid: readBand("mid"), high: readBand("high") };
+  });
+  const [settingsOpen, setSettingsOpen] = useState(false);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
   const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
   const [headphoneProfiles, setHeadphoneProfiles] = useState(() => availableHeadphoneCompensationProfiles());
@@ -65,6 +77,8 @@ export function App() {
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
         },
         onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels }),
+        onBinauralMetadata: setBinauralMetadata,
+        onBinauralObjectModes: (modes) => setObjectBinauralModes(new Map(modes)),
         onVisualState: (objs, t) => {
           objectsRef.current = objs;
           setObjects(objs);
@@ -87,10 +101,11 @@ export function App() {
         await player.init(m, workletUrl, LAYOUTS[lid]);
       }
       playerRef.current = player;
+      player.setBinauralEqBands(binauralEqBands);
       setPlayerReady(player);
       return player;
     },
-    [],
+    [binauralEqBands],
   );
 
   useEffect(
@@ -204,6 +219,8 @@ export function App() {
     async (file: File) => {
       setErrors([]);
       setTrack(null);
+      setBinauralMetadata(null);
+      setObjectBinauralModes(new Map());
       objectsRef.current = [];
       setObjects([]);
       setPosition(0);
@@ -240,13 +257,6 @@ export function App() {
     },
     [play],
   );
-
-  /** Demo: harletty 的 1.5s JOC 测试矢量 ×20 拼接（E-AC-3 按同步帧
-   *  自同步，拼接即合法长流）→ 30s 15 对象 Atmos 演示。 */
-  const playDemo = useCallback(async () => {
-    const blob = await (await fetch(assetUrl("demo-joc.ec3"))).blob();
-    await play(new File([blob], "demo-joc.ec3"));
-  }, [play]);
 
   /** 播放中 → 暂停；暂停中 → 继续；已播完 → 重播（macOS 播放键行为）。
    *  UI 状态立即切换（乐观更新），不等 suspend/resume 的 promise —
@@ -285,6 +295,16 @@ export function App() {
     setVolume(v);
     playerRef.current?.setVolume(v);
   }, []);
+
+  const changeBinauralEqBand = useCallback((band: keyof BinauralEqBands, db: number) => {
+    const next = { ...binauralEqBands, [band]: Math.max(-12, Math.min(12, db)) };
+    setBinauralEqBands(next);
+    localStorage.setItem(`sda-binaural-eq-${band}-db`, String(next[band]));
+    localStorage.removeItem("sda-headphone-accommodations-enabled");
+    localStorage.removeItem("sda-headphone-accommodations-tone");
+    localStorage.removeItem("sda-headphone-accommodations-soft-sound-db");
+    playerRef.current?.setBinauralEqBands(next);
+  }, [binauralEqBands]);
 
   const changeHeadphoneCompensation = useCallback((id: string) => {
     const next = id || null;
@@ -363,9 +383,49 @@ export function App() {
           <button disabled={!playing} onClick={() => playerRef.current?.stop()}>
             停止
           </button>
-          <button onClick={() => void playDemo()}>演示流 (JOC)</button>
+          <button className="settings-toggle" onClick={() => setSettingsOpen((open) => !open)} title="系统设置" aria-expanded={settingsOpen}>
+            ⚙
+          </button>
         </div>
       </header>
+
+      {settingsOpen && (
+        <div className="settings-layer" onMouseDown={() => setSettingsOpen(false)}>
+          <section className="settings-panel" aria-label="系统设置" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="settings-header">
+              <h2>系统设置</h2>
+              <button className="settings-close" onClick={() => setSettingsOpen(false)} title="关闭系统设置" aria-label="关闭系统设置">
+                ×
+              </button>
+            </div>
+            <fieldset className="settings-group" disabled={mode !== "binaural"}>
+              <legend>耳机 EQ</legend>
+              <p className="settings-description">最终双耳输出的三段连续调整，不改变空间渲染或耳机补偿档案。</p>
+              {([
+                ["low", "低频", "120 Hz"],
+                ["mid", "中频", "1.2 kHz"],
+                ["high", "高频", "6 kHz"],
+              ] as const).map(([band, label, frequency]) => (
+                <label className="eq-band-control" key={band}>
+                  <span className="eq-band-label"><b>{label}</b><small>{frequency}</small></span>
+                  <input
+                    type="range"
+                    min="-12"
+                    max="12"
+                    step="0.5"
+                    title="双击重置为 0.0 dB"
+                    value={binauralEqBands[band]}
+                    onChange={(event) => changeBinauralEqBand(band, Number(event.target.value))}
+                    onDoubleClick={() => changeBinauralEqBand(band, 0)}
+                  />
+                  <output>{binauralEqBands[band] > 0 ? "+" : ""}{binauralEqBands[band].toFixed(1)} dB</output>
+                </label>
+              ))}
+            </fieldset>
+            {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用。</p>}
+          </section>
+        </div>
+      )}
 
       <main>
         <section className="view">
@@ -412,8 +472,20 @@ export function App() {
                 <dd>{debug || "—"}</dd>
               </dl>
             ) : (
-              <p className="dim">拖入 .mkv / .mp4 / .thd / .ec3 / .dts 文件开始</p>
+              <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .dts 文件开始</p>
             )}
+          </div>
+          <div className="panel">
+            <h2>双耳元数据</h2>
+            <dl>
+              <dt>来源</dt>
+              <dd>{binauralMetadata?.available ? `BWF dbmd ${binauralMetadata.version ?? ""}` : "当前输入未携带可读取的 Binaural Render Mode"}</dd>
+              <dt>对象表</dt>
+              <dd>{binauralMetadata?.available ? `${binauralMetadata.objectModes.length} 个 program object mode` : "—"}</dd>
+              <dt>床层表</dt>
+              <dd>{binauralMetadata?.available ? "公开 DBMD supplemental 段未提供可绑定的 bed channel position 表" : "—"}</dd>
+              {binauralMetadata?.error && <><dt>状态</dt><dd>{binauralMetadata.error}</dd></>}
+            </dl>
           </div>
           <div className="panel">
             <h2>对象 ({objects.length})</h2>
@@ -425,6 +497,7 @@ export function App() {
                     ? `(${o.pos.map((v) => v.toFixed(2)).join(", ")})`
                     : "—"}
                   {o.gainDb !== 0 && ` ${o.gainDb}dB`}
+                  <span className="obj-metadata">{o.anchor}{o.distanceInfinite ? " · OAMD 物理距离：无限" : o.distanceM !== null ? ` · OAMD 物理距离：${o.distanceM.toFixed(2)}m` : ""} · 双耳模式：{binauralMetadata?.available ? (objectBinauralModes.get(o.id) ?? "未指定") : "当前输入未携带可读取的 Binaural Render Mode"}</span>
                   <span className="obj-ms">
                     <button
                       className={`obj-ms-btn ${mutedIds.has(o.id) ? "m-on" : ""}`}

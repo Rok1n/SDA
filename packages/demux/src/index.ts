@@ -4,20 +4,25 @@
  * `createDemuxer` sniffs the container from the first bytes:
  *   - EBML magic          → Matroska (streaming, all A_* codecs we support)
  *   - `....ftyp`          → MP4 (mp4box.js)
+ *   - RIFF/RF64 WAVE      → BWF metadata scanner (`dbmd` only)
  *   - otherwise           → treated as a raw elementary stream (passthrough)
  */
 
 import { MkvDemuxer, type MkvAudioTrack, type MkvPacket } from "./mkv.js";
 import { Mp4Demuxer, type Mp4AudioTrack } from "./mp4.js";
+import { BwfDemuxer } from "./bwf.js";
+import type { BinauralRenderMetadata, BinauralRenderMode } from "./dbmd.js";
 
-export { MkvDemuxer, Mp4Demuxer };
-export type { MkvAudioTrack, MkvPacket, Mp4AudioTrack };
+export { MkvDemuxer, Mp4Demuxer, BwfDemuxer };
+export { decodeDbmdBinauralMetadata } from "./dbmd.js";
+export type { MkvAudioTrack, MkvPacket, Mp4AudioTrack, BinauralRenderMetadata, BinauralRenderMode };
 
-export type ContainerKind = "mkv" | "mp4" | "raw";
+export type ContainerKind = "mkv" | "mp4" | "bwf" | "raw";
 
 export function sniffContainer(firstBytes: Uint8Array): ContainerKind {
   if (MkvDemuxer.sniffs(firstBytes)) return "mkv";
   if (Mp4Demuxer.sniffs(firstBytes)) return "mp4";
+  if (BwfDemuxer.sniffs(firstBytes)) return "bwf";
   return "raw";
 }
 
@@ -32,6 +37,7 @@ export interface DemuxerCallbacks {
   onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: ContainerKind; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   onPacket?: (packet: DemuxedAudioPacket) => void;
   onError?: (message: string) => void;
+  onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
 }
 
 export interface Demuxer {
@@ -58,6 +64,10 @@ export function createDemuxer(kind: ContainerKind, cb: DemuxerCallbacks): Demuxe
       onError: cb.onError,
     });
     return { kind, push: (c) => mp4.push(c), flush: () => mp4.flush() };
+  }
+  if (kind === "bwf") {
+    const bwf = new BwfDemuxer({ onBinauralMetadata: cb.onBinauralMetadata, onError: cb.onError });
+    return { kind, push: (c) => bwf.push(c), flush: () => bwf.flush() };
   }
   // Raw elementary stream: pass bytes straight through; the decoder's own
   // extractor does the framing.

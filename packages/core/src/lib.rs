@@ -32,6 +32,14 @@ pub struct ObjectEvent {
     /// Object extent (width, depth, height), each normalised to [0, 1].
     /// [0, 0, 0] = point source.
     pub size: [f64; 3],
+    /// Codec metadata anchor: room, screen, or speaker.
+    pub anchor: String,
+    /// Finite codec object distance in metres; None means not transmitted.
+    pub distance_m: Option<f64>,
+    /// Codec explicitly marked this object as infinitely distant.
+    pub distance_infinite: bool,
+    pub screen_factor: Option<f64>,
+    pub depth_factor: Option<f64>,
     pub ramp_duration: u32,
 }
 

@@ -167,7 +167,7 @@ function createWindow() {
 ipcMain.handle("sda:pick-file", async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     filters: [
-      { name: "Audio / Video", extensions: ["mkv", "mka", "mp4", "m4a", "thd", "mlp", "ec3", "eac3", "ac3", "dts"] },
+      { name: "Audio / Video", extensions: ["mkv", "mka", "mp4", "m4a", "wav", "bwf", "rf64", "thd", "mlp", "ec3", "eac3", "ac3", "dts"] },
       { name: "All Files", extensions: ["*"] },
     ],
     properties: ["openFile"],

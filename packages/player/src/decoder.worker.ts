@@ -10,7 +10,7 @@
  */
 
 import { initCore, SdaDecoder, type CodecName, type DecodedFrameData } from "@sda/core";
-import { createDemuxer, sniffContainer, type ContainerKind, type Demuxer } from "@sda/demux";
+import { createDemuxer, sniffContainer, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
 
 /** Minimal worker global typing (avoids DOM/WebWorker lib conflicts). */
 declare const self: {
@@ -42,7 +42,8 @@ function drainFrames(): void {
 
 self.onmessage = async (e: MessageEvent) => {
   const msg = e.data;
-  switch (msg.type) {
+  try {
+    switch (msg.type) {
     case "init": {
       await initCore();
       self.postMessage({ type: "ready" });
@@ -52,6 +53,12 @@ self.onmessage = async (e: MessageEvent) => {
       decoder?.free();
       decoder = new SdaDecoder(msg.codec as CodecName);
       demuxer = null; // created on first push, after sniffing
+      break;
+    }
+    case "flush": {
+      demuxer?.flush();
+      drainFrames();
+      self.postMessage({ type: "flushed" });
       break;
     }
     case "push": {
@@ -69,12 +76,16 @@ self.onmessage = async (e: MessageEvent) => {
             drainFrames();
           },
           onError: (m) => self.postMessage({ type: "error", message: m }),
+          onBinauralMetadata: (metadata: BinauralRenderMetadata) => self.postMessage({ type: "binaural-metadata", metadata }),
         });
       }
       demuxer.push(chunk);
       drainFrames();
       break;
     }
+    }
+  } catch (error) {
+    self.postMessage({ type: "error", message: error instanceof Error ? error.message : String(error) });
   }
 };
 

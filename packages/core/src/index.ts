@@ -13,7 +13,9 @@ import wasmUrl from "../pkg-web/sda_core_bg.wasm?url";
 
 export type CodecName = "auto" | "truehd" | "eac3" | "dts";
 
-/** One dynamic-object spatial event (ADM cartesian, matches bridge_api::REvent). */
+export type ObjectAnchor = "room" | "screen" | "speaker";
+
+/** One dynamic-object spatial event (ADM cartesian plus codec render metadata). */
 export interface ObjectEvent {
   id: number;
   samplePos: number;
@@ -24,6 +26,13 @@ export interface ObjectEvent {
   gainDb: number;
   /** (width, depth, height) each normalised to [0, 1]; [0,0,0] = point source. */
   size: [number, number, number];
+  /** Real codec render metadata. Speaker anchors are bed/ISF semantics. */
+  anchor: ObjectAnchor;
+  /** Finite codec distance in metres; absent when the stream does not provide it. */
+  distanceM: number | null;
+  distanceInfinite: boolean;
+  screenFactor: number | null;
+  depthFactor: number | null;
   rampDuration: number;
 }
 
