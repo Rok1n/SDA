@@ -121,6 +121,8 @@ export class SpatialRenderer {
   private onConsumedTick?: () => void;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
+  /** Reset generation. Only ticks from the active generation may move the playhead. */
+  private epoch = 0;
 
   constructor(ctx: AudioContext, options: RendererOptions = {}) {
     this.ctx = ctx;
@@ -178,10 +180,10 @@ export class SpatialRenderer {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [this.topology.length],
-      processorOptions: { busCount: this.topology.length },
+      processorOptions: { busCount: this.topology.length, epoch: this.epoch },
     });
     this.node.port.onmessage = (e: MessageEvent) => {
-      if (e.data?.type === "tick") {
+      if (e.data?.type === "tick" && e.data.epoch === this.epoch) {
         this.consumedSamples = e.data.consumed;
         this.onConsumedTick?.();
       }
@@ -462,17 +464,18 @@ export class SpatialRenderer {
   }
 
   /** Register a source. Bed channels pass their speaker label; objects an event id.
-   *  重复声明同一 id（稀疏声明变化时 player 会重放整组）不重置用户静音状态。 */
+   *  重复声明同一 id（稀疏声明变化时 player 会重放整组）完全幂等：保留
+   *  SourceState/元数据/静音状态，也不向 worklet 重发即时 gains。 */
   addSource(id: string, opts: { bedLabel?: string } = {}): void {
+    if (this.sources.has(id)) return;
     if (!this.node) throw new Error("SpatialRenderer.init() first");
-    const wasMuted = this.sources.get(id)?.muted ?? false;
     const state: SourceState = {
       id,
       spread: 0,
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
-      muted: wasMuted,
+      muted: false,
       bedLabel: opts.bedLabel ? aliasLabel(opts.bedLabel) : undefined,
       snapBus: -1,
     };
@@ -518,7 +521,7 @@ export class SpatialRenderer {
     }
     if (state.muted === muted) return true;
     state.muted = muted;
-    this.applyGains(state, 2048);
+    this.node?.port.postMessage({ type: "mute", id, muted, ramp: 2048 });
     console.log(`[SDA] ${id} ${muted ? "静音" : "解除静音"} → scalar ${muted ? 0 : 1}`);
     return true;
   }
@@ -538,12 +541,26 @@ export class SpatialRenderer {
     if (state && state.snapBus >= 0) this.recomputeBedGains(id);
   }
 
-  /** Feed PCM for a source (transferable copy recommended). */
+  /** Feed PCM for a source (legacy single-source path). */
   feed(id: string, samples: Float32Array): void {
     this.node?.port.postMessage({ type: "feed", id, samples }, [samples.buffer]);
   }
 
-  /** Apply an object event: new position (ramped), gain, size. */
+  /** Atomically enqueue every channel of one decoded frame at its absolute
+   * codec sample position. Partial frame writes are rejected by the worklet. */
+  feedBatch(
+    samplePos: number,
+    entries: readonly { id: string; samples: Float32Array }[],
+  ): void {
+    if (!this.node || entries.length === 0) return;
+    const transferable = entries.map(({ samples }) => samples.buffer);
+    this.node.port.postMessage(
+      { type: "feedBatch", start: Math.trunc(samplePos), entries },
+      transferable,
+    );
+  }
+
+  /** Queue an object event on the same absolute sample clock as its PCM. */
   applyEvent(ev: ObjectEvent, rampSamples: number): void {
     const state = this.sources.get(`obj:${ev.id}`);
     if (!state) return;
@@ -552,11 +569,19 @@ export class SpatialRenderer {
       state.spread = sizeToSpread(ev.size);
     }
     state.gainDb = ev.gainDb;
-    this.applyGains(state, rampSamples || ev.rampDuration || 128);
+    this.applyGains(
+      state,
+      rampSamples || ev.rampDuration || 128,
+      Math.trunc(ev.samplePos),
+    );
   }
 
   /** Recompute and send a source's gain vector over the buses. */
-  private applyGains(state: SourceState, rampSamples: number): void {
+  private applyGains(
+    state: SourceState,
+    rampSamples: number,
+    atSample?: number,
+  ): void {
     const gains = this.vbap.pan(state.position, state.spread);
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
@@ -569,13 +594,18 @@ export class SpatialRenderer {
       distGain = 1 / normalizedDistance;
     }
 
-    let scalar = Math.pow(10, state.gainDb / 20) * distGain;
+    // The codec event model uses -128 as the i8 representation of -∞ dB.
+    // Preserve exact silence instead of turning it into a tiny residual gain.
+    const metadataGain = state.gainDb <= -128
+      ? 0
+      : Math.pow(10, state.gainDb / 20);
+    let scalar = metadataGain * distGain;
     if (state.isLfe) {
       // LFE bypasses spatial panning: straight to the LFE bus.
       gains.fill(0);
       const lfeBus = this.layout.findIndex((s) => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
-      scalar = Math.pow(10, state.gainDb / 20);
+      scalar = metadataGain;
       if (this.lfeMuted) scalar = 0;
       lp = 1;
     } else if (state.snapBus >= 0) {
@@ -596,7 +626,9 @@ export class SpatialRenderer {
         }
       }
     }
-    if (state.muted) scalar = 0;
+    // User mute is a separate real-time worklet envelope. Keeping it out of
+    // metadata gain ramps prevents future scheduled object events from
+    // accidentally clearing mute/solo state.
     // 工作节点固定为 9.1.6 拓扑；把当前逻辑布局的增益按扬声器名字投影过去。
     // 逻辑布局不存在的总线保持 0，切换布局仅更新这组斜坡，不触碰 PCM 缓冲。
     const topologyGains = new Float32Array(this.topology.length);
@@ -605,8 +637,9 @@ export class SpatialRenderer {
       if (target >= 0) topologyGains[target] = gains[bus]!;
     }
     this.node?.port.postMessage({
-      type: "gains",
+      type: atSample === undefined ? "gains" : "scheduleGains",
       id: state.id,
+      at: atSample,
       gains: topologyGains,
       gain: scalar,
       lp,
@@ -614,10 +647,12 @@ export class SpatialRenderer {
     });
   }
 
-  /** Buffered samples for a source (for buffer-level telemetry). */
+  /** Reset the codec timeline. MessagePort FIFO guarantees a following feed is
+   * handled after reset; the epoch only rejects already-queued stale ticks. */
   resetBuffers(): void {
+    this.epoch++;
     this.consumedSamples = 0;
-    this.node?.port.postMessage({ type: "reset" });
+    this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
   }
 
   /** Playhead in seconds: frames the worklet actually rendered. */

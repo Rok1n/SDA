@@ -75,6 +75,8 @@ export class SdaPlayer {
   private containerDurationSec: number | null = null;
   private sampleRate = 48000;
   private objects = new Map<number, VisualObject>();
+  /** Visual metadata waits for the same codec sample clock as audio gains. */
+  private pendingVisualEvents: ObjectEvent[] = [];
   private visualTimer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
   /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
@@ -290,7 +292,7 @@ export class SdaPlayer {
       // 床层/对象源在新 worklet 里重新声明
       this.knownBedLabels = [];
       for (const id of this.objectChannels.keys()) r.addSource(`obj:${id}`);
-      // 恢复静音状态（addSource 重置源状态）
+      // 新 renderer 中恢复对象静音状态。
       for (const id of this.mutedObjects) r.setSourceMuted(`obj:${id}`, true);
     } finally {
       this.recreatePending--;
@@ -344,17 +346,27 @@ export class SdaPlayer {
     if (this.visualTimer) clearInterval(this.visualTimer);
     this.visualTimer = null;
     this.renderer?.resetBuffers();
+    // addSource 对同一曲目内的稀疏重声明必须幂等；曲目边界则显式删除源，
+    // 避免下一首复用相同 bed:ch/obj:id 时继承上一首的位置、增益或床标签。
+    this.knownBedLabels.forEach((label, channel) => {
+      if (!label.startsWith("Obj_")) this.renderer?.removeSource(`bed:${channel}`);
+    });
+    for (const id of this.objectChannels.keys()) this.renderer?.removeSource(`obj:${id}`);
+    this.knownBedLabels = [];
     // 若暂停中停止，同时解除 worklet 静音和时钟挂起，避免卡死
     this.pausedState = false;
     this.renderer?.setPaused(false);
     void this.renderer?.ctx.resume();
     this.objects.clear();
+    this.pendingVisualEvents = [];
     this.objectChannels.clear();
     this.emitVisual();
     this.fedSamples = 0;
     this.pcmQueue = [];
     this.queuedSamples = 0;
     this.containerDurationSec = null;
+    this.trackReported = false;
+    this.ended = false;
     this.rateChecked = false;
     this.layoutChecked = false;
     this.layoutHadDynamics = false;
@@ -533,7 +545,8 @@ export class SdaPlayer {
           declaredIds.add(decl.id);
           this.objectChannels.set(decl.id, decl.channel);
           this.renderer.addSource(`obj:${decl.id}`);
-          // 重新声明会重置源状态 —— 恢复静音
+          // 声明可能是整组重放；addSource 对已有 id 幂等，此处只同步独立
+          // mute 包络，不触碰该源已经排队/生效的位置、增益等元数据。
           this.renderer.setSourceMuted(`obj:${decl.id}`, this.mutedObjects.has(decl.id));
           if (!this.objects.has(decl.id)) {
             // OAMD events may arrive in a later frame. Expose the object now so
@@ -571,18 +584,25 @@ export class SdaPlayer {
         }
       }
 
-      // Feed PCM: object channels go to their obj: source, the rest are beds.
-      frame.channels.forEach((samples, ch) => {
-        const objectId = channelToObject.get(ch);
-        this.renderer!.feed(objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`, samples);
-      });
-
-      // Object events → renderer gains + visualization state.
+      // Schedule metadata before exposing this frame to the worklet. Port
+      // messages are FIFO, so the first sample can never render with a future
+      // or stale object position merely because the player prebuffers ~2 s.
       for (const ev of frame.events as ObjectEvent[]) {
         this.renderer.applyEvent(ev, ev.rampDuration || 128);
-        this.objects.set(ev.id, visualObjectFromEvent(ev));
-        visualChanged = true;
+        this.pendingVisualEvents.push(ev);
       }
+
+      // Enqueue every channel of the decoded frame atomically on the codec's
+      // absolute sample clock. Per-source feed messages allowed the worklet to
+      // consume a partial frame and permanently desynchronise late objects.
+      const entries = frame.channels.map((samples, ch) => {
+        const objectId = channelToObject.get(ch);
+        return {
+          id: objectId !== undefined ? `obj:${objectId}` : `bed:${ch}`,
+          samples,
+        };
+      });
+      this.renderer.feedBatch(frame.samplePos, entries);
 
       this.fedSamples += frameSamples;
       if (visualChanged) this.emitVisual();
@@ -606,7 +626,16 @@ export class SdaPlayer {
   }
 
   private emitVisual(): void {
+    const streamTimeSec = this.positionSeconds();
+    const playedSample = Math.floor(streamTimeSec * this.sampleRate);
+    while (
+      this.pendingVisualEvents.length > 0 &&
+      this.pendingVisualEvents[0]!.samplePos <= playedSample
+    ) {
+      const event = this.pendingVisualEvents.shift()!;
+      this.objects.set(event.id, visualObjectFromEvent(event));
+    }
     // 即使没有任何对象（纯床层/立体声文件）也要发，时间轴靠它驱动。
-    this.cb.onVisualState?.([...this.objects.values()], this.positionSeconds());
+    this.cb.onVisualState?.([...this.objects.values()], streamTimeSec);
   }
 }

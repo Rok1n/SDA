@@ -1,21 +1,14 @@
 /**
- * sda-renderer AudioWorkletProcessor — plain JS, no imports (AudioWorklet
- * modules are loaded standalone via `audioWorklet.addModule()`).
+ * sda-renderer AudioWorkletProcessor — plain JS, no imports.
  *
- * Model:
- *   - up to MAX_SOURCES mono sources (bed channels + object channels)
- *   - each source has a PCM ring buffer (fed via port "feed" messages)
- *     and a gain vector over N virtual-speaker buses (set via "gains"
- *     messages, linearly ramped over `ramp` samples)
- *   - process() mixes every source into the buses; the single output has
- *     N channels (one per bus). What happens downstream (multichannel
- *     mapping or HRTF convolution) is decided on the main thread.
- *
- * Underrun: a source with insufficient buffered samples outputs silence.
+ * PCM and metadata use the decoder's absolute sample clock. A late source may
+ * produce silence for samples that have already passed, but it can never play
+ * those stale samples later and drift away from the other object channels.
  */
 
 const MAX_SOURCES = 64;
 const RING_SIZE = 1 << 18; // 262144 samples ≈ 5.5 s @48k per source
+const RING_MASK = RING_SIZE - 1;
 
 class SdaRendererProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -23,77 +16,180 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     const opts = (options && options.processorOptions) || {};
     this.busCount = opts.busCount || 12;
     this.paused = false;
-    // 已实际输出（消耗）的帧数 —— 播放头的唯一权威来源。
-    // 暂停时不推进，主线程的 ctx 时钟漂移/挂起都不影响它。
     this.consumed = 0;
     this.lastTick = 0;
-    this.sources = new Map(); // id -> {ring, read, write, gains, target, rampLeft, rampStep, gain}
+    this.epoch = Number.isSafeInteger(opts.epoch) ? opts.epoch : 0;
+    this.timelineStarted = false;
+    this.sources = new Map();
     this.port.onmessage = (e) => this.onMessage(e.data);
+  }
+
+  createSource() {
+    return {
+      ring: new Float32Array(RING_SIZE),
+      validStart: Number.POSITIVE_INFINITY,
+      validEnd: Number.NEGATIVE_INFINITY,
+      gains: new Float32Array(this.busCount),
+      target: new Float32Array(this.busCount),
+      rampLeft: 0,
+      rampStep: new Float32Array(this.busCount),
+      gain: 1,
+      targetGain: 1,
+      gainStep: 0,
+      muteGain: 1,
+      targetMuteGain: 1,
+      muteRampLeft: 0,
+      muteStep: 0,
+      scheduledGains: [],
+      lpA: 1,
+      lpY: 0,
+    };
+  }
+
+  /** Advance an active metadata ramp by an exact number of sample intervals. */
+  advanceGainRamp(src, samples) {
+    const advance = Math.min(Math.max(0, Math.trunc(samples)), src.rampLeft);
+    if (advance === 0) return;
+    for (let bus = 0; bus < this.busCount; bus++) {
+      src.gains[bus] += src.rampStep[bus] * advance;
+    }
+    src.gain += src.gainStep * advance;
+    src.rampLeft -= advance;
+    if (src.rampLeft === 0) {
+      src.gains.set(src.target);
+      src.gain = src.targetGain;
+    }
+  }
+
+  /** Start an event at eventTime and fast-forward it to currentTime. */
+  startGainRampAtTime(src, msg, eventTime, currentTime) {
+    const target = msg.gains;
+    const ramp = Math.max(1, msg.ramp | 0);
+    for (let bus = 0; bus < this.busCount; bus++) {
+      src.target[bus] = Math.min(target.length > bus ? target[bus] : 0, 4);
+      src.rampStep[bus] = (src.target[bus] - src.gains[bus]) / ramp;
+    }
+    src.targetGain = msg.gain ?? 1;
+    src.gainStep = (src.targetGain - src.gain) / ramp;
+    src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
+    src.rampLeft = ramp;
+    this.advanceGainRamp(src, currentTime - eventTime);
+  }
+
+  /** Replay every overdue event chronologically to currentTime. Each event is
+   * advanced only as far as the next event that interrupts it (or now). */
+  applyScheduledGainsThrough(src, currentTime) {
+    while (
+      src.scheduledGains.length > 0 &&
+      src.scheduledGains[0].at <= currentTime
+    ) {
+      const msg = src.scheduledGains.shift();
+      const next = src.scheduledGains[0];
+      const replayThrough = next && next.at <= currentTime ? next.at : currentTime;
+      this.startGainRampAtTime(src, msg, msg.at, replayThrough);
+    }
+  }
+
+  feedBatch(start, entries) {
+    if (!Number.isSafeInteger(start) || entries.length === 0) return;
+    const sources = entries.map((entry) => this.sources.get(entry.id));
+    // Port messages are FIFO, so adds normally precede the batch. Never accept
+    // only part of a frame if a declaration is missing: partial writes would
+    // destroy inter-object phase and time alignment.
+    if (sources.some((source) => !source)) return;
+
+    const inputLength = entries.reduce(
+      (length, entry) => Math.min(length, entry.samples.length),
+      Number.POSITIVE_INFINITY,
+    );
+    const skipped = Math.min(inputLength, Math.max(0, this.consumed - start));
+    const writeStart = start + skipped;
+    const ahead = Math.max(0, writeStart - this.consumed);
+    const count = Math.max(0, Math.min(inputLength - skipped, RING_SIZE - ahead));
+    if (count === 0) return;
+    this.timelineStarted = true;
+
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+      const source = sources[entryIndex];
+      const samples = entries[entryIndex].samples;
+      // Materialise an explicit silence gap on timeline discontinuities so old
+      // ring contents can never be mistaken for valid PCM.
+      if (Number.isFinite(source.validEnd) && writeStart > source.validEnd) {
+        const gapEnd = Math.min(writeStart, source.validEnd + RING_SIZE);
+        for (let position = source.validEnd; position < gapEnd; position++) {
+          source.ring[position & RING_MASK] = 0;
+        }
+      }
+      for (let i = 0; i < count; i++) {
+        source.ring[(writeStart + i) & RING_MASK] = samples[skipped + i];
+      }
+      source.validStart = Number.isFinite(source.validStart)
+        ? Math.min(source.validStart, writeStart)
+        : writeStart;
+      source.validEnd = Number.isFinite(source.validEnd)
+        ? Math.max(source.validEnd, writeStart + count)
+        : writeStart + count;
+    }
   }
 
   onMessage(msg) {
     switch (msg.type) {
-      case "add": {
-        if (this.sources.size >= MAX_SOURCES || this.sources.has(msg.id)) break;
-        this.sources.set(msg.id, {
-          ring: new Float32Array(RING_SIZE),
-          read: 0,
-          write: 0,
-          gains: new Float32Array(this.busCount),
-          target: new Float32Array(this.busCount),
-          rampLeft: 0,
-          rampStep: new Float32Array(this.busCount),
-          gain: 1,
-          targetGain: 1,
-          // Reserved per-source one-pole filter. Main-thread ADM rendering
-          // currently keeps it at lpA=1 because normalized positions are not
-          // physical distance metadata.
-          lpA: 1,
-          lpY: 0,
-        });
+      case "add":
+        if (this.sources.size < MAX_SOURCES && !this.sources.has(msg.id)) {
+          this.sources.set(msg.id, this.createSource());
+        }
         break;
-      }
       case "remove":
         this.sources.delete(msg.id);
         break;
       case "feed": {
         const src = this.sources.get(msg.id);
         if (!src) break;
-        const data = msg.samples; // Float32Array
-        const space = RING_SIZE - (src.write - src.read);
-        const n = Math.min(data.length, space);
-        for (let i = 0; i < n; i++) {
-          src.ring[src.write & (RING_SIZE - 1)] = data[i];
-          src.write++;
+        const start = Number.isFinite(src.validEnd) ? src.validEnd : this.consumed;
+        this.feedBatch(start, [{ id: msg.id, samples: msg.samples }]);
+        break;
+      }
+      case "feedBatch":
+        this.feedBatch(msg.start, msg.entries || []);
+        break;
+      case "gains": {
+        const src = this.sources.get(msg.id);
+        if (src) {
+          this.startGainRampAtTime(src, msg, this.consumed, this.consumed);
         }
         break;
       }
-      case "gains": {
+      case "scheduleGains": {
+        const src = this.sources.get(msg.id);
+        if (!src || !Number.isSafeInteger(msg.at)) break;
+        src.scheduledGains.push(msg);
+        src.scheduledGains.sort((left, right) => left.at - right.at);
+        break;
+      }
+      case "mute": {
         const src = this.sources.get(msg.id);
         if (!src) break;
-        const target = msg.gains; // Float32Array, length busCount
         const ramp = Math.max(1, msg.ramp | 0);
-        for (let i = 0; i < this.busCount; i++) {
-          src.target[i] = Math.min(target.length > i ? target[i] : 0, 4);
-          src.rampStep[i] = (src.target[i] - src.gains[i]) / ramp;
-        }
-        src.targetGain = msg.gain ?? 1;
-        src.lpA = typeof msg.lp === "number" ? Math.min(1, Math.max(0, msg.lp)) : 1;
-        src.rampLeft = ramp;
+        src.targetMuteGain = msg.muted ? 0 : 1;
+        src.muteStep = (src.targetMuteGain - src.muteGain) / ramp;
+        src.muteRampLeft = ramp;
         break;
       }
       case "reset":
         for (const src of this.sources.values()) {
-          src.read = src.write = 0;
+          src.validStart = Number.POSITIVE_INFINITY;
+          src.validEnd = Number.NEGATIVE_INFINITY;
+          src.scheduledGains.length = 0;
           src.lpY = 0;
         }
         this.paused = false;
         this.consumed = 0;
         this.lastTick = 0;
+        this.epoch = Number.isSafeInteger(msg.epoch) ? msg.epoch : this.epoch + 1;
+        this.timelineStarted = false;
+        this.port.postMessage({ type: "resetAck", epoch: this.epoch });
         break;
       case "pause":
-        // 主线程 ctx.suspend() 不可信时的硬暂停：静音且不消耗缓冲，
-        // 恢复时从精确位置继续。
         this.paused = !!msg.paused;
         break;
     }
@@ -101,56 +197,68 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
 
   buffered(id) {
     const src = this.sources.get(id);
-    return src ? src.write - src.read : 0;
+    return src && Number.isFinite(src.validEnd)
+      ? Math.max(0, src.validEnd - this.consumed)
+      : 0;
   }
 
   process(_inputs, outputs) {
     const buses = outputs[0];
     const blockSize = buses[0] ? buses[0].length : 128;
-    for (let b = 0; b < this.busCount && b < buses.length; b++) buses[b].fill(0);
-
-    // 暂停：输出静音但不推进读指针，缓冲原地保留。
-    if (this.paused) return true;
+    for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) {
+      buses[bus].fill(0);
+    }
+    if (this.paused || !this.timelineStarted) return true;
 
     for (const src of this.sources.values()) {
-      const available = src.write - src.read;
-      const n = Math.min(blockSize, available);
       let gain = src.gain;
-      const gainStep = (src.targetGain - gain) / Math.max(1, src.rampLeft);
-      const useLp = src.lpA < 0.999;
+      let muteGain = src.muteGain;
       let lpY = src.lpY;
-      const lpA = src.lpA;
 
-      for (let i = 0; i < n; i++) {
-        let s = src.ring[src.read & (RING_SIZE - 1)];
-        src.read++;
-        if (useLp) {
-          lpY += lpA * (s - lpY);
-          s = lpY;
+      for (let i = 0; i < blockSize; i++) {
+        const samplePosition = this.consumed + i;
+        // Commit this block's local scalar before an event replaces the ramp.
+        // Otherwise an event in the middle of a render quantum can jump back to
+        // src.gain, which still holds the value from the block boundary.
+        src.gain = gain;
+        this.applyScheduledGainsThrough(src, samplePosition);
+        gain = src.gain;
+
+        let sample = 0;
+        if (samplePosition >= src.validStart && samplePosition < src.validEnd) {
+          sample = src.ring[samplePosition & RING_MASK];
         }
-        const sample = s * gain;
+        if (src.lpA < 0.999) {
+          lpY += src.lpA * (sample - lpY);
+          sample = lpY;
+        }
+        sample *= gain * muteGain;
+
+        for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) {
+          const busGain = src.gains[bus];
+          if (busGain !== 0) buses[bus][i] += sample * busGain;
+        }
+
         if (src.rampLeft > 0) {
-          for (let b = 0; b < this.busCount; b++) src.gains[b] += src.rampStep[b];
-          gain += gainStep;
-          src.rampLeft--;
+          this.advanceGainRamp(src, 1);
+          gain = src.gain;
         }
-        for (let b = 0; b < this.busCount && b < buses.length; b++) {
-          const g = src.gains[b];
-          if (g !== 0) buses[b][i] += sample * g;
+        if (src.muteRampLeft > 0) {
+          muteGain += src.muteStep;
+          src.muteRampLeft--;
+          if (src.muteRampLeft === 0) muteGain = src.targetMuteGain;
         }
       }
       src.gain = gain;
+      src.muteGain = muteGain;
       src.lpY = lpY;
-      // starvation: leave read pointer; samples will arrive late → silence gap
     }
 
-    // 每输出一个 block，播放头就前进 blockSize 帧（含欠载静音段）。
-    // 约每 1/8 秒向主线程上报一次，供时间轴/缓冲水位使用。
     this.consumed += blockSize;
     const tickEvery = (typeof sampleRate === "number" ? sampleRate : 48000) >> 3;
     if (this.consumed - this.lastTick >= tickEvery) {
       this.lastTick = this.consumed;
-      this.port.postMessage({ type: "tick", consumed: this.consumed });
+      this.port.postMessage({ type: "tick", consumed: this.consumed, epoch: this.epoch });
     }
     return true;
   }
