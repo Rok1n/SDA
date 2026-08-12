@@ -63,7 +63,7 @@ function check(cond, what) {
   if (!cond) failed++;
   console.log(`${cond ? "PASS" : "FAIL"}  ${what}`);
 }
-const lastGains = (id) => [...postedToWorklet].reverse().find((m) => m.type === "gains" && m.id === id);
+const lastGains = (id) => [...postedToWorklet].reverse().find((m) => (m.type === "gains" || m.type === "scheduleGains") && m.id === id);
 const near = (a, b) => Math.abs(a - b) < 1e-6;
 
 // 固定运行时总线：[FL0 FR1 C2 LFE3 WL4 WR5 SL6 SR7 RL8 RR9 TFL10 TFR11 TSL12 TSR13 TRL14 TRR15]
@@ -98,7 +98,7 @@ function addBed(r, labels) {
 
   // ---- 3. 对象不走吸附/扩展 ----
   r.addSource("obj:10");
-  r.applyEvent({ id: 10, pos: [-1, 0, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128); // 正左(ADM x- = 左)
+  r.applyEvent({ id: 10, samplePos: 0, pos: [-1, 0, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128); // 正左(ADM x- = 左)
   const og = lastGains("obj:10").gains;
   const maxBus = og.indexOf(Math.max(...og));
   check(maxBus === bus("SurroundLeft") && og[bus("RearLeft")] === 0 && og[bus("RearRight")] === 0,
@@ -159,7 +159,7 @@ function addBed(r, labels) {
   const r = new SpatialRenderer(new FakeAudioContext(), { mode: "binaural", layout: LAYOUTS["5.1"] });
   await r.init("mock://worklet");
   r.addSource("obj:distance");
-  r.applyEvent({ id: "distance", pos: [0, 2, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
+  r.applyEvent({ id: "distance", samplePos: 0, pos: [0, 2, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
   const nearMode = lastGains("obj:distance");
   r.setBinauralMode("far");
   const farMode = lastGains("obj:distance");

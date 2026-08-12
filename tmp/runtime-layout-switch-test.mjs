@@ -55,6 +55,9 @@ function check(condition, text) {
 function latest(id) {
   return [...posted].reverse().find((msg) => msg.type === "gains" && msg.id === id);
 }
+function latestMute(id) {
+  return [...posted].reverse().find((msg) => msg.type === "mute" && msg.id === id);
+}
 
 const ctx = new FakeAudioContext();
 const renderer = new SpatialRenderer(ctx, { mode: "binaural", layout: LAYOUTS["5.1"] });
@@ -75,7 +78,7 @@ for (const id of ["7.1.4", "9.1.6", "5.1"]) {
   const frontLeft = LAYOUTS["9.1.6"].findIndex((speaker) => speaker.name === "FrontLeft");
   check(worklets === before, `${id}: 不重建 worklet`);
   check(bed.gains[frontLeft] === 1, `${id}: 床 FrontLeft 重新吸附固定总线`);
-  check(object.gain === 0, `${id}: 对象静音状态保留`);
+  check(latestMute("obj:9")?.muted === true, `${id}: 对象静音状态保留`);
   check(object.ramp === 2048, `${id}: 增益按平滑斜坡迁移（${object.ramp} samples）`);
 }
 

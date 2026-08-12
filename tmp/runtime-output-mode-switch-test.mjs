@@ -65,6 +65,9 @@ function check(condition, text) {
 function latest(id) {
   return [...posted].reverse().find((message) => message.type === "gains" && message.id === id);
 }
+function latestMute(id) {
+  return [...posted].reverse().find((message) => message.type === "mute" && message.id === id);
+}
 
 const ctx = new FakeAudioContext();
 const renderer = new SpatialRenderer(ctx, { mode: "binaural", layout: LAYOUTS["7.1.4"] });
@@ -87,7 +90,7 @@ for (const mode of ["stereo", "multichannel", "binaural"]) {
   check(worklets === initialWorklets, `${mode}: 不重建 worklet`);
   check(ctx.destination.channelCount === initialChannels, `${mode}: 不改变设备 channelCount`);
   check(renderer.outputMode === mode, `${mode}: 输出模式状态已更新`);
-  check(latest("obj:7").gain === 0, `${mode}: 对象静音状态保留`);
+  check(latestMute("obj:7")?.muted === true, `${mode}: 对象静音状态保留`);
 }
 const modePathOutputs = wiring.filter((edge) => edge.to === "gain").length;
 check(modePathOutputs >= 3, `三条常驻输出路径已连接到独立 mode gain（${modePathOutputs}）`);

@@ -566,10 +566,10 @@ var HEADPHONE_COMPENSATION_PROFILES = [
     source: "AutoEq crinacle 711 in-ear Apple AirPods Pro 2 (ANC mode), minimum-phase 48 kHz output",
     target: "AutoEq in-ear target; averaged response, not independent L/R measurement",
     sampleRate: 48e3,
-    leftFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
-    rightFirUrl: "/headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
+    leftFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/left.f32",
+    rightFirUrl: "headphone-compensation/airpods-pro-2-anc-averaged/right.f32",
     preampDb: -3.4,
-    postFirLoudnessTrimDb: 2
+    postFirLoudnessTrimDb: 4.58
   }
 ];
 var rawCache = /* @__PURE__ */ new Map();
@@ -586,8 +586,8 @@ function validateHeadphoneProfile(profile) {
   if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("\u91C7\u6837\u7387\u65E0\u6548");
   if (!profile.leftFirUrl || !profile.rightFirUrl) errors.push("\u5FC5\u987B\u63D0\u4F9B\u5DE6\u53F3 FIR \u8D44\u4EA7");
   if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb \u5FC5\u987B\u4E3A 0 \u6216\u8D1F\u503C");
-  if (!Number.isFinite(profile.postFirLoudnessTrimDb) || profile.postFirLoudnessTrimDb < 0 || profile.postFirLoudnessTrimDb > 3) {
-    errors.push("postFirLoudnessTrimDb \u5FC5\u987B\u5728 0..3dB");
+  if (!Number.isFinite(profile.postFirLoudnessTrimDb) || profile.postFirLoudnessTrimDb < 0 || profile.postFirLoudnessTrimDb > 6) {
+    errors.push("postFirLoudnessTrimDb \u5FC5\u987B\u5728 0..6dB");
   }
   return errors;
 }
@@ -640,7 +640,7 @@ async function getHeadphoneCompensationBuffers(ctx, profile) {
 
 // packages/renderer/src/renderer.ts
 var LFE_LOWPASS_HZ = 120;
-var LFE_INBAND_GAIN = Math.pow(10, 10 / 20);
+var BINAURAL_LFE_INBAND_GAIN = 1;
 var BINAURAL_MAKEUP_GAIN = Math.pow(10, 6 / 20);
 var BINAURAL_SAFETY_THRESHOLD_DB = -1;
 var BINAURAL_SAFETY_KNEE_DB = 0;
@@ -671,6 +671,8 @@ var SpatialRenderer = class {
   /** 双耳路径每总线的卷积器（LFE/兜底位置为 null），切模式时只换 buffer。 */
   convs = [];
   sources = /* @__PURE__ */ new Map();
+  /** 独立 LFE 床声道的静音状态；与动态对象静音分开存储。 */
+  lfeMuted = false;
   irSet = null;
   /** 床扩展表（AVR 上混器语义）：床音箱总线 → 派生馈送。内容床小于所选布局时
    *  把床填满布局 —— 侧环绕馈后环、前馈前宽；目标总线已被真实床声道占用则跳过。 */
@@ -687,6 +689,8 @@ var SpatialRenderer = class {
   onConsumedTick;
   /** Frames actually rendered by the worklet (authoritative playhead). */
   consumedSamples = 0;
+  /** Reset generation. Only ticks from the active generation may move the playhead. */
+  epoch = 0;
   constructor(ctx, options = {}) {
     this.ctx = ctx;
     this.mode = options.mode ?? "binaural";
@@ -740,10 +744,10 @@ var SpatialRenderer = class {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [this.topology.length],
-      processorOptions: { busCount: this.topology.length }
+      processorOptions: { busCount: this.topology.length, epoch: this.epoch }
     });
     this.node.port.onmessage = (e) => {
-      if (e.data?.type === "tick") {
+      if (e.data?.type === "tick" && e.data.epoch === this.epoch) {
         this.consumedSamples = e.data.consumed;
         this.onConsumedTick?.();
       }
@@ -928,7 +932,7 @@ var SpatialRenderer = class {
         if (lfeBus) {
           const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
           splitter.connect(lpIn, bus);
-          lfeGain.gain.value = LFE_INBAND_GAIN;
+          lfeGain.gain.value = BINAURAL_LFE_INBAND_GAIN;
           lpOut.connect(lfeGain);
           lfeGain.connect(lfeBus);
           this.postNodes.push(lpIn, lpOut, lfeGain);
@@ -1002,17 +1006,18 @@ var SpatialRenderer = class {
     this.postNodes.push(splitter, merger, makeup, safety);
   }
   /** Register a source. Bed channels pass their speaker label; objects an event id.
-   *  重复声明同一 id（稀疏声明变化时 player 会重放整组）不重置用户静音状态。 */
+   *  重复声明同一 id（稀疏声明变化时 player 会重放整组）完全幂等：保留
+   *  SourceState/元数据/静音状态，也不向 worklet 重发即时 gains。 */
   addSource(id, opts = {}) {
+    if (this.sources.has(id)) return;
     if (!this.node) throw new Error("SpatialRenderer.init() first");
-    const wasMuted = this.sources.get(id)?.muted ?? false;
     const state = {
       id,
       spread: 0,
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
-      muted: wasMuted,
+      muted: false,
       bedLabel: opts.bedLabel ? aliasLabel(opts.bedLabel) : void 0,
       snapBus: -1
     };
@@ -1053,9 +1058,16 @@ var SpatialRenderer = class {
     }
     if (state.muted === muted) return true;
     state.muted = muted;
-    this.applyGains(state, 2048);
+    this.node?.port.postMessage({ type: "mute", id, muted, ramp: 2048 });
     console.log(`[SDA] ${id} ${muted ? "\u9759\u97F3" : "\u89E3\u9664\u9759\u97F3"} \u2192 scalar ${muted ? 0 : 1}`);
     return true;
+  }
+  /** 静音/恢复所有独立 LFE 床声道；状态会应用到迟到注册的 LFE 源。 */
+  setLfeMuted(muted) {
+    this.lfeMuted = muted;
+    for (const state of this.sources.values()) {
+      if (state.isLfe) this.applyGains(state, 2048);
+    }
   }
   removeSource(id) {
     const state = this.sources.get(id);
@@ -1063,11 +1075,21 @@ var SpatialRenderer = class {
     this.node?.port.postMessage({ type: "remove", id });
     if (state && state.snapBus >= 0) this.recomputeBedGains(id);
   }
-  /** Feed PCM for a source (transferable copy recommended). */
+  /** Feed PCM for a source (legacy single-source path). */
   feed(id, samples) {
     this.node?.port.postMessage({ type: "feed", id, samples }, [samples.buffer]);
   }
-  /** Apply an object event: new position (ramped), gain, size. */
+  /** Atomically enqueue every channel of one decoded frame at its absolute
+   * codec sample position. Partial frame writes are rejected by the worklet. */
+  feedBatch(samplePos, entries) {
+    if (!this.node || entries.length === 0) return;
+    const transferable = entries.map(({ samples }) => samples.buffer);
+    this.node.port.postMessage(
+      { type: "feedBatch", start: Math.trunc(samplePos), entries },
+      transferable
+    );
+  }
+  /** Queue an object event on the same absolute sample clock as its PCM. */
   applyEvent(ev, rampSamples) {
     const state = this.sources.get(`obj:${ev.id}`);
     if (!state) return;
@@ -1076,10 +1098,14 @@ var SpatialRenderer = class {
       state.spread = sizeToSpread(ev.size);
     }
     state.gainDb = ev.gainDb;
-    this.applyGains(state, rampSamples || ev.rampDuration || 128);
+    this.applyGains(
+      state,
+      rampSamples || ev.rampDuration || 128,
+      Math.trunc(ev.samplePos)
+    );
   }
   /** Recompute and send a source's gain vector over the buses. */
-  applyGains(state, rampSamples) {
+  applyGains(state, rampSamples, atSample) {
     const gains = this.vbap.pan(state.position, state.spread);
     const normalizedDistance = Math.max(1e-3, state.position.distance);
     let distGain = 1;
@@ -1087,12 +1113,14 @@ var SpatialRenderer = class {
     if (normalizedDistance > 1) {
       distGain = 1 / normalizedDistance;
     }
-    let scalar = Math.pow(10, state.gainDb / 20) * distGain;
+    const metadataGain = state.gainDb <= -128 ? 0 : Math.pow(10, state.gainDb / 20);
+    let scalar = metadataGain * distGain;
     if (state.isLfe) {
       gains.fill(0);
       const lfeBus = this.layout.findIndex((s) => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
-      scalar = Math.pow(10, state.gainDb / 20);
+      scalar = metadataGain;
+      if (this.lfeMuted) scalar = 0;
       lp = 1;
     } else if (state.snapBus >= 0) {
       gains.fill(0);
@@ -1104,25 +1132,27 @@ var SpatialRenderer = class {
         }
       }
     }
-    if (state.muted) scalar = 0;
     const topologyGains = new Float32Array(this.topology.length);
     for (let bus = 0; bus < gains.length; bus++) {
       const target = this.topology.findIndex((speaker) => speaker.name === this.layout[bus].name);
       if (target >= 0) topologyGains[target] = gains[bus];
     }
     this.node?.port.postMessage({
-      type: "gains",
+      type: atSample === void 0 ? "gains" : "scheduleGains",
       id: state.id,
+      at: atSample,
       gains: topologyGains,
       gain: scalar,
       lp,
       ramp: Math.max(1, rampSamples)
     });
   }
-  /** Buffered samples for a source (for buffer-level telemetry). */
+  /** Reset the codec timeline. MessagePort FIFO guarantees a following feed is
+   * handled after reset; the epoch only rejects already-queued stale ticks. */
   resetBuffers() {
+    this.epoch++;
     this.consumedSamples = 0;
-    this.node?.port.postMessage({ type: "reset" });
+    this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
   }
   /** Playhead in seconds: frames the worklet actually rendered. */
   consumedSeconds() {

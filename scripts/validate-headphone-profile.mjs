@@ -17,6 +17,9 @@ for (const key of ["name", "source", "target", "leftFirUrl", "rightFirUrl"]) {
 }
 if (!Number.isFinite(profile.sampleRate) || profile.sampleRate <= 0) errors.push("sampleRate 无效");
 if (!Number.isFinite(profile.preampDb) || profile.preampDb > 0) errors.push("preampDb 必须为 0 或负值");
+if (!Number.isFinite(profile.postFirLoudnessTrimDb) || profile.postFirLoudnessTrimDb < 0 || profile.postFirLoudnessTrimDb > 6) {
+  errors.push("postFirLoudnessTrimDb 必须在 0..6dB");
+}
 
 if (errors.length) {
   console.error(`Profile 无效: ${errors.join("；")}`);

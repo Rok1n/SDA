@@ -78,7 +78,7 @@ const loudnessTrim = recovery && wiring.find((edge) => edge.from === recovery.to
 const makeup = loudnessTrim && wiring.find((edge) => edge.from === loudnessTrim.to && edge.to?.startsWith("gain-"));
 const safety = makeup && wiring.find((edge) => edge.from === makeup.to && edge.to?.startsWith("compressor-"));
 check(!!leftInput && !!rightInput && !!leftOutput && !!rightOutput, "左右 FIR 保持通道身份，不交叉馈送");
-check(!!recovery && !!loudnessTrim && !!makeup && !!safety, "FIR 后依次经过 recovery、profile +2dB trim、全局 makeup 与最终 safety");
+check(!!recovery && !!loudnessTrim && !!makeup && !!safety, "FIR 后依次经过 recovery、profile +4.58dB 中频匹配、全局 makeup 与最终 safety");
 renderer.setHeadphoneCompensation(null);
 await new Promise((resolve) => setTimeout(resolve, 0));
 check(worklets === initialWorklets, "切回 bypass 不重建 worklet");
