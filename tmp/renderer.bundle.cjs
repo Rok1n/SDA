@@ -48,7 +48,8 @@ __export(index_exports, {
   stereoDownmixGains: () => stereoDownmixGains,
   unregisterLocalHeadphoneCompensation: () => unregisterLocalHeadphoneCompensation,
   validateHeadphoneProfile: () => validateHeadphoneProfile,
-  validateLocalHeadphoneProfile: () => validateLocalHeadphoneProfile
+  validateLocalHeadphoneProfile: () => validateLocalHeadphoneProfile,
+  virtualLayoutForOutput: () => virtualLayoutForOutput
 });
 module.exports = __toCommonJS(index_exports);
 
@@ -912,6 +913,10 @@ function layoutLevelCompensationGain(layout) {
   const activeChannels = layout.filter((speaker) => !speaker.isLfe).length;
   return Math.min(1, Math.sqrt(referenceChannels / Math.max(referenceChannels, activeChannels)));
 }
+function virtualLayoutForOutput(layout, mode) {
+  if (mode === "multichannel") return layout;
+  return layout.filter((speaker) => speaker.name !== "WideLeft" && speaker.name !== "WideRight");
+}
 function binauralBank(mode, fallback) {
   if (mode === "off" || mode === "near" || mode === "mid" || mode === "far") return mode;
   return mode === "not-indicated" ? BINAURAL_NOT_INDICATED_DEFAULT : fallback;
@@ -923,6 +928,9 @@ var SpatialRenderer = class {
   ctx;
   /** 当前用于 VBAP 与床层语义的布局；运行中可切换。 */
   layout;
+  /** Active gain-vector layout. Headphone/stereo 9.1 folds front-wide into the
+   * proven 7.1 base ring; physical output keeps the selected layout verbatim. */
+  renderLayout;
   /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
   topology;
   mode;
@@ -988,7 +996,8 @@ var SpatialRenderer = class {
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
     this.topology = LAYOUTS["9.1.6"];
-    this.vbap = new VbapSolver(this.layout);
+    this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.vbap = new VbapSolver(this.renderLayout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
     this.onBatchResult = options.onBatchResult;
@@ -1072,20 +1081,26 @@ var SpatialRenderer = class {
       this.retirePostNodes(previous.nodes, 100);
     }
   }
+  updateRenderLayout() {
+    this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.vbap = new VbapSolver(this.renderLayout);
+    for (const state of this.sources.values()) {
+      if (state.bedLabel && !state.isLfe) {
+        state.snapBus = this.renderLayout.findIndex((speaker) => speaker.name === state.bedLabel);
+      }
+    }
+  }
   /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头和卷积图继续
    * 存活；所有源通过短增益斜坡迁移到固定最大总线中的新位置。 */
   setLayout(layout) {
     if (layout === this.layout) return;
     this.layout = layout;
-    this.vbap = new VbapSolver(layout);
+    this.updateRenderLayout();
     this.buildExpansion();
     this.updateLayoutLevelCompensation();
     this.updateMultichannelLayout();
     this.updateDestinationChannelCount();
     for (const state of this.sources.values()) {
-      if (state.bedLabel && !state.isLfe) {
-        state.snapBus = this.layout.findIndex((speaker) => speaker.name === state.bedLabel);
-      }
       this.applyGains(state, 2048);
     }
   }
@@ -1239,6 +1254,7 @@ var SpatialRenderer = class {
       gain.gain.linearRampToValueAtTime(target, now + duration);
     }
     this.mode = mode;
+    this.updateRenderLayout();
     for (const state of this.sources.values()) this.applyGains(state, 2048);
   }
   get outputMode() {
@@ -1292,7 +1308,7 @@ var SpatialRenderer = class {
       const program = this.ctx.createGain();
       const gain = this.ctx.createGain();
       volume.gain.value = this.volume ** 2;
-      balance.gain.value = this.layoutLevelCompensationEnabled && mode !== "multichannel" ? layoutLevelCompensationGain(this.layout) : 1;
+      balance.gain.value = this.layoutLevelCompensationEnabled && mode !== "multichannel" ? layoutLevelCompensationGain(virtualLayoutForOutput(this.layout, mode)) : 1;
       program.gain.value = 1;
       gain.gain.value = mode === this.mode ? 1 : 0;
       volume.connect(balance);
@@ -1414,6 +1430,7 @@ var SpatialRenderer = class {
       this.node.connect(splitter, outputIndex);
       for (let bus = 0; bus < n; bus++) {
         const spk = this.topology[bus];
+        if (spk.name === "WideLeft" || spk.name === "WideRight") continue;
         const gainL = this.ctx.createGain();
         const gainR = this.ctx.createGain();
         const [left, right] = stereoDownmixGains(spk);
@@ -1440,6 +1457,10 @@ var SpatialRenderer = class {
     const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.topology, mode) : null;
     for (let bus = 0; bus < n; bus++) {
       const spk = this.topology[bus];
+      if (spk.name === "WideLeft" || spk.name === "WideRight") {
+        convs.push(null);
+        continue;
+      }
       if (spk.isLfe) {
         const lfeGain = this.ctx.createGain();
         const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
@@ -1595,7 +1616,7 @@ var SpatialRenderer = class {
     state.bedLabel = normalized;
     state.isLfe = isLfeLabel(bedLabel);
     state.position = positionForLabel(bedLabel);
-    state.snapBus = state.isLfe ? -1 : this.layout.findIndex((speaker) => speaker.name === normalized);
+    state.snapBus = state.isLfe ? -1 : this.renderLayout.findIndex((speaker) => speaker.name === normalized);
     this.recomputeBedGainsAt(Math.trunc(atSample), 32);
   }
   /** Register a source. Bed channels pass their speaker label; objects an event id.
@@ -1637,7 +1658,7 @@ var SpatialRenderer = class {
     if (opts.bedLabel) {
       state.position = positionForLabel(opts.bedLabel);
       if (!state.isLfe) {
-        state.snapBus = this.layout.findIndex((s) => s.name === state.bedLabel);
+        state.snapBus = this.renderLayout.findIndex((s) => s.name === state.bedLabel);
       }
     }
     this.sources.set(id, state);
@@ -1775,7 +1796,7 @@ var SpatialRenderer = class {
     let scalar = metadataGain * distGain;
     if (state.isLfe) {
       gains.fill(0);
-      const lfeBus = this.layout.findIndex((s) => s.isLfe);
+      const lfeBus = this.renderLayout.findIndex((s) => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
       scalar = metadataGain;
       if (this.lfeMuted) scalar = 0;
@@ -1792,7 +1813,7 @@ var SpatialRenderer = class {
     }
     const topologyGains = new Float32Array(this.topology.length);
     for (let bus = 0; bus < gains.length; bus++) {
-      const target = this.topology.findIndex((speaker) => speaker.name === this.layout[bus].name);
+      const target = this.topology.findIndex((speaker) => speaker.name === this.renderLayout[bus].name);
       if (target >= 0) topologyGains[target] = gains[bus];
     }
     this.node?.port.postMessage({
@@ -1854,9 +1875,10 @@ var SpatialRenderer = class {
     return this.layoutLevelCompensationEnabled;
   }
   updateLayoutLevelCompensation() {
-    const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(this.layout) : 1;
     const now = this.ctx.currentTime;
     for (const [mode, node] of this.modeLayoutGains) {
+      const renderLayout = virtualLayoutForOutput(this.layout, mode);
+      const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(renderLayout) : 1;
       const value = mode === "multichannel" ? 1 : target;
       node.gain.cancelScheduledValues(now);
       node.gain.setValueAtTime(node.gain.value, now);
@@ -1912,5 +1934,6 @@ var SpatialRenderer = class {
   stereoDownmixGains,
   unregisterLocalHeadphoneCompensation,
   validateHeadphoneProfile,
-  validateLocalHeadphoneProfile
+  validateLocalHeadphoneProfile,
+  virtualLayoutForOutput
 });

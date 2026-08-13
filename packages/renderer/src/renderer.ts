@@ -157,6 +157,17 @@ export function layoutLevelCompensationGain(layout: readonly VirtualSpeaker[]): 
   return Math.min(1, Math.sqrt(referenceChannels / Math.max(referenceChannels, activeChannels)));
 }
 
+/** Front-wide HRTFs in the measured KU100 set have large mirrored spectral
+ * mismatch. Headphone/stereo output keeps the 60° image by panning it over the
+ * proven 7.1 base ring; physical multichannel retains native Wide L/R buses. */
+export function virtualLayoutForOutput(
+  layout: readonly VirtualSpeaker[],
+  mode: OutputMode,
+): readonly VirtualSpeaker[] {
+  if (mode === "multichannel") return layout;
+  return layout.filter((speaker) => speaker.name !== "WideLeft" && speaker.name !== "WideRight");
+}
+
 function binauralBank(mode: BinauralRenderMode | undefined, fallback: BinauralMode): BinauralBank {
   if (mode === "off" || mode === "near" || mode === "mid" || mode === "far") return mode;
   return mode === "not-indicated" ? BINAURAL_NOT_INDICATED_DEFAULT : fallback;
@@ -206,6 +217,9 @@ export class SpatialRenderer {
   readonly ctx: AudioContext;
   /** 当前用于 VBAP 与床层语义的布局；运行中可切换。 */
   layout: readonly VirtualSpeaker[];
+  /** Active gain-vector layout. Headphone/stereo 9.1 folds front-wide into the
+   * proven 7.1 base ring; physical output keeps the selected layout verbatim. */
+  private renderLayout: readonly VirtualSpeaker[];
   /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
   private readonly topology: readonly VirtualSpeaker[];
   mode: OutputMode;
@@ -272,7 +286,8 @@ export class SpatialRenderer {
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
     this.topology = LAYOUTS["9.1.6"];
-    this.vbap = new VbapSolver(this.layout);
+    this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.vbap = new VbapSolver(this.renderLayout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
     this.onBatchResult = options.onBatchResult;
@@ -364,20 +379,27 @@ export class SpatialRenderer {
     }
   }
 
+  private updateRenderLayout(): void {
+    this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.vbap = new VbapSolver(this.renderLayout);
+    for (const state of this.sources.values()) {
+      if (state.bedLabel && !state.isLfe) {
+        state.snapBus = this.renderLayout.findIndex((speaker) => speaker.name === state.bedLabel);
+      }
+    }
+  }
+
   /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头和卷积图继续
    * 存活；所有源通过短增益斜坡迁移到固定最大总线中的新位置。 */
   setLayout(layout: readonly VirtualSpeaker[]): void {
     if (layout === this.layout) return;
     this.layout = layout;
-    this.vbap = new VbapSolver(layout);
+    this.updateRenderLayout();
     this.buildExpansion();
     this.updateLayoutLevelCompensation();
     this.updateMultichannelLayout();
     this.updateDestinationChannelCount();
     for (const state of this.sources.values()) {
-      if (state.bedLabel && !state.isLfe) {
-        state.snapBus = this.layout.findIndex((speaker) => speaker.name === state.bedLabel);
-      }
       this.applyGains(state, 2048);
     }
   }
@@ -542,6 +564,7 @@ export class SpatialRenderer {
       gain.gain.linearRampToValueAtTime(target, now + duration);
     }
     this.mode = mode;
+    this.updateRenderLayout();
     // 床层扩展只属于物理多声道。输出模式切换后必须重推 gains，不能沿用
     // 旧模式的前宽/后环派生馈送。
     for (const state of this.sources.values()) this.applyGains(state, 2048);
@@ -603,7 +626,7 @@ export class SpatialRenderer {
       const gain = this.ctx.createGain();
       volume.gain.value = this.volume ** 2;
       balance.gain.value = this.layoutLevelCompensationEnabled && mode !== "multichannel"
-        ? layoutLevelCompensationGain(this.layout)
+        ? layoutLevelCompensationGain(virtualLayoutForOutput(this.layout, mode))
         : 1;
       program.gain.value = 1;
       gain.gain.value = mode === this.mode ? 1 : 0;
@@ -738,6 +761,7 @@ export class SpatialRenderer {
       this.node!.connect(splitter, outputIndex);
       for (let bus = 0; bus < n; bus++) {
         const spk = this.topology[bus]!;
+        if (spk.name === "WideLeft" || spk.name === "WideRight") continue;
         const gainL = this.ctx.createGain();
         const gainR = this.ctx.createGain();
         const [left, right] = stereoDownmixGains(spk);
@@ -765,6 +789,10 @@ export class SpatialRenderer {
     const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.topology, mode) : null;
     for (let bus = 0; bus < n; bus++) {
       const spk = this.topology[bus]!;
+      if (spk.name === "WideLeft" || spk.name === "WideRight") {
+        convs.push(null);
+        continue;
+      }
       if (spk.isLfe) {
         const lfeGain = this.ctx.createGain();
         const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
@@ -923,7 +951,7 @@ export class SpatialRenderer {
     state.bedLabel = normalized;
     state.isLfe = isLfeLabel(bedLabel);
     state.position = positionForLabel(bedLabel);
-    state.snapBus = state.isLfe ? -1 : this.layout.findIndex((speaker) => speaker.name === normalized);
+    state.snapBus = state.isLfe ? -1 : this.renderLayout.findIndex((speaker) => speaker.name === normalized);
     this.recomputeBedGainsAt(Math.trunc(atSample), 32);
   }
 
@@ -968,7 +996,7 @@ export class SpatialRenderer {
       // 床声道吸附：标签归一化后命中布局音箱 → 直送该音箱总线（物理直出语义），
       // 不再用 VBAP 摊到相邻音箱；布局里没有这个音箱才回退 VBAP 平移。
       if (!state.isLfe) {
-        state.snapBus = this.layout.findIndex((s) => s.name === state.bedLabel);
+        state.snapBus = this.renderLayout.findIndex((s) => s.name === state.bedLabel);
       }
     }
     this.sources.set(id, state);
@@ -1139,7 +1167,7 @@ export class SpatialRenderer {
     if (state.isLfe) {
       // LFE bypasses spatial panning: straight to the LFE bus.
       gains.fill(0);
-      const lfeBus = this.layout.findIndex((s) => s.isLfe);
+      const lfeBus = this.renderLayout.findIndex((s) => s.isLfe);
       if (lfeBus >= 0) gains[lfeBus] = 1;
       scalar = metadataGain;
       if (this.lfeMuted) scalar = 0;
@@ -1169,7 +1197,7 @@ export class SpatialRenderer {
     // 逻辑布局不存在的总线保持 0，切换布局仅更新这组斜坡，不触碰 PCM 缓冲。
     const topologyGains = new Float32Array(this.topology.length);
     for (let bus = 0; bus < gains.length; bus++) {
-      const target = this.topology.findIndex((speaker) => speaker.name === this.layout[bus]!.name);
+      const target = this.topology.findIndex((speaker) => speaker.name === this.renderLayout[bus]!.name);
       if (target >= 0) topologyGains[target] = gains[bus]!;
     }
     this.node?.port.postMessage({
@@ -1239,9 +1267,10 @@ export class SpatialRenderer {
   }
 
   private updateLayoutLevelCompensation(): void {
-    const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(this.layout) : 1;
     const now = this.ctx.currentTime;
     for (const [mode, node] of this.modeLayoutGains) {
+      const renderLayout = virtualLayoutForOutput(this.layout, mode);
+      const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(renderLayout) : 1;
       const value = mode === "multichannel" ? 1 : target;
       node.gain.cancelScheduledValues(now);
       node.gain.setValueAtTime(node.gain.value, now);
