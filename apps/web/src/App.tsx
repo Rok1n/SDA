@@ -62,7 +62,8 @@ export function App() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [debug, setDebug] = useState("");
-  const [errors, setErrors] = useState<string[]>([]);
+  /** 运行期错误只进 console，不再在页面上显示日志面板。 */
+  const [, setErrors] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
   const [paused, setPaused] = useState(false);
   /** 暂停意图的 ref 镜像：player 还在创建中（createPlayer 未 resolve）时按暂停，
@@ -554,31 +555,19 @@ export function App() {
             onVolume={changeVolume}
           />
         </section>
-        {(selectedHeadphoneProfile || errors.length > 0) && (
+        {selectedHeadphoneProfile && (
         <aside>
-          {selectedHeadphoneProfile && (
-            <div className="panel">
-              <h2>耳机补偿</h2>
-              <dl>
-                <dt>模式</dt>
-                <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
-                <dt>来源</dt>
-                <dd>{selectedHeadphoneProfile.source}</dd>
-                {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
-                {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
-              </dl>
-            </div>
-          )}
-          {errors.length > 0 && (
-            <div className="panel errors">
-              <h2>日志</h2>
-              <ul>
-                {errors.map((e, i) => (
-                  <li key={i}>{e}</li>
-                ))}
-              </ul>
-            </div>
-          )}
+          <div className="panel">
+            <h2>耳机补偿</h2>
+            <dl>
+              <dt>模式</dt>
+              <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
+              <dt>来源</dt>
+              <dd>{selectedHeadphoneProfile.source}</dd>
+              {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
+              {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
+            </dl>
+          </div>
         </aside>
         )}
       </main>

@@ -44,10 +44,13 @@ jobs:
         run: pnpm core:build
 
       - name: Build web + package Electron (NSIS)
-        run: pnpm --filter @sda/desktop build
+        # 上传由 softprops/action-gh-release 完成；禁止 electron-builder 自行发布，
+        # 否则 tag 构建会因找不到 repository 配置而失败。
+        run: |
+          pnpm --filter @sda/web build
+          pnpm --filter @sda/desktop exec electron-builder --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer to GitHub Release
         uses: softprops/action-gh-release@v2
