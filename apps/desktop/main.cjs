@@ -43,7 +43,13 @@ const openFiles = new Map();
 let nextFileId = 1;
 
 const PROFILE_SCHEMA_VERSION = 1;
+const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
+const webAssetRoots = () => [
+  path.join(__dirname, "web"),
+  path.join(__dirname, "../web/dist"),
+];
+const webAssetRoot = () => webAssetRoots().find((candidate) => fs.existsSync(path.join(candidate, "index.html")));
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
 function profileValidationError(message) {
@@ -138,11 +144,8 @@ function createWindow() {
     win.loadURL(DEV_URL);
     if (openDevTools) win.webContents.openDevTools({ mode: "detach" });
   } else {
-    const candidates = [
-      path.join(__dirname, "web/index.html"),
-      path.join(__dirname, "../web/dist/index.html"),
-    ];
-    const entry = candidates.find((candidate) => fs.existsSync(candidate));
+    const root = webAssetRoot();
+    const entry = root ? path.join(root, "index.html") : null;
     if (!entry) {
       dialog.showErrorBox(
         "SDA 无法启动",
@@ -198,6 +201,20 @@ ipcMain.handle("sda:read-slice", (_e, id, offset, length) => {
 
 ipcMain.handle("sda:close", (_e, id) => {
   openFiles.delete(id);
+});
+
+ipcMain.handle("sda:read-bundled-headphone-fir", (_e, assetPath) => {
+  if (typeof assetPath !== "string" || !BUNDLED_HEADPHONE_FIR_PATTERN.test(assetPath)) {
+    profileValidationError("内置 FIR 路径无效");
+  }
+  const root = webAssetRoot();
+  if (!root) throw new Error("找不到内置耳机补偿资产目录");
+  const resolvedRoot = path.resolve(root);
+  const filePath = path.resolve(root, ...assetPath.split("/"));
+  if (path.dirname(path.dirname(filePath)) !== path.join(resolvedRoot, "headphone-compensation")) {
+    profileValidationError("内置 FIR 路径越界");
+  }
+  return fs.readFileSync(filePath);
 });
 
 ipcMain.handle("sda:import-headphone-profile", async () => {

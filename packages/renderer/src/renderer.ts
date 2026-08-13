@@ -718,6 +718,7 @@ export class SpatialRenderer {
         if (this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
         this.headphoneBuffers = buffers;
         this.installHeadphoneCompensation(buffers);
+        console.log(`[SDA] 耳机补偿已启用: ${profile.id} (${buffers.left.length}/${buffers.right.length} taps)`);
       })
       .catch((error) => console.warn(`[SDA] 耳机补偿加载失败，保持 bypass: ${profile.id}`, error));
   }

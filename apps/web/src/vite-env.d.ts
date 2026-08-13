@@ -43,6 +43,7 @@ declare global {
       openPath?: (filePath: string) => Promise<{ id: number; size: number; name: string }>;
       readSlice?: (id: number, offset: number, length: number) => Promise<Uint8Array>;
       close?: (id: number) => Promise<void>;
+      readBundledHeadphoneFir?: (assetPath: string) => Promise<Uint8Array>;
       importHeadphoneProfile?: () => Promise<{ profile: LocalHeadphoneProfileManifest; leftFir: Uint8Array; rightFir: Uint8Array } | null>;
       listHeadphoneProfiles?: () => Promise<LocalHeadphoneProfileManifest[]>;
       readHeadphoneProfile?: (id: string) => Promise<{ profile: LocalHeadphoneProfileManifest; leftFir: Uint8Array; rightFir: Uint8Array }>;

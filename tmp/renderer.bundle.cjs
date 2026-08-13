@@ -42,6 +42,7 @@ __export(index_exports, {
   physicalChannelOrder: () => physicalChannelOrder,
   positionForLabel: () => positionForLabel,
   registerLocalHeadphoneCompensation: () => registerLocalHeadphoneCompensation,
+  setHeadphoneCompensationAssetLoader: () => setHeadphoneCompensationAssetLoader,
   sphericalToAdm: () => sphericalToAdm,
   sphericalToWebAudio: () => sphericalToWebAudio,
   stereoDownmixGains: () => stereoDownmixGains,
@@ -677,6 +678,11 @@ var HEADPHONE_COMPENSATION_PROFILES = [
 ];
 var localProfiles = /* @__PURE__ */ new Map();
 var rawCache = /* @__PURE__ */ new Map();
+var bundledAssetLoader = null;
+function setHeadphoneCompensationAssetLoader(loader) {
+  bundledAssetLoader = loader;
+  rawCache.clear();
+}
 function headphoneProfileById(id) {
   if (!id) return null;
   return localProfiles.get(id)?.profile ?? HEADPHONE_COMPENSATION_PROFILES.find((profile) => profile.id === id) ?? null;
@@ -792,7 +798,14 @@ async function getRawHeadphoneCompensation(profile) {
       profile: local.profile,
       left: decodeRawFir(local.leftFir, local.profile.leftFir.fileName),
       right: decodeRawFir(local.rightFir, local.profile.rightFir.fileName)
-    }) : Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)]).then(async ([left, right]) => {
+    }) : bundledAssetLoader ? Promise.all([
+      bundledAssetLoader(profile.leftFirUrl),
+      bundledAssetLoader(profile.rightFirUrl)
+    ]).then(([leftBuffer, rightBuffer]) => ({
+      profile,
+      left: decodeRawFir(leftBuffer, profile.leftFirUrl),
+      right: decodeRawFir(rightBuffer, profile.rightFirUrl)
+    })) : Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)]).then(async ([left, right]) => {
       if (!left.ok) throw new Error(`\u8033\u673A\u5DE6 FIR HTTP ${left.status}: ${profile.leftFirUrl}`);
       if (!right.ok) throw new Error(`\u8033\u673A\u53F3 FIR HTTP ${right.status}: ${profile.rightFirUrl}`);
       const [leftBuffer, rightBuffer] = await Promise.all([left.arrayBuffer(), right.arrayBuffer()]);
@@ -1384,6 +1397,7 @@ var SpatialRenderer = class {
       if (this.headphoneProfileId !== profile.id || revision !== this.outputGraphRevision || this.ctx.state === "closed") return;
       this.headphoneBuffers = buffers;
       this.installHeadphoneCompensation(buffers);
+      console.log(`[SDA] \u8033\u673A\u8865\u507F\u5DF2\u542F\u7528: ${profile.id} (${buffers.left.length}/${buffers.right.length} taps)`);
     }).catch((error) => console.warn(`[SDA] \u8033\u673A\u8865\u507F\u52A0\u8F7D\u5931\u8D25\uFF0C\u4FDD\u6301 bypass: ${profile.id}`, error));
   }
   /** Physical output keeps the 16-bus worklet topology internal, then compacts
@@ -1892,6 +1906,7 @@ var SpatialRenderer = class {
   physicalChannelOrder,
   positionForLabel,
   registerLocalHeadphoneCompensation,
+  setHeadphoneCompensationAssetLoader,
   sphericalToAdm,
   sphericalToWebAudio,
   stereoDownmixGains,

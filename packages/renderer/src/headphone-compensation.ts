@@ -158,6 +158,16 @@ interface RawHeadphoneCompensation {
 }
 
 const rawCache = new Map<string, Promise<RawHeadphoneCompensation>>();
+let bundledAssetLoader: ((assetPath: string) => Promise<ArrayBuffer>) | null = null;
+
+/** Desktop file:// pages cannot fetch sibling .f32 files. The shell injects a
+ * path-restricted loader; normal web builds keep using HTTP fetch. */
+export function setHeadphoneCompensationAssetLoader(
+  loader: ((assetPath: string) => Promise<ArrayBuffer>) | null,
+): void {
+  bundledAssetLoader = loader;
+  rawCache.clear();
+}
 
 export function headphoneProfileById(id: string | null): HeadphoneCompensationProfile | null {
   if (!id) return null;
@@ -288,13 +298,22 @@ async function getRawHeadphoneCompensation(profile: HeadphoneCompensationProfile
           left: decodeRawFir(local.leftFir, local.profile.leftFir.fileName),
           right: decodeRawFir(local.rightFir, local.profile.rightFir.fileName),
         })
-      : Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)])
-          .then(async ([left, right]) => {
-            if (!left.ok) throw new Error(`耳机左 FIR HTTP ${left.status}: ${profile.leftFirUrl}`);
-            if (!right.ok) throw new Error(`耳机右 FIR HTTP ${right.status}: ${profile.rightFirUrl}`);
-            const [leftBuffer, rightBuffer] = await Promise.all([left.arrayBuffer(), right.arrayBuffer()]);
-            return { profile, left: decodeRawFir(leftBuffer, profile.leftFirUrl), right: decodeRawFir(rightBuffer, profile.rightFirUrl) };
-          });
+      : bundledAssetLoader
+        ? Promise.all([
+            bundledAssetLoader(profile.leftFirUrl),
+            bundledAssetLoader(profile.rightFirUrl),
+          ]).then(([leftBuffer, rightBuffer]) => ({
+            profile,
+            left: decodeRawFir(leftBuffer, profile.leftFirUrl),
+            right: decodeRawFir(rightBuffer, profile.rightFirUrl),
+          }))
+        : Promise.all([fetch(profile.leftFirUrl), fetch(profile.rightFirUrl)])
+            .then(async ([left, right]) => {
+              if (!left.ok) throw new Error(`耳机左 FIR HTTP ${left.status}: ${profile.leftFirUrl}`);
+              if (!right.ok) throw new Error(`耳机右 FIR HTTP ${right.status}: ${profile.rightFirUrl}`);
+              const [leftBuffer, rightBuffer] = await Promise.all([left.arrayBuffer(), right.arrayBuffer()]);
+              return { profile, left: decodeRawFir(leftBuffer, profile.leftFirUrl), right: decodeRawFir(rightBuffer, profile.rightFirUrl) };
+            });
     request.catch(() => rawCache.delete(profile.id));
     rawCache.set(profile.id, request);
   }

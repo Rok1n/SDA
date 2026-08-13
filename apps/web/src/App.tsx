@@ -4,6 +4,7 @@ import type { BinauralRenderMetadata, BinauralRenderMode } from "@sda/demux";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
+  setHeadphoneCompensationAssetLoader,
   type LocalHeadphoneCompensationData,
   LAYOUTS,
   detectLayoutId,
@@ -17,6 +18,16 @@ import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
 
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
+
+const bundledFirReader = window.sdaDesktop?.readBundledHeadphoneFir;
+setHeadphoneCompensationAssetLoader(bundledFirReader
+  ? async (assetPath) => {
+      const bytes = await bundledFirReader(assetPath);
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      return copy.buffer;
+    }
+  : null);
 
 export function App() {
   const playerRef = useRef<SdaPlayer | null>(null);
