@@ -59,7 +59,7 @@ class FakeAudioContext {
 }
 globalThis.AudioContext = FakeAudioContext;
 
-const { SpatialRenderer, LAYOUTS } = await import(pathToFileURL(out).href);
+const { SpatialRenderer, LAYOUTS, RENDER_TOPOLOGY, physicalChannelOrder, speakerBusKey } = await import(pathToFileURL(out).href);
 
 let failed = 0;
 function check(cond, what) {
@@ -69,9 +69,13 @@ function check(cond, what) {
 const lastGains = (id) => [...postedToWorklet].reverse().find((m) => (m.type === "gains" || m.type === "scheduleGains") && m.id === id);
 const near = (a, b) => Math.abs(a - b) < 1e-6;
 
-// 固定运行时总线：[FL0 FR1 C2 LFE3 WL4 WR5 SL6 SR7 RL8 RR9 TFL10 TFR11 TSL12 TSR13 TRL14 TRR15]
-const TOPOLOGY = LAYOUTS["9.1.6"];
-const bus = (name) => TOPOLOGY.findIndex((speaker) => speaker.name === name);
+// 固定运行时拓扑包含 9.1.6 全部位置，再追加 5.1 专用的 +/-110 度环绕。
+const TOPOLOGY = RENDER_TOPOLOGY;
+const bus = (key) => TOPOLOGY.findIndex((speaker) => speakerBusKey(speaker) === key);
+const projectorExpectation = (layout) => physicalChannelOrder(layout).map((layoutBus, channel) => [
+  TOPOLOGY.findIndex((speaker) => speakerBusKey(speaker) === speakerBusKey(layout[layoutBus])),
+  channel,
+]);
 const BED_5_1 = ["FrontLeft", "FrontRight", "Center", "LFE", "SurroundLeft", "SurroundRight"];
 function addBed(r, labels) {
   labels.forEach((label, ch) => { if (!label.startsWith("Obj_")) r.addSource(`bed:${ch}`, { bedLabel: label }); });
@@ -135,7 +139,7 @@ function addBed(r, labels) {
   await r.init("mock://worklet");
   addBed(r, BED_5_1);
   const g = lastGains("bed:4").gains;
-  check(g[bus("SurroundLeft")] === 1 && g.every((v, i) => i === bus("SurroundLeft") || v === 0), `5.1→5.1: Ls 直送侧环，无馈送（布局无后环）`);
+  check(g[bus("Surround5Left")] === 1 && g.every((v, i) => i === bus("Surround5Left") || v === 0), `5.1→5.1: Ls 直送独立 110 度环绕，无馈送（布局无后环）`);
 }
 
 // ---- 5. 5.1 床 → 9.1.4 布局（多声道）：前宽馈送 + 后环馈送 ----
@@ -219,8 +223,8 @@ function addBed(r, labels) {
   await r.init("mock://worklet");
   check(ctx.destination.channelCount === 12 && ctx.destination.channelCountMode === "explicit",
     `多声道: 7.1.4 compact 输出为 12 ch（实际 ${ctx.destination.channelCount}/${ctx.destination.channelCountMode}）`);
-  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge12" && typeof w.out === "number" && typeof w.in === "number");
-  const expect = [[0, 0], [1, 1], [2, 2], [3, 3], [8, 4], [9, 5], [6, 6], [7, 7], [10, 8], [11, 9], [14, 10], [15, 11]];
+  const edges = wiring.filter((w) => w.from === "split18" && w.to === "merge12" && typeof w.out === "number" && typeof w.in === "number");
+  const expect = projectorExpectation(LAYOUTS["7.1.4"]);
   const ok = expect.every(([bus, channel]) => edges.some((e) => e.out === bus && e.in === channel));
   check(ok && edges.length === expect.length * 4, `多声道: 四个 bank 的 7.1.4 总线按 compact WASAPI 顺序重排${ok ? "" : JSON.stringify(edges)}`);
 }
@@ -232,8 +236,8 @@ function addBed(r, labels) {
   const r = new SpatialRenderer(ctx, { mode: "multichannel", layout: LAYOUTS["5.1"] });
   await r.init("mock://worklet");
   check(ctx.destination.channelCount === 6, `多声道 5.1: destination 紧凑为 6 ch`);
-  const edges = wiring.filter((w) => w.from === "split16" && w.to === "merge6" && typeof w.out === "number" && typeof w.in === "number");
-  const expect = [[0, 0], [1, 1], [2, 2], [3, 3], [6, 4], [7, 5]];
+  const edges = wiring.filter((w) => w.from === "split18" && w.to === "merge6" && typeof w.out === "number" && typeof w.in === "number");
+  const expect = projectorExpectation(LAYOUTS["5.1"]);
   const ok = expect.every(([bus, channel]) => edges.some((edge) => edge.out === bus && edge.in === channel));
   check(ok && edges.length === expect.length * 4, `多声道 5.1: 四个 bank 全部投影到无空洞 WASAPI 顺序`);
 }

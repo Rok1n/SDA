@@ -77,8 +77,8 @@ eq(String(isLfeLabel("LFE")), "true", "LFE 判定为 LFE");
 eq(String(isLfeLabel("FrontLeft")), "false", "FrontLeft 不是 LFE");
 eq(
   String(positionForLabel("TopSurroundLeft").azimuth),
-  String(positionForLabel("TopSideLeft").azimuth),
-  "TopSurroundLeft 归一到 TopSideLeft 位置",
+  String(positionForLabel("TopMiddleLeft").azimuth),
+  "TopSurroundLeft 归一到 TopMiddleLeft 位置",
 );
 eq(
   String(positionForLabel("TopSurroundLeft").elevation),
@@ -113,14 +113,35 @@ eq(
 );
 
 eq(
+  detectLayoutId(["L", "R", "Tsl", "Tsr"], false),
+  "5.1.2",
+  "truehd Top Middle 对触发 Dolby 5.1.2",
+);
+eq(
+  detectLayoutId(["L", "R", "Tfl", "Tfr"], false),
+  "5.1.4",
+  "truehd Top Front 对需要含同名音箱的 Dolby 5.1.4",
+);
+eq(
+  detectLayoutId(["L", "R", "Tfl", "Tfr", "Tsl", "Tsr"], false),
+  "5.1.4",
+  "5.1 不提供 .6 时将 Top Front + Top Middle 收窄到 5.1.4",
+);
+eq(
+  detectLayoutId(["L", "R", "Lw", "Rw", "Lb", "Rb", "Tfl", "Tfr", "Tsl", "Tsr"], false),
+  "9.1.6",
+  "9.1 Top Front + Top Middle 触发 Dolby 9.1.6",
+);
+
+eq(
   detectLayoutId(["L", "R", "Tc"], false),
   "5.1.2",
   "truehd 顶中 Tc 触发顶层布局",
 );
 eq(
   detectLayoutId(["L", "R", "Tfc"], false),
-  "5.1.2",
-  "truehd 顶前中 Tfc 触发顶层布局",
+  "5.1.4",
+  "truehd 顶前中 Tfc 需要含 Top Front 的布局",
 );
 eq(String(positionForLabel("Tc").azimuth), "0", "truehd Tc 保持正中方位");
 eq(String(positionForLabel("Tfc").azimuth), "0", "truehd Tfc 保持正中方位");

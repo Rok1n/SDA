@@ -376,7 +376,7 @@ export function App() {
             <option value="auto">自动{detectedLayout ? `（${detectedLayout}）` : ""}</option>
             {(Object.keys(LAYOUTS) as LayoutId[]).map((id) => (
               <option key={id} value={id}>
-                布局 {id}
+                Dolby {id}
               </option>
             ))}
           </select>

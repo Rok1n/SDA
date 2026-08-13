@@ -1,5 +1,6 @@
 // Headless runtime-layout test: logical layout changes must not recreate the
-// AudioWorklet or discard source state. The output topology remains 9.1.6.
+// AudioWorklet or discard source state. The output topology retains every
+// distinct standard virtual-speaker position.
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
@@ -47,7 +48,7 @@ class FakeAudioContext {
   async close() { this.state = "closed"; }
 }
 
-const { LAYOUTS, SpatialRenderer } = await import(pathToFileURL(out).href);
+const { LAYOUTS, RENDER_TOPOLOGY, SpatialRenderer, speakerBusKey } = await import(pathToFileURL(out).href);
 let failed = 0;
 function check(condition, text) {
   if (!condition) failed++;
@@ -69,14 +70,14 @@ renderer.applyEvent({ id: 9, pos: [-1, 0, 0], hasPos: true, size: 0, gainDb: 0, 
 renderer.setSourceMuted("obj:9", true);
 
 check(worklets === 2, `初始创建 source renderer + final peak guard 两个 worklet（${worklets}）`);
-check(latest("bed:fl").gains.length === LAYOUTS["9.1.6"].length, "输出固定为 9.1.6 最大总线拓扑");
+check(latest("bed:fl").gains.length === RENDER_TOPOLOGY.length, "输出固定为全部标准位置的 18 总线拓扑");
 
 for (const id of ["7.1.4", "9.1.6", "5.1"]) {
   const before = worklets;
   renderer.setLayout(LAYOUTS[id]);
   const bed = latest("bed:fl");
   const object = latest("obj:9");
-  const frontLeft = LAYOUTS["9.1.6"].findIndex((speaker) => speaker.name === "FrontLeft");
+  const frontLeft = RENDER_TOPOLOGY.findIndex((speaker) => speakerBusKey(speaker) === "FrontLeft");
   check(worklets === before, `${id}: 不重建 worklet`);
   check(bed.gains[frontLeft] === 1, `${id}: 床 FrontLeft 重新吸附固定总线`);
   check(latestMute("obj:9")?.muted === true, `${id}: 对象静音状态保留`);

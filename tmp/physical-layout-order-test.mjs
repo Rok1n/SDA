@@ -14,8 +14,8 @@ const names = (id) => physicalChannelOrder(LAYOUTS[id]).map((index) => LAYOUTS[i
 
 check(names("7.1.2").join() === [
   "FrontLeft", "FrontRight", "Center", "LFE", "RearLeft", "RearRight",
-  "SurroundLeft", "SurroundRight", "TopFrontLeft", "TopFrontRight",
-].join(), "7.1.2 物理输出紧凑且顶前声道在前 10 槽");
+  "SurroundLeft", "SurroundRight", "TopMiddleLeft", "TopMiddleRight",
+].join(), "7.1.2 物理输出紧凑且中顶声道在前 10 槽");
 check(names("7.1.4").join() === [
   "FrontLeft", "FrontRight", "Center", "LFE", "RearLeft", "RearRight",
   "SurroundLeft", "SurroundRight", "TopFrontLeft", "TopFrontRight", "TopRearLeft", "TopRearRight",
@@ -23,12 +23,12 @@ check(names("7.1.4").join() === [
 check(names("9.1.6").join() === [
   "FrontLeft", "FrontRight", "Center", "LFE", "RearLeft", "RearRight",
   "WideLeft", "WideRight", "SurroundLeft", "SurroundRight",
-  "TopFrontLeft", "TopFrontRight", "TopSideLeft", "TopSideRight", "TopRearLeft", "TopRearRight",
+  "TopFrontLeft", "TopFrontRight", "TopMiddleLeft", "TopMiddleRight", "TopRearLeft", "TopRearRight",
 ].join(), "9.1.6 WASAPI 顺序为 BL/BR、FLC/FRC、SL/SR 后接六顶声道");
 for (const [id, layout] of Object.entries(LAYOUTS)) {
   const order = physicalChannelOrder(layout);
   check(order.length === layout.length && new Set(order).size === layout.length,
-    `${id}: 每个选择布局声道恰好投影一次且无 16-slot 空洞`);
+    `${id}: 每个选择布局声道恰好投影一次且无固定拓扑空洞`);
 }
 
 console.log(failed ? `\n${failed} 项失败` : "\n物理布局紧凑输出顺序通过");

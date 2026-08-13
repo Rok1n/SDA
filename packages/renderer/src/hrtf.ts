@@ -131,6 +131,13 @@ function nearestPosition(set: BinauralIrSet, azimuth: number, elevation: number)
   return best;
 }
 
+function mirrorAudioBuffer(ctx: AudioContext, source: AudioBuffer): AudioBuffer {
+  const mirrored = ctx.createBuffer(2, source.length, ctx.sampleRate);
+  mirrored.copyToChannel(source.getChannelData(1), 0);
+  mirrored.copyToChannel(source.getChannelData(0), 1);
+  return mirrored;
+}
+
 // ---- 混合 + 重采样 ----
 
 /** 线性重采样（IR 长度短，线性足够；避免离线再产一套 44.1k 文件）。 */
@@ -260,8 +267,16 @@ export function buildBusIrs(
   const result = new Map<number, AudioBuffer>();
   layout.forEach((spk, bus) => {
     if (spk.isLfe) return;
-    const raw = nearestPosition(set, spk.azimuth, spk.elevation);
-    if (raw) result.set(bus, mixIrForMode(ctx, set, raw, mode));
+    // The measured -60-degree KU100 response has a large spectral mismatch
+    // against +60 degrees. Use the more continuous +60-degree measurement for
+    // both front wides and mirror its ears for the right side.
+    const canonicalWide = spk.name === "WideRight"
+      ? nearestPosition(set, -spk.azimuth, spk.elevation)
+      : null;
+    const raw = canonicalWide ?? nearestPosition(set, spk.azimuth, spk.elevation);
+    if (!raw) return;
+    const ir = mixIrForMode(ctx, set, raw, mode);
+    result.set(bus, canonicalWide ? mirrorAudioBuffer(ctx, ir) : ir);
   });
   return result;
 }

@@ -32,7 +32,7 @@ class FakeAudioContext {
   createBuffer(_, length) { return { copyToChannel() {}, length }; }
   async close() { this.state = "closed"; }
 }
-const { LAYOUTS, SpatialRenderer } = await import(pathToFileURL(bundle).href);
+const { LAYOUTS, RENDER_TOPOLOGY, SpatialRenderer } = await import(pathToFileURL(bundle).href);
 let failed = 0;
 function check(condition, text) { if (!condition) failed++; console.log(`${condition ? "PASS" : "FAIL"}  ${text}`); }
 function latest(id) { return [...posted].reverse().find((message) => (message.type === "gains" || message.type === "scheduleGains") && message.id === id); }
@@ -51,7 +51,7 @@ renderer.applyEvent(event(11, 2.5), 128);
 const near = latest("obj:10");
 const far = latest("obj:11");
 const bedAfter = latest("bed:0");
-check(near.gains.length === LAYOUTS["9.1.6"].length && far.gains.length === LAYOUTS["9.1.6"].length, "原始多声道方位 gain 保持最大拓扑宽度");
+check(near.gains.length === RENDER_TOPOLOGY.length && far.gains.length === RENDER_TOPOLOGY.length, "原始多声道方位 gain 保持全部标准位置拓扑宽度");
 check(near.gains.every((value, index) => value === far.gains[index]), "相同 ADM 坐标的 VBAP gain 不受 OAMD distanceM 影响");
 check(near.gain === far.gain && near.gain === 1, "OAMD distanceM 不推导节目增益或 DBMD 模式");
 check(near.wet === undefined && far.wet === undefined && bedBefore.wet === undefined && bedAfter.wet === undefined,

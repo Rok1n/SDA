@@ -7,6 +7,9 @@ import type { Spherical } from "./coords.js";
 
 export interface VirtualSpeaker extends Spherical {
   name: string;
+  /** Stable worklet bus key. Speakers with the same channel label but different
+   * standard positions (5.1 Ls/Rs vs 7.1 Ls/Rs) must not share a bus. */
+  bus?: string;
   /** True for the LFE — excluded from spatial panning (passed straight through). */
   isLfe?: boolean;
 }
@@ -20,17 +23,18 @@ const FRONT: VirtualSpeaker[] = [
 ];
 /** 5.1 环绕在 ±110°（ITU-R BS.775）。 */
 const SURROUND_5: VirtualSpeaker[] = [
-  { name: "SurroundLeft", azimuth: 110, elevation: 0, distance: 1 },
-  { name: "SurroundRight", azimuth: -110, elevation: 0, distance: 1 },
+  { name: "SurroundLeft", bus: "Surround5Left", azimuth: 110, elevation: 0, distance: 1 },
+  { name: "SurroundRight", bus: "Surround5Right", azimuth: -110, elevation: 0, distance: 1 },
 ];
-/** 7.1 拆成侧环 ±100° + 后环 ±140°（ITU 90–110 / 130–150 区间中值）。 */
+/** 7.1 nominal sides +/-100 and rears +/-140, both inside BS.2051 ranges. */
 const SURROUND_7: VirtualSpeaker[] = [
   { name: "SurroundLeft", azimuth: 100, elevation: 0, distance: 1 },
   { name: "SurroundRight", azimuth: -100, elevation: 0, distance: 1 },
   { name: "RearLeft", azimuth: 140, elevation: 0, distance: 1 },
   { name: "RearRight", azimuth: -140, elevation: 0, distance: 1 },
 ];
-/** 9.1 = 7.1 + 前宽 ±60°（Dolby 9.1）。 */
+/** 9.1 adds Dolby Wide identities between L/R and the side surrounds. +/-60
+ * degrees is SDA's nominal renderer direction, not a Genelec or ITU 9.1 preset. */
 const WIDE: VirtualSpeaker[] = [
   { name: "WideLeft", azimuth: 60, elevation: 0, distance: 1 },
   { name: "WideRight", azimuth: -60, elevation: 0, distance: 1 },
@@ -43,9 +47,11 @@ const TOP_REAR: VirtualSpeaker[] = [
   { name: "TopRearLeft", azimuth: 135, elevation: 45, distance: 1 },
   { name: "TopRearRight", azimuth: -135, elevation: 45, distance: 1 },
 ];
-const TOP_SIDE: VirtualSpeaker[] = [
-  { name: "TopSideLeft", azimuth: 90, elevation: 45, distance: 1 },
-  { name: "TopSideRight", azimuth: -90, elevation: 45, distance: 1 },
+/** Nominal renderer directions for Dolby Top Middle. ITU BS.2051 System H
+ * provides the matching upper-side position at +/-90 degrees, +30..45 degrees. */
+const TOP_MIDDLE: VirtualSpeaker[] = [
+  { name: "TopMiddleLeft", azimuth: 90, elevation: 45, distance: 1 },
+  { name: "TopMiddleRight", azimuth: -90, elevation: 45, distance: 1 },
 ];
 
 const BED_5_1 = [...FRONT, ...SURROUND_5];
@@ -58,16 +64,27 @@ export const LAYOUT_7_1_4: VirtualSpeaker[] = [...BED_7_1, ...TOP_FRONT, ...TOP_
 /** 可选扬声器布局（床 + 顶箱组合）。 */
 export const LAYOUTS = {
   "5.1": BED_5_1,
-  "5.1.2": [...BED_5_1, ...TOP_FRONT],
+  "5.1.2": [...BED_5_1, ...TOP_MIDDLE],
   "5.1.4": [...BED_5_1, ...TOP_FRONT, ...TOP_REAR],
-  "7.1.2": [...BED_7_1, ...TOP_FRONT],
+  "7.1.2": [...BED_7_1, ...TOP_MIDDLE],
   "7.1.4": LAYOUT_7_1_4,
-  "9.1.2": [...BED_9_1, ...TOP_FRONT],
+  "9.1.2": [...BED_9_1, ...TOP_MIDDLE],
   "9.1.4": [...BED_9_1, ...TOP_FRONT, ...TOP_REAR],
-  "9.1.6": [...BED_9_1, ...TOP_FRONT, ...TOP_SIDE, ...TOP_REAR],
+  "9.1.6": [...BED_9_1, ...TOP_FRONT, ...TOP_MIDDLE, ...TOP_REAR],
 } as const;
 
 export type LayoutId = keyof typeof LAYOUTS;
+
+/** Union of every distinct virtual-speaker position. Keep the 9.1.6 bus order
+ * stable, then append the separate +/-110-degree 5.1 surrounds. */
+export const RENDER_TOPOLOGY: readonly VirtualSpeaker[] = [
+  ...LAYOUTS["9.1.6"],
+  ...SURROUND_5,
+];
+
+export function speakerBusKey(speaker: Pick<VirtualSpeaker, "name" | "bus">): string {
+  return speaker.bus ?? speaker.name;
+}
 
 /** Decoder bed-channel labels (Rust `BedChannel`/`ChannelLabel` Debug names)
  *  → virtual speaker position. Unknown labels fall back to front.
@@ -92,8 +109,8 @@ const LABEL_ALIASES: Record<string, string> = {
   Rs: "SurroundRight",
   Tfl: "TopFrontLeft",
   Tfr: "TopFrontRight",
-  Tsl: "TopSideLeft",
-  Tsr: "TopSideRight",
+  Tsl: "TopMiddleLeft",
+  Tsr: "TopMiddleRight",
   Tbl: "TopRearLeft",
   Tbr: "TopRearRight",
   Lsc: "SurroundLeft",
@@ -118,10 +135,12 @@ const LABEL_ALIASES: Record<string, string> = {
   Ltr: "TopRearLeft",
   Rtr: "TopRearRight",
   // Older bridge/ADM spellings.
-  Lts: "TopSideLeft",
-  Rts: "TopSideRight",
-  Ltm: "TopSideLeft",
-  Rtm: "TopSideRight",
+  TopSideLeft: "TopMiddleLeft",
+  TopSideRight: "TopMiddleRight",
+  Lts: "TopMiddleLeft",
+  Rts: "TopMiddleRight",
+  Ltm: "TopMiddleLeft",
+  Rtm: "TopMiddleRight",
   Trl: "TopRearLeft",
   Trr: "TopRearRight",
   Lfe: "LFE",
@@ -133,13 +152,13 @@ const LABEL_ALIASES: Record<string, string> = {
   SurroundRightRear: "RearRight",
   RearLeftSurround: "RearLeft",
   RearRightSurround: "RearRight",
-  TopSurroundLeft: "TopSideLeft", // eac3 BedChannel::TopSurround* = 顶侧
-  TopSurroundRight: "TopSideRight",
+  TopSurroundLeft: "TopMiddleLeft", // eac3 BedChannel::TopSurround* = 顶中
+  TopSurroundRight: "TopMiddleRight",
   TopLeft: "TopFrontLeft",
   TopRight: "TopFrontRight",
   WideLeft: "WideLeft", // 9.1 前宽 ±60°
   WideRight: "WideRight",
-  TopCenter: "TopFrontLeft",
+  TopCenter: "TopCenter",
   CenterSurround: "RearCenter",
   RearCenter: "RearCenter",
 };
@@ -164,7 +183,7 @@ export function physicalChannelOrder(layout: readonly VirtualSpeaker[]): number[
     "RearLeft", "RearRight", // WASAPI BL/BR bits
     "WideLeft", "WideRight", // WASAPI FLC/FRC bits precede side surrounds
     "SurroundLeft", "SurroundRight",
-    "TopFrontLeft", "TopFrontRight", "TopSideLeft", "TopSideRight",
+    "TopFrontLeft", "TopFrontRight", "TopMiddleLeft", "TopMiddleRight",
     "TopRearLeft", "TopRearRight",
   ];
   const order = PRIORITY.map((name) => layout.findIndex((s) => s.name === name)).filter(
@@ -199,10 +218,13 @@ export function detectLayoutId(labels: readonly string[], hasDynamics: boolean):
   // 6.1 的后中置（RearCenter）也按 7.1 床渲染 —— 由后环对合成正后方声像
   else if (has("RearLeft", "RearRight") || names.has("RearCenter")) base = 7;
 
+  const hasTopMiddle = has("TopMiddleLeft", "TopMiddleRight");
+  const hasTopRear = has("TopRearLeft", "TopRearRight");
+  const hasTopFront = has("TopFrontLeft", "TopFrontRight") || names.has("TopFrontCenter");
   let tops: 0 | 2 | 4 | 6 = 0;
-  if (has("TopSideLeft", "TopSideRight")) tops = 6;
-  else if (has("TopRearLeft", "TopRearRight")) tops = 4;
-  else if (has("TopFrontLeft", "TopFrontRight") || names.has("TopCenter") || names.has("TopFrontCenter")) tops = 2;
+  if (hasTopMiddle && (hasTopFront || hasTopRear)) tops = 6;
+  else if (hasTopRear || hasTopFront) tops = 4;
+  else if (hasTopMiddle || names.has("TopCenter")) tops = 2;
 
   if (hasDynamics) {
     if (base < 7) base = 7;

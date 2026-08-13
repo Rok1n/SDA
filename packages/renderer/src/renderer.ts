@@ -16,19 +16,22 @@
  * 与对象数量解耦。近/中/远（杜比 Binaural Settings）只控制干/湿 IR 混合；
  * 源侧按 Apple inverse 距离定律处理环外对象。
  *
- * 监听系统仿真（真力 The Ones + 7370A）：杜比未公布各布局逐音箱 EQ（只有
- * 摆位角度和 LFE 规范）。双耳耳机路径只保留 120Hz LR4 低通，不套用音箱
- * 回放的 +10dB LFE 补偿，也不包含主声道的低频重定向。
+ * 虚拟监听几何采用 Dolby 家庭布局的声道身份，并在 ITU-R BS.2051 允许范围内
+ * 选择固定标称方向。Genelec 文档只规定设备组合与 GLM 校准，不发布这些布局的
+ * 专属角度或逐音箱 EQ。双耳路径只保留 120Hz LFE 低通，不套用音箱回放的
+ * +10dB LFE 补偿，也不包含主声道的低频重定向。
  */
 
 import { admToSpherical, sphericalToWebAudio, type Spherical } from "./coords.js";
 import {
   LAYOUT_7_1_4,
   LAYOUTS,
+  RENDER_TOPOLOGY,
   positionForLabel,
   isLfeLabel,
   aliasLabel,
   physicalChannelOrder,
+  speakerBusKey,
   type VirtualSpeaker,
 } from "./layouts.js";
 import { VbapSolver } from "./vbap.js";
@@ -157,15 +160,13 @@ export function layoutLevelCompensationGain(layout: readonly VirtualSpeaker[]): 
   return Math.min(1, Math.sqrt(referenceChannels / Math.max(referenceChannels, activeChannels)));
 }
 
-/** Front-wide HRTFs in the measured KU100 set have large mirrored spectral
- * mismatch. Headphone/stereo output keeps the 60° image by panning it over the
- * proven 7.1 base ring; physical multichannel retains native Wide L/R buses. */
+/** All output modes use the selected standard speaker geometry. Output-specific
+ * processing belongs in the output graph, never in the VBAP layout. */
 export function virtualLayoutForOutput(
   layout: readonly VirtualSpeaker[],
-  mode: OutputMode,
+  _mode: OutputMode,
 ): readonly VirtualSpeaker[] {
-  if (mode === "multichannel") return layout;
-  return layout.filter((speaker) => speaker.name !== "WideLeft" && speaker.name !== "WideRight");
+  return layout;
 }
 
 function binauralBank(mode: BinauralRenderMode | undefined, fallback: BinauralMode): BinauralBank {
@@ -217,8 +218,7 @@ export class SpatialRenderer {
   readonly ctx: AudioContext;
   /** 当前用于 VBAP 与床层语义的布局；运行中可切换。 */
   layout: readonly VirtualSpeaker[];
-  /** Active gain-vector layout. Headphone/stereo 9.1 folds front-wide into the
-   * proven 7.1 base ring; physical output keeps the selected layout verbatim. */
+  /** Active gain-vector layout. Geometry is identical in every output mode. */
   private renderLayout: readonly VirtualSpeaker[];
   /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
   private readonly topology: readonly VirtualSpeaker[];
@@ -285,7 +285,7 @@ export class SpatialRenderer {
     this.ctx = ctx;
     this.mode = options.mode ?? "binaural";
     this.layout = options.layout ?? LAYOUT_7_1_4;
-    this.topology = LAYOUTS["9.1.6"];
+    this.topology = RENDER_TOPOLOGY;
     this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
     this.vbap = new VbapSolver(this.renderLayout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
@@ -327,7 +327,7 @@ export class SpatialRenderer {
   }
 
   private layoutId(layout: readonly VirtualSpeaker[]): string {
-    return layout.map((speaker) => speaker.name).join(",");
+    return layout.map(speakerBusKey).join(",");
   }
 
   private retirePostNodes(nodes: readonly AudioNode[], delayMs: number): void {
@@ -347,7 +347,9 @@ export class SpatialRenderer {
       const splitter = this.ctx.createChannelSplitter(this.topology.length);
       this.node!.connect(splitter, outputIndex);
       physicalChannelOrder(layout).forEach((layoutBus, channel) => {
-        const topologyBus = this.topology.findIndex((speaker) => speaker.name === layout[layoutBus]!.name);
+        const topologyBus = this.topology.findIndex(
+          (speaker) => speakerBusKey(speaker) === speakerBusKey(layout[layoutBus]!),
+        );
         if (topologyBus >= 0) splitter.connect(merger, topologyBus, channel);
       });
       nodes.push(splitter);
@@ -746,7 +748,7 @@ export class SpatialRenderer {
       .catch((error) => console.warn(`[SDA] 耳机补偿加载失败，保持 bypass: ${profile.id}`, error));
   }
 
-  /** Physical output keeps the 16-bus worklet topology internal, then compacts
+  /** Physical output keeps the 18-bus worklet topology internal, then compacts
    * the selected layout into contiguous WASAPI-mask order. */
   private buildMultichannelPath(_n: number, output: GainNode): void {
     this.multichannelOutput = output;
@@ -761,7 +763,6 @@ export class SpatialRenderer {
       this.node!.connect(splitter, outputIndex);
       for (let bus = 0; bus < n; bus++) {
         const spk = this.topology[bus]!;
-        if (spk.name === "WideLeft" || spk.name === "WideRight") continue;
         const gainL = this.ctx.createGain();
         const gainR = this.ctx.createGain();
         const [left, right] = stereoDownmixGains(spk);
@@ -789,10 +790,6 @@ export class SpatialRenderer {
     const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.topology, mode) : null;
     for (let bus = 0; bus < n; bus++) {
       const spk = this.topology[bus]!;
-      if (spk.name === "WideLeft" || spk.name === "WideRight") {
-        convs.push(null);
-        continue;
-      }
       if (spk.isLfe) {
         const lfeGain = this.ctx.createGain();
         const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
@@ -850,7 +847,7 @@ export class SpatialRenderer {
     this.postNodes.push(splitter);
   }
 
-  /** Per-mode double-ear rendering. The worklet exposes four 20-channel
+  /** Per-mode double-ear rendering. The worklet exposes four 18-channel
    * outputs, avoiding the browser's single-node channel limit. */
   private buildBinauralPath(n: number, output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);
@@ -1193,11 +1190,13 @@ export class SpatialRenderer {
     // User mute is a separate real-time worklet envelope. Keeping it out of
     // metadata gain ramps prevents future scheduled object events from
     // accidentally clearing mute/solo state.
-    // 工作节点固定为 9.1.6 拓扑；把当前逻辑布局的增益按扬声器名字投影过去。
+    // 工作节点固定为所有标准位置的并集；把当前逻辑布局的增益按稳定总线键投影。
     // 逻辑布局不存在的总线保持 0，切换布局仅更新这组斜坡，不触碰 PCM 缓冲。
     const topologyGains = new Float32Array(this.topology.length);
     for (let bus = 0; bus < gains.length; bus++) {
-      const target = this.topology.findIndex((speaker) => speaker.name === this.renderLayout[bus]!.name);
+      const target = this.topology.findIndex(
+        (speaker) => speakerBusKey(speaker) === speakerBusKey(this.renderLayout[bus]!),
+      );
       if (target >= 0) topologyGains[target] = gains[bus]!;
     }
     this.node?.port.postMessage({
