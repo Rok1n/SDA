@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { SdaPlayer, nextSoloMuteSet, type BinauralRenderMetadata, type VisualObject } from "@sda/player";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SdaPlayer, type BinauralRenderMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
@@ -58,6 +58,7 @@ export function App() {
   /** 被静音的对象 id（Omniphony Studio 语义：mute 独立切换；
    *  solo = mute 其他全部对象，独奏态由"只剩一个未静音"导出）。 */
   const [mutedIds, setMutedIds] = useState<ReadonlySet<number>>(new Set());
+  const [soloIds, setSoloIds] = useState<ReadonlySet<number>>(new Set());
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [debug, setDebug] = useState("");
@@ -79,6 +80,7 @@ export function App() {
     return { low: readBand("low"), mid: readBand("mid"), high: readBand("high") };
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [floatPanel, setFloatPanel] = useState<"stream" | "binaural" | "objects" | null>(null);
   /** null = 不改写 KU100 空间化后的最终双耳信号。 */
   const [headphoneProfileId, setHeadphoneProfileId] = useState<string | null>(null);
   const [headphoneProfiles, setHeadphoneProfiles] = useState(() => availableHeadphoneCompensationProfiles());
@@ -191,8 +193,18 @@ export function App() {
     }
   }, []);
 
+  /** solo 非空时，未独奏对象全部视为静音；独奏对象仍尊重手动静音（mute 优先）。 */
+  const effectiveMutedIds = useMemo(() => {
+    if (soloIds.size === 0) return mutedIds;
+    const next = new Set<number>();
+    for (const object of objects) {
+      if (!soloIds.has(object.id) || mutedIds.has(object.id)) next.add(object.id);
+    }
+    return next;
+  }, [soloIds, mutedIds, objects]);
+
   /** 动态对象全部静音时，独立的 LFE 床声道也必须一起静音。 */
-  const allObjectsMuted = objects.length > 0 && objects.every((object) => mutedIds.has(object.id));
+  const allObjectsMuted = objects.length > 0 && objects.every((object) => effectiveMutedIds.has(object.id));
   useEffect(() => {
     playerReady?.setLfeMuted(allObjectsMuted);
   }, [playerReady, allObjectsMuted]);
@@ -200,8 +212,8 @@ export function App() {
   // React state and worker frames are asynchronous. Keep the player's durable
   // mute set synchronized whenever either the active player or the UI set changes.
   useEffect(() => {
-    playerReady?.syncObjectMutes(mutedIds);
-  }, [playerReady, mutedIds]);
+    playerReady?.syncObjectMutes(effectiveMutedIds);
+  }, [playerReady, effectiveMutedIds]);
 
   /** 把整组静音状态推到播放器（新建播放器后也要重放一遍）。 */
   const applyMutes = useCallback((muted: ReadonlySet<number>) => {
@@ -214,35 +226,42 @@ export function App() {
     player?.syncObjectMutes(muted);
   }, []);
 
+  /** 手动静音（M）：与 solo 独立；对象被 solo 时仍可手动静音它。 */
   const toggleMute = useCallback(
     (id: number) => {
-      const next = new Set(mutedIds);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      setMutedIds(next);
-      applyMutes(next);
+      const nextMuted = new Set(mutedIds);
+      if (nextMuted.has(id)) nextMuted.delete(id);
+      else nextMuted.add(id);
+      setMutedIds(nextMuted);
+      const effective = soloIds.size === 0
+        ? nextMuted
+        : new Set(objectsRef.current
+            .filter((object) => !soloIds.has(object.id) || nextMuted.has(object.id))
+            .map((object) => object.id));
+      applyMutes(effective);
     },
-    [mutedIds, applyMutes],
+    [mutedIds, soloIds, applyMutes],
   );
 
-  /** Omniphony Studio 的 solo：不是独立状态，而是"mute 其他全部" —
-   *  只剩一个未静音对象时它就是独奏者；再按一次 S 取消（全部解除静音）。 */
-  const soloTarget =
-    objects.length > 1 && objects.filter((o) => !mutedIds.has(o.id)).length === 1
-      ? objects.find((o) => !mutedIds.has(o.id))!.id
-      : null;
-
+  /**
+   * 多对象 solo（S）：点击切换单个对象的独奏；Ctrl/Cmd+点击任意 S 取消全部独奏。
+   * solo 不是独立状态，而是"静音其他全部"的快捷方式。
+   */
   const toggleSolo = useCallback(
-    (id: number) => {
-      const next = nextSoloMuteSet(
-        objectsRef.current.map((object) => object.id),
-        mutedIds,
-        id,
-      );
-      setMutedIds(next);
-      applyMutes(next);
+    (id: number, clearAll = false) => {
+      const nextSolo = new Set(soloIds);
+      if (clearAll) nextSolo.clear();
+      else if (nextSolo.has(id)) nextSolo.delete(id);
+      else nextSolo.add(id);
+      setSoloIds(nextSolo);
+      const effective = nextSolo.size === 0
+        ? mutedIds
+        : new Set(objectsRef.current
+            .filter((object) => !nextSolo.has(object.id) || mutedIds.has(object.id))
+            .map((object) => object.id));
+      applyMutes(effective);
     },
-    [mutedIds, applyMutes],
+    [soloIds, mutedIds, applyMutes],
   );
 
   const play = useCallback(
@@ -271,7 +290,7 @@ export function App() {
         player.setVolume(volume);
         player.setVolumeBalance(volumeBalanceEnabled);
         player.setHeadphoneCompensation(headphoneProfileId);
-        applyMutes(mutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
+        applyMutes(effectiveMutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
         if (source.kind === "file") {
@@ -299,7 +318,7 @@ export function App() {
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, headphoneProfileId, applyMutes, mutedIds],
+    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, headphoneProfileId, applyMutes, effectiveMutedIds],
   );
 
   useEffect(() => window.sdaDesktop?.onOpenFile?.((path) => {
@@ -519,7 +538,7 @@ export function App() {
 
       <main>
         <section className="view">
-          <ObjectView objects={objects} layout={LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId]} theme={theme} mutedIds={mutedIds} />
+          <ObjectView objects={objects} layout={LAYOUTS[layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId]} theme={theme} mutedIds={effectiveMutedIds} />
           <div className={`view-hint ${track ? "shifted" : ""}`}>拖动旋转 · 右键平移 · 滚轮缩放</div>
           <MiniPlayer
             track={track}
@@ -535,8 +554,38 @@ export function App() {
             onVolume={changeVolume}
           />
         </section>
+        {(selectedHeadphoneProfile || errors.length > 0) && (
         <aside>
-          <div className="panel">
+          {selectedHeadphoneProfile && (
+            <div className="panel">
+              <h2>耳机补偿</h2>
+              <dl>
+                <dt>模式</dt>
+                <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
+                <dt>来源</dt>
+                <dd>{selectedHeadphoneProfile.source}</dd>
+                {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
+                {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
+              </dl>
+            </div>
+          )}
+          {errors.length > 0 && (
+            <div className="panel errors">
+              <h2>日志</h2>
+              <ul>
+                {errors.map((e, i) => (
+                  <li key={i}>{e}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </aside>
+        )}
+      </main>
+
+      <div className="float-dock">
+        {floatPanel === "stream" && (
+          <div className="panel float-panel">
             <h2>码流</h2>
             {track ? (
               <dl>
@@ -565,7 +614,9 @@ export function App() {
               <p className="dim">拖入 .mkv / .mp4 / .bwf / .wav / .thd / .ec3 / .dts 文件开始</p>
             )}
           </div>
-          <div className="panel">
+        )}
+        {floatPanel === "binaural" && (
+          <div className="panel float-panel">
             <h2>双耳元数据</h2>
             <dl>
               <dt>来源</dt>
@@ -579,39 +630,36 @@ export function App() {
               {binauralMetadata?.error && <><dt>状态</dt><dd>{binauralMetadata.error}</dd></>}
             </dl>
           </div>
+        )}
+        {floatPanel === "objects" && (
           <ObjectPanel
+            className="float-panel"
             objects={diagnosticObjects}
             mutedIds={mutedIds}
-            soloTarget={soloTarget}
+            soloIds={soloIds}
             binauralMetadata={binauralMetadata}
             onToggleMute={toggleMute}
             onToggleSolo={toggleSolo}
           />
-          {selectedHeadphoneProfile && (
-            <div className="panel">
-              <h2>耳机补偿</h2>
-              <dl>
-                <dt>模式</dt>
-                <dd>{selectedHeadphoneProfile.measurementMode === "average-dual-mono" ? "平均测量，L/R 同一曲线" : "独立 L/R 测量"}</dd>
-                <dt>来源</dt>
-                <dd>{selectedHeadphoneProfile.source}</dd>
-                {selectedHeadphoneProfile.channelClaim && <><dt>限制</dt><dd>{selectedHeadphoneProfile.channelClaim}</dd></>}
-                {selectedHeadphoneProfile.measurementMode === "average-dual-mono" && <><dt>电平参考</dt><dd>1 kHz 频响参考，不与无补偿响度匹配；A/B 比较请用主音量匹配。</dd></>}
-              </dl>
-            </div>
-          )}
-          {errors.length > 0 && (
-            <div className="panel errors">
-              <h2>日志</h2>
-              <ul>
-                {errors.map((e, i) => (
-                  <li key={i}>{e}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </aside>
-      </main>
+        )}
+        <div className="float-buttons">
+          <button
+            className={floatPanel === "stream" ? "active" : ""}
+            title="码流信息"
+            onClick={() => setFloatPanel(floatPanel === "stream" ? null : "stream")}
+          >码流</button>
+          <button
+            className={floatPanel === "binaural" ? "active" : ""}
+            title="双耳元数据"
+            onClick={() => setFloatPanel(floatPanel === "binaural" ? null : "binaural")}
+          >双耳</button>
+          <button
+            className={floatPanel === "objects" ? "active" : ""}
+            title={`对象 (${diagnosticObjects.length})`}
+            onClick={() => setFloatPanel(floatPanel === "objects" ? null : "objects")}
+          >对象</button>
+        </div>
+      </div>
     </div>
   );
 }

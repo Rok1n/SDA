@@ -494,52 +494,180 @@ aside {
   font-size: 13px;
 }
 
+/* 右上角悬浮面板停靠区：圆形按钮竖排 + 展开的浮动面板 */
+.float-dock {
+  position: fixed;
+  right: 14px;
+  top: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 40;
+}
+
+.float-buttons {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  order: -1;
+}
+
+.float-buttons button {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  padding: 0;
+  font-size: 12px;
+  line-height: 1;
+  background: var(--panel);
+  color: var(--subtle);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.float-buttons button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--btn-hover);
+}
+
+.float-buttons button.active {
+  color: var(--drag-text);
+  border-color: var(--drag-border);
+}
+
+.float-panel {
+  width: 320px;
+  max-height: 72vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* ── 对象面板 ─────────────────────────────────────────── */
+
+.obj-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 4px;
+}
+
+.obj-head h2 {
+  margin: 0;
+}
+
+.obj-count {
+  color: var(--dim);
+  font-weight: normal;
+  letter-spacing: 0;
+}
+
+.obj-clear-solo {
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid #d4a017;
+  background: transparent;
+  color: #d4a017;
+  cursor: pointer;
+}
+
+.obj-clear-solo:hover {
+  background: rgba(212, 160, 23, 0.15);
+}
+
+.obj-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+
 .objects {
   list-style: none;
   margin: 0;
-  padding: 0 12px 0 0;
-  font-size: 12px;
-  font-family: ui-monospace, monospace;
-  max-height: 220px;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
 
-.objects li {
-  padding: 2px 0;
+.obj-row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
 }
 
-.objects li.obj-muted > b,
-.objects li.obj-muted {
-  color: var(--dim);
+.obj-row:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
-.obj-metadata {
+.obj-row.obj-solo {
+  border-color: rgba(212, 160, 23, 0.55);
+  background: rgba(212, 160, 23, 0.08);
+}
+
+.obj-row.obj-muted {
+  opacity: 0.45;
+}
+
+.obj-id {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--drag-text);
+  min-width: 30px;
+}
+
+.obj-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.obj-pos {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.obj-sub {
+  font-size: 11px;
   color: var(--subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* 对象级 mute/solo（Omniphony Studio 式） */
+/* 对象级 mute/solo 按钮 */
 .obj-ms {
   margin-left: auto;
   display: inline-flex;
-  gap: 3px;
+  gap: 4px;
 }
 
 .obj-ms-btn {
-  width: 18px;
-  height: 16px;
+  width: 22px;
+  height: 20px;
   padding: 0;
   font-size: 10px;
+  font-weight: 600;
   line-height: 1;
   font-family: inherit;
   border: 1px solid var(--dim);
-  border-radius: 3px;
+  border-radius: 4px;
   background: transparent;
   color: var(--dim);
   cursor: pointer;
+  transition: filter 0.15s ease;
 }
 
 .obj-ms-btn:hover {

@@ -37,12 +37,12 @@ __export(index_exports, {
   getHeadphoneCompensationBuffers: () => getHeadphoneCompensationBuffers,
   headphoneProfileById: () => headphoneProfileById,
   isLfeLabel: () => isLfeLabel,
-  layoutLevelCompensationGain: () => layoutLevelCompensationGain,
   mixIrForMode: () => mixIrForMode,
   mixIrForWet: () => mixIrForWet,
   physicalChannelOrder: () => physicalChannelOrder,
   positionForLabel: () => positionForLabel,
   registerLocalHeadphoneCompensation: () => registerLocalHeadphoneCompensation,
+  setBinauralAssetLoader: () => setBinauralAssetLoader,
   setHeadphoneCompensationAssetLoader: () => setHeadphoneCompensationAssetLoader,
   speakerBusKey: () => speakerBusKey,
   sphericalToAdm: () => sphericalToAdm,
@@ -477,6 +477,17 @@ var BINAURAL_MODES = {
   far: { wet: 0.45 }
 };
 var setCache = /* @__PURE__ */ new Map();
+var assetLoader = null;
+function setBinauralAssetLoader(loader) {
+  assetLoader = loader;
+  setCache.clear();
+}
+async function loadAsset(baseUrl, fileName) {
+  if (assetLoader) return assetLoader(`hrtf/${fileName}`);
+  const response = await fetch(`${baseUrl}/${fileName}`);
+  if (!response.ok) throw new Error(`${fileName} HTTP ${response.status}`);
+  return response.arrayBuffer();
+}
 function getBinauralIrSet(baseUrl) {
   let p = setCache.get(baseUrl);
   if (!p) {
@@ -487,20 +498,13 @@ function getBinauralIrSet(baseUrl) {
   return p;
 }
 async function loadSet(baseUrl) {
-  const res = await fetch(`${baseUrl}/hrtf-set.json`);
-  if (!res.ok) throw new Error(`hrtf-set.json HTTP ${res.status}`);
-  const manifest = await res.json();
+  const manifestBuffer = await loadAsset(baseUrl, "hrtf-set.json");
+  const manifest = JSON.parse(new TextDecoder().decode(manifestBuffer));
   const positions = await Promise.all(
     manifest.positions.map(async (entry) => {
       const [dryBuf, wetBuf] = await Promise.all([
-        fetch(`${baseUrl}/${entry.dry}`).then((r) => {
-          if (!r.ok) throw new Error(`${entry.dry} HTTP ${r.status}`);
-          return r.arrayBuffer();
-        }),
-        fetch(`${baseUrl}/${entry.wet}`).then((r) => {
-          if (!r.ok) throw new Error(`${entry.wet} HTTP ${r.status}`);
-          return r.arrayBuffer();
-        })
+        loadAsset(baseUrl, entry.dry),
+        loadAsset(baseUrl, entry.wet)
       ]);
       const dry = new Float32Array(dryBuf);
       const wet = new Float32Array(wetBuf);
@@ -514,7 +518,11 @@ async function loadSet(baseUrl) {
       };
     })
   );
-  return { sampleRate: manifest.sampleRate, positions };
+  return {
+    sampleRate: manifest.sampleRate,
+    calibrated: manifest.calibrationVersion !== void 0 && manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true,
+    positions
+  };
 }
 function toUnit(azimuth, elevation) {
   const az = azimuth * Math.PI / 180;
@@ -583,7 +591,7 @@ function mixIrForWet(ctx, set, raw, wet) {
     wetR = resampleLinear(wetR, set.sampleRate, rate);
   }
   const search = Math.min(wetL.length, Math.round(rate * 0.02));
-  const shift = argmaxAbs(wetL, search) - argmaxAbs(dryL, dryL.length);
+  const shift = set.calibrated ? 0 : argmaxAbs(wetL, search) - argmaxAbs(dryL, dryL.length);
   const outLen = wetL.length;
   const L = new Float32Array(outLen);
   const R = new Float32Array(outLen);
@@ -598,7 +606,7 @@ function mixIrForWet(ctx, set, raw, wet) {
     L[i] = L[i] + w * wetL[i];
     R[i] = R[i] + w * wetR[i];
   }
-  if (Math.abs(raw.azimuth) < 1e-6) {
+  if (!set.calibrated && Math.abs(raw.azimuth) < 1e-6) {
     let leftEnergy = 0;
     let rightEnergy = 0;
     for (let i = 0; i < outLen; i++) {
@@ -615,13 +623,15 @@ function mixIrForWet(ctx, set, raw, wet) {
       }
     }
   }
-  let energy = 0;
-  for (let i = 0; i < outLen; i++) energy += L[i] * L[i] + R[i] * R[i];
-  if (energy > 0) {
-    const s = 1 / Math.sqrt(energy);
-    for (let i = 0; i < outLen; i++) {
-      L[i] = L[i] * s;
-      R[i] = R[i] * s;
+  if (!set.calibrated) {
+    let energy = 0;
+    for (let i = 0; i < outLen; i++) energy += L[i] * L[i] + R[i] * R[i];
+    if (energy > 0) {
+      const s = 1 / Math.sqrt(energy);
+      for (let i = 0; i < outLen; i++) {
+        L[i] = L[i] * s;
+        R[i] = R[i] * s;
+      }
     }
   }
   const buf = ctx.createBuffer(2, outLen, rate);
@@ -636,7 +646,7 @@ function buildBusIrs(ctx, set, layout, mode) {
   const result = /* @__PURE__ */ new Map();
   layout.forEach((spk, bus) => {
     if (spk.isLfe) return;
-    const canonicalWide = spk.name === "WideRight" ? nearestPosition(set, -spk.azimuth, spk.elevation) : null;
+    const canonicalWide = !set.calibrated && spk.name === "WideRight" ? nearestPosition(set, -spk.azimuth, spk.elevation) : null;
     const raw = canonicalWide ?? nearestPosition(set, spk.azimuth, spk.elevation);
     if (!raw) return;
     const ir = mixIrForMode(ctx, set, raw, mode);
@@ -947,11 +957,6 @@ function stereoDownmixGains(speaker) {
   const pan = Math.sin(speaker.azimuth * Math.PI / 180);
   return [Math.sqrt((1 + pan) / 2) * 0.7, Math.sqrt((1 - pan) / 2) * 0.7];
 }
-function layoutLevelCompensationGain(layout) {
-  const referenceChannels = LAYOUTS["5.1"].filter((speaker) => !speaker.isLfe).length;
-  const activeChannels = layout.filter((speaker) => !speaker.isLfe).length;
-  return Math.min(1, Math.sqrt(referenceChannels / Math.max(referenceChannels, activeChannels)));
-}
 function virtualLayoutForOutput(layout, _mode) {
   return layout;
 }
@@ -977,12 +982,10 @@ var SpatialRenderer = class {
   /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
   modeGains = /* @__PURE__ */ new Map();
   modeVolumeGains = /* @__PURE__ */ new Map();
-  modeLayoutGains = /* @__PURE__ */ new Map();
   modeProgramGains = /* @__PURE__ */ new Map();
   multichannelOutput = null;
   multichannelProjector = null;
   volume = 1;
-  layoutLevelCompensationEnabled = true;
   volumeBalanceEnabled = false;
   programLoudnessGainDb = null;
   vbap;
@@ -1149,7 +1152,6 @@ var SpatialRenderer = class {
     this.layout = layout;
     this.updateRenderLayout();
     this.buildExpansion();
-    this.updateLayoutLevelCompensation();
     this.updateMultichannelLayout();
     this.updateDestinationChannelCount();
     for (const state of this.sources.values()) {
@@ -1206,6 +1208,10 @@ var SpatialRenderer = class {
   setBinauralData(set) {
     this.irSet = set;
     if (this.node) this.buildOutputGraph();
+  }
+  /** True only after the measured binaural IR set has replaced browser Panner fallback. */
+  get hasBinauralData() {
+    return this.irSet !== null;
   }
   /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
    * 制作响度不变，播放不中断。 */
@@ -1329,7 +1335,6 @@ var SpatialRenderer = class {
     this.binauralEqHeadroom = null;
     this.modeGains.clear();
     this.modeVolumeGains.clear();
-    this.modeLayoutGains.clear();
     this.modeProgramGains.clear();
     this.multichannelOutput = null;
     this.multichannelProjector = null;
@@ -1356,15 +1361,12 @@ var SpatialRenderer = class {
     this.updateDestinationChannelCount();
     const createModeOutput = (mode) => {
       const volume = this.ctx.createGain();
-      const balance = this.ctx.createGain();
       const program = this.ctx.createGain();
       const gain = this.ctx.createGain();
       volume.gain.value = this.volume ** 2;
-      balance.gain.value = this.layoutLevelCompensationEnabled && mode !== "multichannel" ? layoutLevelCompensationGain(virtualLayoutForOutput(this.layout, mode)) : 1;
       program.gain.value = 1;
       gain.gain.value = mode === this.mode ? 1 : 0;
-      volume.connect(balance);
-      balance.connect(program);
+      volume.connect(program);
       program.connect(gain);
       if (mode === "multichannel") {
         const delay = this.ctx.createDelay(BINAURAL_PEAK_GUARD_LOOKAHEAD_S);
@@ -1378,10 +1380,9 @@ var SpatialRenderer = class {
         gain.connect(peakGuard);
       }
       this.modeVolumeGains.set(mode, volume);
-      this.modeLayoutGains.set(mode, balance);
       this.modeProgramGains.set(mode, program);
       this.modeGains.set(mode, gain);
-      this.postNodes.push(volume, balance, program, gain);
+      this.postNodes.push(volume, program, gain);
       return volume;
     };
     this.buildMultichannelPath(n, createModeOutput("multichannel"));
@@ -1644,12 +1645,6 @@ var SpatialRenderer = class {
     this.postNodes.push(eqHeadroom, eqSplit, eqMerge);
     eqMerge.connect(makeup);
     makeup.connect(output);
-    const balance = this.modeLayoutGains.get("binaural");
-    const program = this.modeProgramGains.get("binaural");
-    output.disconnect();
-    output.connect(balance);
-    balance.disconnect();
-    balance.connect(program);
     this.postNodes.push(merger, makeup);
   }
   rebindBedSource(id, bedLabel, atSample) {
@@ -1937,25 +1932,6 @@ var SpatialRenderer = class {
       at: atSample === void 0 ? void 0 : Math.trunc(atSample)
     });
   }
-  /** Keep stereo/binaural loudness stable as layouts add more simultaneous buses. */
-  setLayoutLevelCompensation(enabled) {
-    this.layoutLevelCompensationEnabled = enabled;
-    this.updateLayoutLevelCompensation();
-  }
-  get layoutLevelCompensation() {
-    return this.layoutLevelCompensationEnabled;
-  }
-  updateLayoutLevelCompensation() {
-    const now = this.ctx.currentTime;
-    for (const [mode, node] of this.modeLayoutGains) {
-      const renderLayout = virtualLayoutForOutput(this.layout, mode);
-      const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(renderLayout) : 1;
-      const value = mode === "multichannel" ? 1 : target;
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
-      node.gain.linearRampToValueAtTime(value, now + 0.05);
-    }
-  }
   /** Master output volume, 0..1 (applied perceptually: gain = v²). */
   setVolume(v) {
     this.volume = Math.max(0, Math.min(1, v));
@@ -1994,12 +1970,12 @@ var SpatialRenderer = class {
   getHeadphoneCompensationBuffers,
   headphoneProfileById,
   isLfeLabel,
-  layoutLevelCompensationGain,
   mixIrForMode,
   mixIrForWet,
   physicalChannelOrder,
   positionForLabel,
   registerLocalHeadphoneCompensation,
+  setBinauralAssetLoader,
   setHeadphoneCompensationAssetLoader,
   speakerBusKey,
   sphericalToAdm,
