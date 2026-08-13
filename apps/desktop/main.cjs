@@ -11,7 +11,28 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
+const { exec } = require("node:child_process");
+
+/**
+ * Windows 会把窗口被遮挡/最小化的进程打进 EcoQoS 效率模式，alt+tab、
+ * 点任务栏、最小化其他窗口都会触发 —— AudioWorklet 跑在 renderer 进程里，
+ * 被降速后 audio 回调来不及就是用户听到的"卡顿"。
+ * 音频应用惯例：主进程 + 全部 Chromium 子进程提到 High（非 Realtime，安全）。
+ * 音频服务进程在首次出声时才派生，所以每 30s 兜底重提一次。
+ */
+function boostProcessTreePriority() {
+  if (process.platform !== "win32") return;
+  try {
+    os.setPriority(process.pid, os.constants.priority.PRIORITY_HIGH);
+  } catch { /* 主进程提权失败不致命，继续兜底子进程 */ }
+  const pid = process.pid;
+  const script =
+    `Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${pid} } | ` +
+    `ForEach-Object { try { (Get-Process -Id $_.ProcessId -ErrorAction Stop).PriorityClass = 'High' } catch {} }`;
+  exec(`powershell -NoProfile -WindowStyle Hidden -Command "${script}"`, () => {});
+}
 
 const isDev = process.argv.includes("--dev");
 // 默认硬件 GPU：3D 视图走显卡，不占 CPU（SwiftShader 软渲染会和音频解码抢 CPU，
@@ -298,6 +319,8 @@ ipcMain.handle("sda:delete-headphone-profile", (_e, id) => {
 });
 
 app.whenReady().then(() => {
+  boostProcessTreePriority();
+  setInterval(boostProcessTreePriority, 30_000).unref();
   createWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
