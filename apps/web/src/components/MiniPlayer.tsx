@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 /**
  * iOS 26 风格迷你播放器（macOS 布局）：通栏液态玻璃底条 —
  * 左侧封面+曲名，中间传输控制+进度条，右侧对象数+音量。
@@ -43,7 +45,7 @@ function formatTime(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function MiniPlayer({
+export const MiniPlayer = memo(function MiniPlayer({
   track,
   position,
   duration,
@@ -59,7 +61,7 @@ export function MiniPlayer({
   if (!track) return null;
   const progress = duration > 0 ? Math.min(1, position / duration) : 0;
   return (
-    <div className="miniplayer">
+    <div className={`miniplayer ${window.sdaDesktop?.rendererMode === "swiftshader" ? "software-renderer" : ""}`}>
       <div className="mp-glass">
         <div className="mp-bar">
           {/* 左：封面 + 曲名 */}
@@ -95,7 +97,7 @@ export function MiniPlayer({
             <div className="mp-progress">
               <span className="mp-time">{formatTime(position)}</span>
               <div className="mp-track-line">
-                <div className="mp-track-fill" style={{ width: `${progress * 100}%` }} />
+                <div className="mp-track-fill" style={{ transform: `scaleX(${progress})` }} />
                 {duration <= 0 && <div className="mp-track-shimmer" />}
               </div>
               <span className="mp-time dim">{duration > 0 ? formatTime(duration) : "--:--"}</span>
@@ -120,4 +122,4 @@ export function MiniPlayer({
       </div>
     </div>
   );
-}
+});

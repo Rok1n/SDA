@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, type ErrorInfo, type ReactNode } from "react";
+import { Component, lazy, memo, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
 import type { VisualObject } from "@sda/player";
 
@@ -91,7 +91,7 @@ function FlatObjectView({
   );
 }
 
-export function ObjectView({
+export const ObjectView = memo(function ObjectView({
   objects,
   layout,
   theme = "dark",
@@ -115,4 +115,7 @@ export function ObjectView({
       </Suspense>
     </WebglErrorBoundary>
   );
-}
+}, (previous, next) => previous.objects === next.objects
+  && previous.layout === next.layout
+  && previous.theme === next.theme
+  && previous.mutedIds === next.mutedIds);

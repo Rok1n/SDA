@@ -94,6 +94,25 @@ interface Element {
   headerSize: number;
 }
 
+type ContainerScope = "top" | "segment" | "info" | "tracks" | "track" | "audio" | "cluster" | "block-group";
+
+interface TrackDraft {
+  trackNumber: number;
+  trackType: number;
+  codecId: string;
+  name?: string;
+  sampleRate: number;
+  channels: number;
+}
+
+interface ContainerFrame {
+  scope: ContainerScope;
+  /** Absolute byte offset immediately after this container. */
+  end: number;
+  unknownSize: boolean;
+  track?: TrackDraft;
+}
+
 function readElementHeader(buf: Uint8Array, offset: number): Element | null {
   const idVint = readVint(buf, offset, false);
   if (!idVint) return null;
@@ -108,7 +127,14 @@ function readElementHeader(buf: Uint8Array, offset: number): Element | null {
 }
 
 export class MkvDemuxer {
-  private buf = new Uint8Array(0);
+  private buf: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  /** Absolute stream offset represented by buf[0]. */
+  private bufferOffset = 0;
+  /** Remaining bytes in an uninteresting element being skipped across pushes. */
+  private skipRemaining = 0;
+  private containers: ContainerFrame[] = [
+    { scope: "top", end: Number.POSITIVE_INFINITY, unknownSize: true },
+  ];
   private cb: MkvDemuxerCallbacks;
   private timestampScaleNs = 1_000_000; // default: ms
   /** Segment Duration element value, in TimestampScale units. */
@@ -116,7 +142,7 @@ export class MkvDemuxer {
   /** Segment Title element（歌曲/影片标题）。 */
   private segmentTitle?: string;
   private tracks = new Map<number, MkvAudioTrack>();
-  private sawTracks = false;
+  private selectedTrackNumber: number | null = null;
   private clusterTimestamp = 0;
 
   constructor(cb: MkvDemuxerCallbacks = {}) {
@@ -124,11 +150,26 @@ export class MkvDemuxer {
   }
 
   push(chunk: Uint8Array): void {
-    const merged = new Uint8Array(this.buf.length + chunk.length);
-    merged.set(this.buf);
-    merged.set(chunk, this.buf.length);
-    this.buf = merged;
-    this.consume(0, this.buf.length, "top");
+    if (chunk.length === 0) return;
+
+    let incoming = chunk;
+    if (this.skipRemaining > 0) {
+      const skipped = Math.min(this.skipRemaining, incoming.length);
+      this.skipRemaining -= skipped;
+      this.bufferOffset += skipped;
+      incoming = incoming.subarray(skipped);
+      if (incoming.length === 0) return;
+    }
+
+    if (this.buf.length === 0) {
+      this.buf = incoming;
+    } else {
+      const merged = new Uint8Array(this.buf.length + incoming.length);
+      merged.set(this.buf);
+      merged.set(incoming, this.buf.length);
+      this.buf = merged;
+    }
+    this.consumeBuffered();
   }
 
   /** True if the buffer starts with an EBML header. */
@@ -142,80 +183,153 @@ export class MkvDemuxer {
     );
   }
 
-  /**
-   * Parse as many complete elements as possible from `buf[start..end)`,
-   * then compact consumed bytes. `level` keeps the recursion shallow.
-   */
-  private consume(start: number, end: number, level: "top" | "segment" | "cluster" | "tracks"): number {
-    let pos = start;
-    while (pos < end) {
+  /** Parse complete leaves while retaining only the current partial leaf. */
+  private consumeBuffered(): void {
+    let pos = 0;
+    while (pos < this.buf.length) {
+      this.closeCompletedContainers(this.bufferOffset + pos);
       const el = readElementHeader(this.buf, pos);
       if (!el) break;
-      const available = end - el.dataOffset;
-      const size = el.size === -1 ? available : el.size;
-      if (el.size !== -1 && available < el.size) break; // wait for more bytes
 
-      switch (level) {
-        case "top":
-          if (el.id === ID.Segment) {
-            this.consume(el.dataOffset, el.dataOffset + size, "segment");
-          }
-          break;
-        case "segment":
-          if (el.id === ID.Info) {
-            this.parseInfo(el.dataOffset, el.dataOffset + size);
-          } else if (el.id === ID.Tracks) {
-            this.consume(el.dataOffset, el.dataOffset + size, "tracks");
-            this.sawTracks = true;
-          } else if (el.id === ID.Cluster) {
-            this.clusterTimestamp = 0;
-            this.consume(el.dataOffset, el.dataOffset + size, "cluster");
-          }
-          break;
-        case "tracks":
-          if (el.id === ID.TrackEntry) this.parseTrackEntry(el.dataOffset, el.dataOffset + size);
-          break;
-        case "cluster":
-          if (el.id === ID.Timestamp) {
-            this.clusterTimestamp = this.readUint(el.dataOffset, size);
-          } else if (el.id === ID.SimpleBlock) {
-            this.parseBlock(el.dataOffset, size);
-          } else if (el.id === ID.BlockGroup) {
-            this.parseBlockGroup(el.dataOffset, el.dataOffset + size);
-          }
-          break;
+      // Unknown-sized clusters end when the next segment-level element begins.
+      while (this.isUnknownClusterBoundary(el.id)) this.closeContainer(this.containers.pop()!);
+
+      const parent = this.containers[this.containers.length - 1]!;
+      const childScope = this.childScope(parent.scope, el.id);
+      const dataStart = this.bufferOffset + el.dataOffset;
+      if (childScope) {
+        const frame: ContainerFrame = {
+          scope: childScope,
+          end: el.size < 0 ? parent.end : dataStart + el.size,
+          unknownSize: el.size < 0,
+        };
+        if (childScope === "track") {
+          frame.track = {
+            trackNumber: 0,
+            trackType: 0,
+            codecId: "",
+            sampleRate: 48000,
+            channels: 2,
+          };
+        }
+        if (childScope === "cluster") this.clusterTimestamp = 0;
+        this.containers.push(frame);
+        pos = el.dataOffset;
+        continue;
       }
-      pos = el.dataOffset + size;
+
+      if (el.size < 0) {
+        this.cb.onError?.(`unsupported unknown-sized EBML element 0x${el.id.toString(16)}`);
+        break;
+      }
+
+      const available = this.buf.length - el.dataOffset;
+      if (this.isRelevantLeaf(parent.scope, el.id, el.dataOffset, available)) {
+        if (available < el.size) break;
+        this.parseLeaf(parent.scope, el.id, el.dataOffset, el.size);
+        pos = el.dataOffset + el.size;
+        continue;
+      }
+
+      // Video blocks, attachments and cues can be skipped without buffering.
+      const skipped = Math.min(available, el.size);
+      pos = el.dataOffset + skipped;
+      if (skipped < el.size) {
+        this.skipRemaining = el.size - skipped;
+        break;
+      }
     }
 
-    if (level === "top" && pos > 0) {
-      this.buf = this.buf.subarray(pos);
-    }
-    return pos;
+    if (pos > 0) this.bufferOffset += pos;
+    // Own the incomplete tail. Callers may reuse or transfer their input buffer
+    // immediately after push() returns.
+    this.buf = pos === this.buf.length
+      ? new Uint8Array(0)
+      : new Uint8Array(this.buf.subarray(pos));
   }
 
-  private parseInfo(start: number, end: number): void {
-    let pos = start;
-    while (pos < end) {
-      const el = readElementHeader(this.buf, pos);
-      if (!el || el.size < 0 || el.dataOffset + el.size > end) break;
-      if (el.id === ID.TimestampScale) this.timestampScaleNs = this.readUint(el.dataOffset, el.size);
-      if (el.id === ID.Duration) this.durationFloat = this.readFloat(el.dataOffset, el.size);
-      if (el.id === ID.Title) {
-        this.segmentTitle = new TextDecoder().decode(this.buf.subarray(el.dataOffset, el.dataOffset + el.size));
-      }
-      pos = el.dataOffset + el.size;
+  private closeCompletedContainers(position: number): void {
+    while (this.containers.length > 1) {
+      const current = this.containers[this.containers.length - 1]!;
+      if (current.unknownSize || position < current.end) break;
+      this.closeContainer(this.containers.pop()!);
     }
   }
 
-  private parseBlockGroup(start: number, end: number): void {
-    let pos = start;
-    while (pos < end) {
-      const el = readElementHeader(this.buf, pos);
-      if (!el || el.size < 0 || el.dataOffset + el.size > end) break;
-      if (el.id === ID.Block) this.parseBlock(el.dataOffset, el.size);
-      pos = el.dataOffset + el.size;
+  private isUnknownClusterBoundary(id: number): boolean {
+    if (this.containers.length <= 1) return false;
+    const current = this.containers[this.containers.length - 1]!;
+    return current.scope === "cluster" && current.unknownSize && (
+      id === ID.Cluster || id === ID.Info || id === ID.Tracks
+    );
+  }
+
+  private closeContainer(frame: ContainerFrame): void {
+    if (frame.scope === "track" && frame.track) this.finishTrack(frame.track);
+  }
+
+  private childScope(parent: ContainerScope, id: number): ContainerScope | null {
+    if (parent === "top" && id === ID.Segment) return "segment";
+    if (parent === "segment") {
+      if (id === ID.Info) return "info";
+      if (id === ID.Tracks) return "tracks";
+      if (id === ID.Cluster) return "cluster";
     }
+    if (parent === "tracks" && id === ID.TrackEntry) return "track";
+    if (parent === "track" && id === ID.Audio) return "audio";
+    if (parent === "cluster" && id === ID.BlockGroup) return "block-group";
+    return null;
+  }
+
+  private isRelevantLeaf(scope: ContainerScope, id: number, offset: number, available: number): boolean {
+    if (scope === "info") return id === ID.TimestampScale || id === ID.Duration || id === ID.Title;
+    if (scope === "track") {
+      return id === ID.TrackNumber || id === ID.TrackType || id === ID.CodecID || id === ID.Name;
+    }
+    if (scope === "audio") return id === ID.SamplingFrequency || id === ID.Channels;
+    if (scope === "cluster" && id === ID.Timestamp) return true;
+    if ((scope === "cluster" && id === ID.SimpleBlock) || (scope === "block-group" && id === ID.Block)) {
+      if (available === 0) return true;
+      const trackVint = readVint(this.buf, offset, true);
+      return !trackVint || trackVint[0] === this.selectedTrackNumber;
+    }
+    return false;
+  }
+
+  private parseLeaf(scope: ContainerScope, id: number, offset: number, size: number): void {
+    if (scope === "info") {
+      if (id === ID.TimestampScale) this.timestampScaleNs = this.readUint(offset, size);
+      if (id === ID.Duration) this.durationFloat = this.readFloat(offset, size);
+      if (id === ID.Title) this.segmentTitle = this.readString(offset, size);
+      return;
+    }
+
+    const track = this.currentTrack();
+    if (scope === "track" && track) {
+      if (id === ID.TrackNumber) track.trackNumber = this.readUint(offset, size);
+      if (id === ID.TrackType) track.trackType = this.readUint(offset, size);
+      if (id === ID.CodecID) track.codecId = this.readString(offset, size);
+      if (id === ID.Name) track.name = this.readString(offset, size);
+      return;
+    }
+    if (scope === "audio" && track) {
+      if (id === ID.SamplingFrequency) track.sampleRate = this.readFloat(offset, size);
+      if (id === ID.Channels) track.channels = this.readUint(offset, size);
+      return;
+    }
+    if (scope === "cluster") {
+      if (id === ID.Timestamp) this.clusterTimestamp = this.readUint(offset, size);
+      if (id === ID.SimpleBlock) this.parseBlock(offset, size);
+      return;
+    }
+    if (scope === "block-group" && id === ID.Block) this.parseBlock(offset, size);
+  }
+
+  private currentTrack(): TrackDraft | undefined {
+    for (let i = this.containers.length - 1; i >= 0; i--) {
+      if (this.containers[i]!.track) return this.containers[i]!.track;
+    }
+    return undefined;
   }
 
   private readUint(offset: number, size: number): number {
@@ -229,58 +343,30 @@ export class MkvDemuxer {
     return size === 4 ? view.getFloat32(0) : view.getFloat64(0);
   }
 
-  private parseTrackEntry(start: number, end: number): void {
-    let trackNumber = 0;
-    let trackType = 0;
-    let codecId = "";
-    let name: string | undefined;
-    let sampleRate = 48000;
-    let channels = 2;
-    let pos = start;
-    while (pos < end) {
-      const el = readElementHeader(this.buf, pos);
-      if (!el || el.size < 0 || el.dataOffset + el.size > end) break;
-      switch (el.id) {
-        case ID.TrackNumber:
-          trackNumber = this.readUint(el.dataOffset, el.size);
-          break;
-        case ID.TrackType:
-          trackType = this.readUint(el.dataOffset, el.size);
-          break;
-        case ID.CodecID:
-          codecId = new TextDecoder().decode(this.buf.subarray(el.dataOffset, el.dataOffset + el.size));
-          break;
-        case ID.Name:
-          name = new TextDecoder().decode(this.buf.subarray(el.dataOffset, el.dataOffset + el.size));
-          break;
-        case ID.Audio: {
-          let apos = el.dataOffset;
-          const aend = el.dataOffset + el.size;
-          while (apos < aend) {
-            const ael = readElementHeader(this.buf, apos);
-            if (!ael || ael.size < 0 || ael.dataOffset + ael.size > aend) break;
-            if (ael.id === ID.SamplingFrequency) sampleRate = this.readFloat(ael.dataOffset, ael.size);
-            if (ael.id === ID.Channels) channels = this.readUint(ael.dataOffset, ael.size);
-            apos = ael.dataOffset + ael.size;
-          }
-          break;
-        }
-      }
-      pos = el.dataOffset + el.size;
-    }
+  private readString(offset: number, size: number): string {
+    return new TextDecoder().decode(this.buf.subarray(offset, offset + size));
+  }
 
-    if (trackType !== TRACK_TYPE_AUDIO) return;
-    const codec = codecFromCodecId(codecId);
+  private finishTrack(draft: TrackDraft): void {
+    if (draft.trackType !== TRACK_TYPE_AUDIO) return;
+    const codec = codecFromCodecId(draft.codecId);
     if (!codec) return;
-    const track: MkvAudioTrack = { trackNumber, codecId, codec, sampleRate, channels };
-    if (name !== undefined) track.name = name;
-    // Duration 与 TimestampScale 在 Info 内顺序不定，到这里两者都已解析。
+    const track: MkvAudioTrack = {
+      trackNumber: draft.trackNumber,
+      codecId: draft.codecId,
+      codec,
+      sampleRate: draft.sampleRate,
+      channels: draft.channels,
+    };
+    if (draft.name !== undefined) track.name = draft.name;
     if (this.durationFloat !== undefined && Number.isFinite(this.durationFloat)) {
       track.durationSec = (this.durationFloat * this.timestampScaleNs) / 1e9;
     }
-    const title = name ?? this.segmentTitle;
+    const title = draft.name ?? this.segmentTitle;
     if (title) track.title = title;
-    this.tracks.set(trackNumber, track);
+    this.tracks.set(draft.trackNumber, track);
+    if (this.selectedTrackNumber !== null) return;
+    this.selectedTrackNumber = draft.trackNumber;
     this.cb.onTrack?.(track);
   }
 

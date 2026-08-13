@@ -5,8 +5,8 @@
  * 7.1.4 virtual layout used by the renderer.
  */
 
-import { memo, useMemo, useRef } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
 import { sphericalToWebAudio, type VirtualSpeaker } from "@sda/renderer";
@@ -47,6 +47,29 @@ const PALETTE = {
 } as const;
 
 type Palette = (typeof PALETTE)[Theme];
+
+type RequestFrame = () => void;
+const RequestFrameContext = createContext<RequestFrame>(() => {});
+
+function FrameScheduler({ children, maxFps }: { children: ReactNode; maxFps: number | null }) {
+  const invalidate = useThree((state) => state.invalidate);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestFrame = useCallback(() => {
+    if (maxFps === null) {
+      invalidate();
+      return;
+    }
+    if (timer.current !== null) return;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      invalidate();
+    }, 1000 / maxFps);
+  }, [invalidate, maxFps]);
+  useEffect(() => () => {
+    if (timer.current !== null) clearTimeout(timer.current);
+  }, []);
+  return <RequestFrameContext.Provider value={requestFrame}>{children}</RequestFrameContext.Provider>;
+}
 
 /** ADM cartesian → scene position (three.js: x right, y up, z toward viewer;
  *  ADM: x right, y front, z up —— ITU-R BS.2076：+X 是右，与 Omniphony/EAR 一致). */
@@ -246,15 +269,22 @@ const Listener = memo(function Listener() {
   );
 });
 
-const ObjectDot = memo(function ObjectDot({ obj, muted }: { obj: VisualObject; muted: boolean }) {
+const ObjectDot = memo(function ObjectDot({
+  obj,
+  muted,
+}: {
+  obj: VisualObject;
+  muted: boolean;
+}) {
   const ref = useRef<THREE.Group>(null);
   const target = useMemo(() => new THREE.Vector3(), []);
-  useFrame(({ invalidate }, dt) => {
+  const requestFrame = useContext(RequestFrameContext);
+  useFrame((_, dt) => {
     if (!ref.current) return;
     // Smooth toward the latest event position (renderer ramps audio; we ease the view).
     target.set(...admToScene(obj.pos));
     ref.current.position.lerp(target, Math.min(1, dt * 20));
-    if (ref.current.position.distanceToSquared(target) > 1e-8) invalidate();
+    if (ref.current.position.distanceToSquared(target) > 1e-8) requestFrame();
   });
   const height = obj.pos[2]; // ADM z = up
   const color = useMemo(
@@ -317,25 +347,27 @@ export function ObjectView({
       dpr={isSwiftShader ? 1 : [1, 1.5]}
       gl={{ antialias: !isSwiftShader, powerPreference: isSwiftShader ? "low-power" : "high-performance" }}
     >
-      <Room p={p} />
-      <SpeakerRing layout={layout} />
-      <Listener />
-      {objects.map((o) => (
-        <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} />
-      ))}
-      <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />
-      {/* 听者半身像的光照 */}
-      <ambientLight intensity={0.75} />
-      <directionalLight position={[2.5, 4, 2]} intensity={1.2} />
-      {/* 左键拖动旋转视角 / 右键拖动平移 / 滚轮缩放空间 */}
-      <OrbitControls
-        makeDefault
-        enableDamping
-        dampingFactor={0.08}
-        rotateSpeed={0.9}
-        minDistance={0.5}
-        maxDistance={12}
-      />
+      <FrameScheduler maxFps={isSwiftShader ? 30 : null}>
+        <Room p={p} />
+        <SpeakerRing layout={layout} />
+        <Listener />
+        {objects.map((o) => (
+          <ObjectDot key={o.id} obj={o} muted={mutedIds?.has(o.id) ?? false} />
+        ))}
+        <gridHelper args={[ROOM * 2, 10, p.gridMain, p.floorGrid]} position={[0, FLOOR_Y, 0]} />
+        {/* 听者半身像的光照 */}
+        <ambientLight intensity={0.75} />
+        <directionalLight position={[2.5, 4, 2]} intensity={1.2} />
+        {/* 左键拖动旋转视角 / 右键拖动平移 / 滚轮缩放空间 */}
+        <OrbitControls
+          makeDefault
+          enableDamping={!isSwiftShader}
+          dampingFactor={0.08}
+          rotateSpeed={0.9}
+          minDistance={0.5}
+          maxDistance={12}
+        />
+      </FrameScheduler>
     </Canvas>
   );
 }

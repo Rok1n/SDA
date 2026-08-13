@@ -33,15 +33,65 @@ export const BINAURAL_MODES: Record<BinauralMode, BinauralModeSpec> = {
   far: { wet: 0.45 },
 };
 
+export interface HrtfMeasurementProvenance {
+  sourcePath: string;
+  azimuth: number;
+  elevation: number;
+  angularErrorDegrees: number;
+  sourceDistanceMeters: number;
+  monitor: string;
+  originalFrames: number;
+  originalBitsPerSample: number;
+}
+
+export interface LegacyHrtfProcessing {
+  trimStartSample: number;
+  peakSample: number;
+  originalPeak: number;
+  peakNormalizationGain: number;
+}
+
+export interface CalibratedHrtfProcessing {
+  sourceOnset: Record<string, number>;
+  commonDelaySamples: number;
+  calibrationGainDb: number;
+  globalGainDb: number;
+  speakerLevelTrimDb: number;
+  outputOnset: Record<string, number>;
+  coarseAlignmentShiftSamples?: number;
+  energyCentroidTof?: {
+    beforeSample?: number;
+    targetSample: number;
+    commonShiftSamples: number;
+    afterSample?: number;
+  };
+  [key: string]: unknown;
+}
+
 export interface HrtfManifestEntry {
   azimuth: number;
   elevation: number;
   dry: string;
   wet: string;
+  measurement?: {
+    dry: HrtfMeasurementProvenance;
+    wet: HrtfMeasurementProvenance;
+    flipAzimuth: boolean;
+  };
+  processing?: Record<"dry" | "wet", LegacyHrtfProcessing | CalibratedHrtfProcessing>;
+  assets?: Record<"dry" | "wet", {
+    tapCountPerEar: number;
+    sha256: string;
+  }>;
 }
 
 export interface HrtfManifest {
+  schemaVersion?: number;
+  calibrationVersion?: number;
   sampleRate: number;
+  source?: Record<string, unknown>;
+  azimuthConvention?: string;
+  processing?: Record<string, unknown>;
   positions: HrtfManifestEntry[];
 }
 
@@ -58,12 +108,27 @@ export interface RawBinauralIr {
 
 export interface BinauralIrSet {
   sampleRate: number;
+  calibrated: boolean;
   positions: RawBinauralIr[];
 }
 
 // ---- 加载（按 baseUrl 记忆化：重建 AudioContext 时不重复下载） ----
 
 const setCache = new Map<string, Promise<BinauralIrSet>>();
+type BinauralAssetLoader = (assetPath: string) => Promise<ArrayBuffer>;
+let assetLoader: BinauralAssetLoader | null = null;
+
+export function setBinauralAssetLoader(loader: BinauralAssetLoader | null): void {
+  assetLoader = loader;
+  setCache.clear();
+}
+
+async function loadAsset(baseUrl: string, fileName: string): Promise<ArrayBuffer> {
+  if (assetLoader) return assetLoader(`hrtf/${fileName}`);
+  const response = await fetch(`${baseUrl}/${fileName}`);
+  if (!response.ok) throw new Error(`${fileName} HTTP ${response.status}`);
+  return response.arrayBuffer();
+}
 
 /** 加载并缓存原始 IR 集。失败抛错，调用方决定回退策略。 */
 export function getBinauralIrSet(baseUrl: string): Promise<BinauralIrSet> {
@@ -77,21 +142,14 @@ export function getBinauralIrSet(baseUrl: string): Promise<BinauralIrSet> {
 }
 
 async function loadSet(baseUrl: string): Promise<BinauralIrSet> {
-  const res = await fetch(`${baseUrl}/hrtf-set.json`);
-  if (!res.ok) throw new Error(`hrtf-set.json HTTP ${res.status}`);
-  const manifest = (await res.json()) as HrtfManifest;
+  const manifestBuffer = await loadAsset(baseUrl, "hrtf-set.json");
+  const manifest = JSON.parse(new TextDecoder().decode(manifestBuffer)) as HrtfManifest;
 
   const positions = await Promise.all(
     manifest.positions.map(async (entry) => {
       const [dryBuf, wetBuf] = await Promise.all([
-        fetch(`${baseUrl}/${entry.dry}`).then((r) => {
-          if (!r.ok) throw new Error(`${entry.dry} HTTP ${r.status}`);
-          return r.arrayBuffer();
-        }),
-        fetch(`${baseUrl}/${entry.wet}`).then((r) => {
-          if (!r.ok) throw new Error(`${entry.wet} HTTP ${r.status}`);
-          return r.arrayBuffer();
-        }),
+        loadAsset(baseUrl, entry.dry),
+        loadAsset(baseUrl, entry.wet),
       ]);
       const dry = new Float32Array(dryBuf);
       const wet = new Float32Array(wetBuf);
@@ -105,7 +163,11 @@ async function loadSet(baseUrl: string): Promise<BinauralIrSet> {
       } satisfies RawBinauralIr;
     }),
   );
-  return { sampleRate: manifest.sampleRate, positions };
+  return {
+    sampleRate: manifest.sampleRate,
+    calibrated: manifest.calibrationVersion !== undefined && manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true,
+    positions,
+  };
 }
 
 // ---- 方向匹配：给虚拟音箱找最近的测量方向（球面角距） ----
@@ -174,8 +236,8 @@ function argmaxAbs(x: Float32Array, limit: number): number {
 /**
  * 按模式把干 HRIR 与湿 BRIR 混合成一条 IR：
  *   IR = (1-w)·HRIR + w·BRIR
- * 两者起点对齐到各自直达声峰值（HRIR 通常无预延迟，BRIR 含直达+房间），
- * 再重采样到 ctx 速率。
+ * 未校准的旧资产在运行时按直达峰兼容对齐；calibration v1 资产已离线按双耳共同
+ * 到达时间对齐，运行时保持原样，再重采样到 ctx 速率。
  */
 export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinauralIr, wet: number): AudioBuffer {
   const w = Math.max(0, Math.min(1, wet));
@@ -195,7 +257,9 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
   // 对齐：以左耳直达峰值为准（双耳共用同一 shift，保住 ITD）。
   // 只在 BRIR 前 20ms 内找直达峰，避免抓到房间反射峰。
   const search = Math.min(wetL.length, Math.round(rate * 0.02));
-  const shift = argmaxAbs(wetL, search) - argmaxAbs(dryL, dryL.length);
+  const shift = set.calibrated
+    ? 0
+    : argmaxAbs(wetL, search) - argmaxAbs(dryL, dryL.length);
 
   const outLen = wetL.length;
   const L = new Float32Array(outLen);
@@ -215,7 +279,7 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
   // A nominal 0° source should not carry the KU100 fixture's persistent ear
   // sensitivity offset. Equalise only measured centre directions; lateral ILD
   // remains untouched and continues to encode direction.
-  if (Math.abs(raw.azimuth) < 1e-6) {
+  if (!set.calibrated && Math.abs(raw.azimuth) < 1e-6) {
     let leftEnergy = 0;
     let rightEnergy = 0;
     for (let i = 0; i < outLen; i++) {
@@ -233,15 +297,17 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
     }
   }
 
-  // 能量归一化（Omnitone 惯例）：近/中/远切换、不同方向之间响度一致，
-  // 不会因为房间能量多少而忽大忽小。
-  let energy = 0;
-  for (let i = 0; i < outLen; i++) energy += L[i]! * L[i]! + R[i]! * R[i]!;
-  if (energy > 0) {
-    const s = 1 / Math.sqrt(energy);
-    for (let i = 0; i < outLen; i++) {
-      L[i] = L[i]! * s;
-      R[i] = R[i]! * s;
+  // 未校准的旧资产保持原有总能量兼容归一。calibration v1 已离线对齐每只
+  // 虚拟音箱的直达参考电平，并保持 direct/tail 标尺，不能在这里再次归一。
+  if (!set.calibrated) {
+    let energy = 0;
+    for (let i = 0; i < outLen; i++) energy += L[i]! * L[i]! + R[i]! * R[i]!;
+    if (energy > 0) {
+      const s = 1 / Math.sqrt(energy);
+      for (let i = 0; i < outLen; i++) {
+        L[i] = L[i]! * s;
+        R[i] = R[i]! * s;
+      }
     }
   }
 
@@ -270,7 +336,7 @@ export function buildBusIrs(
     // The measured -60-degree KU100 response has a large spectral mismatch
     // against +60 degrees. Use the more continuous +60-degree measurement for
     // both front wides and mirror its ears for the right side.
-    const canonicalWide = spk.name === "WideRight"
+    const canonicalWide = !set.calibrated && spk.name === "WideRight"
       ? nearestPosition(set, -spk.azimuth, spk.elevation)
       : null;
     const raw = canonicalWide ?? nearestPosition(set, spk.azimuth, spk.elevation);

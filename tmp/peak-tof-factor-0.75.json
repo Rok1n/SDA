@@ -1,0 +1,61 @@
+{
+  "windowSeconds": [
+    55,
+    70
+  ],
+  "results": {
+    "candidate": {
+      "5.1.4": {
+        "rmsDb": -20.955330300270592,
+        "peakDb": -5.879889592879492,
+        "crestDb": 15.0754407073911,
+        "lrCorrelation": 0.737168709332457,
+        "centroidHz": 437.15243095664806,
+        "bandsDb": {
+          "low": 74.40158226983031,
+          "mid": 69.49207839580356,
+          "high": 59.74131227080036
+        },
+        "limiter": {
+          "minimumGainReductionDb": -1.1201104071205086,
+          "meanGainReductionDb": -0.004317310665260624,
+          "reducedPercent": 0.5855555555555556
+        }
+      },
+      "7.1.4": {
+        "rmsDb": -21.174042113076585,
+        "peakDb": -6.503287742146259,
+        "crestDb": 14.670754370930325,
+        "lrCorrelation": 0.7407328297037539,
+        "centroidHz": 413.11090767027184,
+        "bandsDb": {
+          "low": 74.25318380084238,
+          "mid": 69.27015004440577,
+          "high": 57.011571451157565
+        },
+        "limiter": {
+          "minimumGainReductionDb": -0.4967122578537396,
+          "meanGainReductionDb": -0.005182984354907189,
+          "reducedPercent": 4.694583333333333
+        }
+      },
+      "9.1.4": {
+        "rmsDb": -21.41131762626061,
+        "peakDb": -6.38513638625842,
+        "crestDb": 15.026181240002192,
+        "lrCorrelation": 0.640858672684115,
+        "centroidHz": 507.7619346507652,
+        "bandsDb": {
+          "low": 73.60001769974858,
+          "mid": 69.8058784605193,
+          "high": 57.661468380275444
+        },
+        "limiter": {
+          "minimumGainReductionDb": -0.6148636137415796,
+          "meanGainReductionDb": -0.0031254718764763467,
+          "reducedPercent": 2.2484722222222224
+        }
+      }
+    }
+  }
+}

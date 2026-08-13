@@ -44,11 +44,12 @@ declare global {
       readSlice?: (id: number, offset: number, length: number) => Promise<Uint8Array>;
       close?: (id: number) => Promise<void>;
       readBundledHeadphoneFir?: (assetPath: string) => Promise<Uint8Array>;
+      readBundledHrtf?: (assetPath: string) => Promise<Uint8Array>;
       importHeadphoneProfile?: () => Promise<{ profile: LocalHeadphoneProfileManifest; leftFir: Uint8Array; rightFir: Uint8Array } | null>;
       listHeadphoneProfiles?: () => Promise<LocalHeadphoneProfileManifest[]>;
       readHeadphoneProfile?: (id: string) => Promise<{ profile: LocalHeadphoneProfileManifest; leftFir: Uint8Array; rightFir: Uint8Array }>;
       deleteHeadphoneProfile?: (id: string) => Promise<void>;
-      onOpenFile?: (callback: (filePath: string) => void) => void;
+      onOpenFile?: (callback: (filePath: string) => void) => () => void;
     };
   }
 }

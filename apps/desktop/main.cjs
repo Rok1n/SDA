@@ -44,6 +44,7 @@ let nextFileId = 1;
 
 const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
+const BUNDLED_HRTF_PATTERN = /^hrtf\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
 const webAssetRoots = () => [
   path.join(__dirname, "web"),
@@ -138,6 +139,7 @@ function createWindow() {
   });
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     if (level >= 2) console.warn(`[SDA renderer] ${sourceId}:${line} ${message}`);
+    else if (message.startsWith("[SDA]")) console.log(message);
   });
 
   if (isDev) {
@@ -214,6 +216,19 @@ ipcMain.handle("sda:read-bundled-headphone-fir", (_e, assetPath) => {
   if (path.dirname(path.dirname(filePath)) !== path.join(resolvedRoot, "headphone-compensation")) {
     profileValidationError("内置 FIR 路径越界");
   }
+  return fs.readFileSync(filePath);
+});
+
+ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
+  if (typeof assetPath !== "string" || !BUNDLED_HRTF_PATTERN.test(assetPath)) {
+    throw new Error("内置 HRTF 路径无效");
+  }
+  const root = webAssetRoot();
+  if (!root) throw new Error("找不到内置 HRTF 资产目录");
+  const hrtfRoot = path.resolve(root, "hrtf");
+  const filePath = path.resolve(root, ...assetPath.split("/"));
+  if (path.dirname(filePath) !== hrtfRoot) throw new Error("内置 HRTF 路径越界");
+  if (assetPath.endsWith("hrtf-set.json")) console.log("[SDA] 从 Electron 内置资源加载 HRTF");
   return fs.readFileSync(filePath);
 });
 

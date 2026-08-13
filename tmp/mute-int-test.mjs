@@ -1,128 +1,94 @@
-// Headless integration test: renderer.ts main thread → worklet message protocol.
-// Mocks Web Audio just enough to run SpatialRenderer in Node, then drives the
-// real worklet source with the posted messages and checks audible output.
-import { writeFileSync, readFileSync } from "node:fs";
+// Headless integration test: renderer main thread -> worklet message protocol.
+import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-// renderer.bundle.cjs 已用 esbuild CLI 预先构建（见注释）：
-// node_modules/.pnpm/esbuild@*/node_modules/esbuild/bin/esbuild \
-//   packages/renderer/src/renderer.ts --bundle --format=cjs --platform=node \
-//   --outfile=tmp/renderer.bundle.cjs
-const out = path.join(path.dirname(fileURLToPath(import.meta.url)), "renderer.bundle.cjs");
-
-// ---- Web Audio mocks ----
-const postedToWorklet = [];
-function fakeParam() {
-  return { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, cancelScheduledValues() {} };
-}
-function fakeNode() {
+const bundle = path.join(root, "tmp/renderer.bundle.cjs");
+const posted = [];
+function param() { return { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {}, cancelScheduledValues() {} }; }
+function node() {
   return {
-    connect() {}, disconnect() {}, start() {}, stop() {},
-    gain: fakeParam(), frequency: fakeParam(), Q: fakeParam(),
-    threshold: fakeParam(), knee: fakeParam(), ratio: fakeParam(), attack: fakeParam(), release: fakeParam(),
-    pan: fakeParam(), positionX: fakeParam(), positionY: fakeParam(), positionZ: fakeParam(),
-    orientationX: fakeParam(), orientationY: fakeParam(), orientationZ: fakeParam(),
-    buffer: null, type: "", channelCount: 0, channelCountMode: "", channelInterpretation: "",
+    connect() {}, disconnect() {}, start() {}, stop() {}, gain: param(), frequency: param(), Q: param(),
+    threshold: param(), knee: param(), ratio: param(), attack: param(), release: param(),
+    positionX: param(), positionY: param(), positionZ: param(), channelCount: 0, channelCountMode: "", maxChannelCount: 32,
   };
 }
 class FakeAudioWorkletNode {
-  constructor(ctx, name, opts) {
-    this.name = name;
-    this.port = {
-      postMessage: (msg) => postedToWorklet.push(msg),
-      onmessage: null,
-    };
-    this._opts = opts;
-  }
-  connect() {} disconnect() {}
+  constructor() { this.port = { postMessage: (message) => posted.push(message), onmessage: null }; }
+  connect() {}
+  disconnect() {}
 }
 globalThis.AudioWorkletNode = FakeAudioWorkletNode;
 class FakeAudioContext {
-  constructor() {
-    this.sampleRate = 48000;
-    this.state = "running";
-    this.audioWorklet = { addModule: async () => {} };
-    this.destination = fakeNode();
-    this.listener = {};
-  }
-  createDelay() { const delay = fakeNode(); delay.delayTime = fakeParam(); return delay; }
-  createGain() { return fakeNode(); }
-  createBiquadFilter() { return fakeNode(); }
-  createConvolver() { return fakeNode(); }
-  createPanner() { return fakeNode(); }
-  createChannelSplitter() { return fakeNode(); }
-  createChannelMerger() { return fakeNode(); }
-  createBuffer(ch, len, sr) { return { numberOfChannels: ch, length: len, sampleRate: sr, getChannelData: () => new Float32Array(len), copyToChannel() {} }; }
-  createBufferSource() { return fakeNode(); }
-  createDynamicsCompressor() { return fakeNode(); }
-  createOscillator() { return fakeNode(); }
+  constructor() { this.sampleRate = 48000; this.currentTime = 0; this.state = "running"; this.destination = node(); this.audioWorklet = { addModule: async () => {} }; }
+  createDelay() { const delay = node(); delay.delayTime = param(); return delay; }
+  createGain() { return node(); }
+  createBiquadFilter() { return node(); }
+  createConvolver() { return node(); }
+  createPanner() { return node(); }
+  createDynamicsCompressor() { return node(); }
+  createChannelSplitter() { return node(); }
+  createChannelMerger() { return node(); }
+  createBuffer(_, length) { return { copyToChannel() {}, getChannelData: () => new Float32Array(length), length }; }
   async close() { this.state = "closed"; }
-  async resume() {} async suspend() {}
 }
-globalThis.AudioContext = FakeAudioContext;
 
-// ---- load renderer ----
-const { SpatialRenderer, LAYOUTS } = await import(pathToFileURL(out).href);
+const { LAYOUTS, RENDER_TOPOLOGY, SpatialRenderer } = await import(pathToFileURL(bundle).href);
+const renderer = new SpatialRenderer(new FakeAudioContext(), { mode: "stereo", layout: LAYOUTS["5.1"] });
+await renderer.init("mock://worklet");
+renderer.addSource("obj:10");
+const event = (samplePos, x) => ({
+  id: 10, samplePos, pos: [x, 1, 0], hasPos: true, size: [0, 0, 0], gainDb: 0,
+  anchor: "room", distanceM: null, distanceInfinite: false, screenFactor: null, depthFactor: null, rampDuration: 128,
+});
+renderer.applyEvent(event(0, 0), 128);
+renderer.setSourceMuted("obj:10", true);
+for (let i = 1; i <= 5; i++) renderer.applyEvent(event(i * 128, i * 0.1), 128);
+renderer.addSource("obj:10");
+renderer.setSourceMuted("obj:10", false);
 
-const ctx = new FakeAudioContext();
-const r = new SpatialRenderer(ctx, { mode: "stereo", layout: LAYOUTS["5.1"] });
-await r.init("mock://worklet");
-
-// declare an object source like pumpPcm does
-r.addSource("obj:10");
-// an event arrives (position front-left, normal gain)
-r.applyEvent({ id: 10, pos: [-0.5, 0.8, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
-
-const lastGains = () => [...postedToWorklet].reverse().find((m) => m.type === "gains" && m.id === "obj:10");
-console.log("事件后 scalar:", lastGains().gain);
-
-// ---- MUTE ----
-r.setSourceMuted("obj:10", true);
-console.log("静音后 scalar:", lastGains().gain, "(期望 0)");
-
-// events keep flowing (this is what pumpPcm does every frame)
-for (let i = 0; i < 5; i++) {
-  r.applyEvent({ id: 10, pos: [-0.5 + i * 0.1, 0.8, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
+let failed = 0;
+function check(condition, text) {
+  if (!condition) failed++;
+  console.log(`${condition ? "PASS" : "FAIL"}  ${text}`);
 }
-console.log("事件刷新×5 后 scalar:", lastGains().gain, "(期望仍 0)");
+const gainMessages = posted.flatMap((message) => message.type === "scheduleGainsBatch" ? message.entries : [message])
+  .filter((message) => (message.type === "gains" || message.type === "scheduleGains") && message.id === "obj:10");
+const muteMessages = posted.filter((message) => message.type === "mute");
+check(gainMessages.every((message) => message.gain > 0), "对象移动不把 mute 状态混入 metadata gain");
+check(muteMessages.some((message) => message.muted) && muteMessages.some((message) => !message.muted),
+  "静音和解除静音通过独立 worklet envelope 消息");
+check(gainMessages.filter((message) => message.type === "scheduleGains").length === 6,
+  "首个目标和五次真实移动全部保留 sample-scheduled gains");
 
-// re-declaration (sparse declare change mid-stream)
-r.addSource("obj:10");
-console.log("重复 addSource 后 scalar:", lastGains().gain, "(player 应立即恢复静音)");
-r.setSourceMuted("obj:10", true); // player.ts line 371 restore
-console.log("player 恢复静音后 scalar:", lastGains().gain, "(期望 0)");
+let RendererProcessor;
+const context = {
+  sampleRate: 48000,
+  currentFrame: 0,
+  AudioWorkletProcessor: class { constructor() { this.port = { postMessage() {}, onmessage: null }; } },
+  registerProcessor(name, processor) { if (name === "sda-renderer") RendererProcessor = processor; },
+  console,
+};
+const vm = await import("node:vm");
+vm.runInNewContext(readFileSync(path.join(root, "packages/renderer/worklet/sda-renderer.worklet.js"), "utf8"), context);
+const processor = new RendererProcessor({ processorOptions: { busCount: RENDER_TOPOLOGY.length } });
+processor.onMessage({ type: "add", id: "obj:10" });
+processor.onMessage({ type: "gains", id: "obj:10", gains: Float32Array.from({ length: RENDER_TOPOLOGY.length }, (_, i) => i === 0 ? 1 : 0), gain: 1, lp: 1, ramp: 1 });
+processor.onMessage({ type: "start", origin: 0 });
+const samples = new Float32Array(128).fill(1);
+processor.onMessage({ type: "feedBatch", sequence: 1, start: 0, entries: [{ id: "obj:10", samples }] });
+const outputs = Array.from({ length: 4 }, () => Array.from({ length: RENDER_TOPOLOGY.length }, () => new Float32Array(128)));
+processor.process([], outputs);
+const audible = outputs.reduce((sum, bank) => sum + bank.reduce((bankSum, bus) => bankSum + Math.abs(bus[64]), 0), 0);
+check(audible > 0, "真实 worklet 在对象 gain 生效后输出音频");
+processor.onMessage({ type: "mute", id: "obj:10", muted: true, ramp: 32 });
+for (let i = 0; i < 2; i++) {
+  processor.onMessage({ type: "feedBatch", sequence: i + 2, start: (i + 1) * 128, entries: [{ id: "obj:10", samples: new Float32Array(128).fill(1) }] });
+  processor.process([], outputs);
+}
+const silent = outputs.reduce((sum, bank) => sum + bank.reduce((bankSum, bus) => bankSum + Math.abs(bus[64]), 0), 0);
+check(silent === 0, "真实 worklet 完成 mute ramp 后保持静音");
 
-// unmute
-r.setSourceMuted("obj:10", false);
-console.log("解除静音后 scalar:", lastGains().gain, "(期望 1)");
-
-// ---- now feed these messages into the REAL worklet and measure output ----
-const workletSrc = readFileSync(path.join(root, "packages/renderer/worklet/sda-renderer.worklet.js"), "utf8");
-let ProcessorClass = null;
-globalThis.AudioWorkletProcessor = class { constructor() { this.port = { onmessage: null, postMessage() {} }; } };
-globalThis.registerProcessor = (name, cls) => { ProcessorClass = cls; };
-globalThis.sampleRate = 48000;
-eval(workletSrc);
-
-const p = new ProcessorClass({ processorOptions: { busCount: LAYOUTS["5.1"].length } });
-// replay the full message stream in order (add / gains / feed…)
-postedToWorklet.length = 0;
-r.addSource("obj:10");
-r.applyEvent({ id: 10, pos: [0, 1, 0], hasPos: true, size: 0, gainDb: 0, rampDuration: 128 }, 128);
-for (const m of postedToWorklet) p.port.onmessage({ data: m });
-
-const feed = new Float32Array(128).fill(1);
-const buses = Array.from({ length: LAYOUTS["5.1"].length }, () => new Float32Array(128));
-const runBlock = () => { p.port.onmessage({ data: { type: "feed", id: "obj:10", samples: feed } }); p.process([], [buses]); return buses.reduce((a, b) => a + Math.abs(b[64]), 0); };
-
-// NOTE: worklet got its own fresh "add" + gains from the replay above.
-console.log("worklet 出声:", runBlock().toFixed(3), "(期望 > 0)");
-postedToWorklet.length = 0;
-r.setSourceMuted("obj:10", true);
-for (const m of postedToWorklet) p.port.onmessage({ data: m });
-for (let i = 0; i < 40; i++) runBlock(); // let the 2048-sample ramp finish
-console.log("worklet 静音后:", runBlock().toFixed(3), "(期望 0.000)");
-console.log("PASS — 主线程 + worklet 链路在 Node 下全部正确");
+console.log(failed ? `\n${failed} 项失败` : "\n对象移动与静音集成通过");
+process.exit(failed ? 1 : 0);

@@ -26,8 +26,8 @@ import {
   type VirtualSpeaker,
 } from "@sda/renderer";
 import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent } from "@sda/core";
-import type { BinauralRenderMetadata, BinauralRenderMode } from "@sda/demux";
-import { placeholderVisualObject, visualObjectFromEvent } from "./control.js";
+import type { BinauralRenderMetadata } from "@sda/demux";
+import { placeholderVisualObject, sameObjectTarget, visualObjectFromEvent, withoutPendingObjectEvents } from "./control.js";
 
 export interface VisualObject {
   id: number;
@@ -44,7 +44,6 @@ export interface PlayerCallbacks {
   onTrack?: (info: { codec: string; sampleRate: number; channels: number; container: string; durationSec?: number; title?: string; coverArt?: { bytes: Uint8Array; mimeType: "image/jpeg" | "image/png" } }) => void;
   /** Program-level DBMD metadata. It never follows the sample event timeline. */
   onBinauralMetadata?: (metadata: BinauralRenderMetadata) => void;
-  onBinauralObjectModes?: (modes: ReadonlyMap<number, BinauralRenderMode>) => void;
   /** Decoded frame topology. Container channel_count can describe only an EC-3 core. */
   onDecodedFormat?: (info: { rawBedLabels: string[]; bedLabels: string[]; objectChannels: number }) => void;
   /** Throttled (~per frame batch) object-state snapshot for the 3D view. */
@@ -101,9 +100,12 @@ export class SdaPlayer {
   private objects = new Map<number, VisualObject>();
   /** DBMD is static program metadata and is intentionally never sample-scheduled. */
   private binauralMetadata: BinauralRenderMetadata | null = null;
-  private objectBinauralModes = new Map<number, BinauralRenderMode>();
   /** Visual metadata waits for the same codec sample clock as audio gains. */
   private pendingVisualEvents: ObjectEvent[] = [];
+  private pendingVisualCursor = 0;
+  private pendingVisualTargets = new Map<number, ObjectEvent>();
+  private visualObjectsSnapshot: VisualObject[] = [];
+  private visualSnapshotDirty = true;
   private visualTimer: ReturnType<typeof setInterval> | null = null;
   private ended = false;
   /** init 参数快照，重建 AudioContext（采样率对齐）时用。 */
@@ -124,7 +126,6 @@ export class SdaPlayer {
    *  触发，并发跑 recreateRenderer 会泄漏 AudioContext —— 必须排队。 */
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
-  private layoutLevelCompensationEnabled = true;
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private scheduledProgramLoudnessGainDb: number | null | undefined;
@@ -161,39 +162,40 @@ export class SdaPlayer {
     }
     SdaPlayer.active = this;
     this.initArgs = { mode, workletUrl, layout, binauralBaseUrl, layoutResolver };
-    const ctx = new AudioContext({ latencyHint: "playback" });
-    this.renderer = new SpatialRenderer(ctx, {
-      mode,
-      layout,
-      onConsumedTick: (stats) => {
-        this.reportRendererHealth(stats);
-        this.pumpPcm();
-      },
-      onBatchResult: (result) => this.handleBatchResult(result),
-    });
-    await this.renderer.init(workletUrl);
-    this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
-    this.renderer.setBinauralEqBands(this.binauralEqBands);
-    await this.attachBinauralIrs(this.renderer);
-    this.worker.postMessage({ type: "init" });
-    await this.ready;
+    try {
+      const ctx = new AudioContext({ latencyHint: "playback" });
+      this.renderer = new SpatialRenderer(ctx, {
+        mode,
+        layout,
+        onConsumedTick: (stats) => {
+          this.reportRendererHealth(stats);
+          this.pumpPcm();
+        },
+        onBatchResult: (result) => this.handleBatchResult(result),
+      });
+      await this.renderer.init(workletUrl);
+      this.renderer.setHeadphoneCompensation(this.headphoneProfileId);
+      this.renderer.setBinauralEqBands(this.binauralEqBands);
+      await this.attachBinauralIrs(this.renderer);
+      this.worker.postMessage({ type: "init" });
+      await this.ready;
+    } catch (error) {
+      await this.dispose().catch(() => {});
+      throw error;
+    }
   }
 
-  /** 加载双耳 IR 集（SADIE II KU100）并注入渲染器。失败时优雅降级到
-   *  浏览器内置 HRTF（PannerNode），播放不受影响。原始数据跨 AudioContext
-   *  缓存，采样率对齐重建时不会重复下载。 */
+  /** 加载双耳 IR 集（SADIE II KU100）并注入渲染器。播放和采样率重建
+   * 都等待同一份资产完成，避免启动在浏览器 HRTF、随后异步切到卷积图。 */
   private async attachBinauralIrs(r: SpatialRenderer): Promise<void> {
-    try {
-      const baseUrl = this.initArgs?.binauralBaseUrl;
-      if (!baseUrl) return;
-      const set = await getBinauralIrSet(baseUrl);
-      if (this.disposed || this.renderer !== r) return;
-      r.setBinauralData(set);
-      r.setBinauralMode(this.binauralMode);
-      console.log(`[SDA] player#${this.id} 双耳 IR 已加载（${set.positions.length} 方向 @${set.sampleRate}Hz）`);
-    } catch (e) {
-      console.warn(`[SDA] player#${this.id} 双耳 IR 资产缺失，回退浏览器内置 HRTF（先跑 node scripts/build-hrtf.mjs）`, e);
-    }
+    const baseUrl = this.initArgs?.binauralBaseUrl;
+    if (!baseUrl) throw new Error("双耳 IR 资产地址缺失");
+    const set = await getBinauralIrSet(baseUrl);
+    if (this.disposed || this.renderer !== r) return;
+    r.setBinauralData(set);
+    if (!r.hasBinauralData) throw new Error("双耳 IR 图未就绪");
+    r.setBinauralMode(this.binauralMode);
+    console.log(`[SDA] player#${this.id} 双耳 IR 已加载（${set.positions.length} 方向 @${set.sampleRate}Hz）`);
   }
 
   /** 播放中仅替换逻辑扬声器布局；不重建 AudioContext/worklet，不清 PCM 缓冲。 */
@@ -318,7 +320,11 @@ export class SdaPlayer {
     this.recreatePending++;
     this.recreateChain = this.recreateChain
       .then(() => this.recreateRenderer(sampleRate))
-      .catch((e) => console.warn(`[SDA] player#${this.id} renderer 重建失败`, e));
+      .catch((error) => {
+        const message = `renderer 重建失败: ${error instanceof Error ? error.message : String(error)}`;
+        console.warn(`[SDA] player#${this.id} ${message}`, error);
+        this.handleWorkerFailure(message);
+      });
   }
 
   private async recreateRenderer(sampleRate: number): Promise<void> {
@@ -352,7 +358,6 @@ export class SdaPlayer {
         return;
       }
       r.setVolume(this.lastVolume);
-      r.setLayoutLevelCompensation(this.layoutLevelCompensationEnabled);
       r.setProgramLoudnessGainDb(this.programLoudnessGainDb);
       this.scheduledProgramLoudnessGainDb = undefined;
       r.setVolumeBalance(this.volumeBalanceEnabled);
@@ -360,6 +365,13 @@ export class SdaPlayer {
       r.setBinauralEqBands(this.binauralEqBands);
       r.setLfeMuted(this.lfeMuted);
       this.renderer = r;
+      try {
+        await this.attachBinauralIrs(r);
+      } catch (error) {
+        this.renderer = null;
+        await r.close();
+        throw error;
+      }
       // 恢复暂停意图：重建的 worklet 默认不暂停、新 AudioContext 默认 running，
       // 不恢复的话暂停中重建会让音频自己继续响（UI 仍显示暂停，按钮看似失效）
       if (this.pausedState) {
@@ -368,20 +380,17 @@ export class SdaPlayer {
       } else {
         await r.ctx.resume();
       }
-      // 采样率对齐重建后：重新注入双耳 IR（原始数据有缓存，不会重复下载）
-      void this.attachBinauralIrs(r);
+      // 双耳 IR 已在发布 renderer 前同步注入；此处不再异步切换输出图。
       // 床层/对象源在新 worklet 里重新声明
       this.knownBedLabels = [];
       for (const id of this.objectChannels.keys()) {
         r.addSource(`obj:${id}`);
-        const mode = this.objectBinauralModes.get(id);
-        if (mode) r.setSourceBinauralMode(`obj:${id}`, mode);
       }
       // 新 renderer 中恢复对象静音状态。
       for (const id of this.mutedObjects) r.setSourceMuted(`obj:${id}`, true);
     } finally {
       this.recreatePending--;
-      if (this.recreatePending === 0) {
+      if (this.recreatePending === 0 && this.renderer) {
         // 新 worklet 的 consumed 从 0 起计，fedSamples 同步归零 —— 否则
         // fedBufferedSeconds 虚高 TARGET 秒，pump 停摆数秒（表现为开播卡死）。
         // 此刻才喂入的帧全部来自队列，播放内容无损。
@@ -452,9 +461,11 @@ export class SdaPlayer {
     this.renderer?.setPaused(false);
     void this.renderer?.ctx.resume();
     this.objects.clear();
+    this.visualSnapshotDirty = true;
     this.binauralMetadata = null;
-    this.objectBinauralModes.clear();
     this.pendingVisualEvents = [];
+    this.pendingVisualCursor = 0;
+    this.pendingVisualTargets.clear();
     this.objectChannels.clear();
     this.decodedFormatKey = "";
     this.emitVisual();
@@ -511,11 +522,6 @@ export class SdaPlayer {
   setVolumeBalance(enabled: boolean): void {
     this.volumeBalanceEnabled = enabled;
     this.renderer?.setVolumeBalance(enabled);
-  }
-
-  setLayoutLevelCompensation(enabled: boolean): void {
-    this.layoutLevelCompensationEnabled = enabled;
-    this.renderer?.setLayoutLevelCompensation(enabled);
   }
 
   setVolume(v: number): void {
@@ -652,12 +658,15 @@ export class SdaPlayer {
           this.containerDurationSec = track.durationSec;
         }
         this.ensureStreamRate(track.sampleRate);
+        console.log(
+          `[SDA] player#${this.id} 轨道 ${track.container}/${track.codec} ${track.sampleRate}Hz ${track.channels}ch` +
+          (track.durationSec ? ` ${track.durationSec.toFixed(3)}s` : ""),
+        );
         this.cb.onTrack?.(track);
         break;
       }
       case "binaural-metadata": {
         this.binauralMetadata = msg.metadata as BinauralRenderMetadata;
-        this.objectBinauralModes.clear();
         this.cb.onBinauralMetadata?.(this.binauralMetadata);
         break;
       }
@@ -763,10 +772,14 @@ export class SdaPlayer {
       const hasObjectLabels = frame.labels.some((label) => label.startsWith("Obj_"));
       let visualChanged = false;
       if (!hasObjectLabels) {
-        for (const id of this.objectChannels.keys()) this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
+        for (const id of this.objectChannels.keys()) {
+          this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
+          this.discardPendingVisualEvents(id);
+        }
         this.objectChannels.clear();
         if (this.objects.size > 0) {
           this.objects.clear();
+          this.visualSnapshotDirty = true;
           visualChanged = true;
         }
       }
@@ -786,19 +799,17 @@ export class SdaPlayer {
         // not a patch. Retire removed sources on the codec sample boundary.
         const nextIds = new Set(declarations.map((declaration) => declaration.id));
         for (const id of this.objectChannels.keys()) {
-          if (!nextIds.has(id)) this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
+          if (!nextIds.has(id)) {
+            this.renderer.retireSourceAt(`obj:${id}`, frame.samplePos);
+            this.discardPendingVisualEvents(id);
+          }
         }
         this.objectChannels.clear();
         const declaredIds = new Set<number>();
-        for (const [ordinal, decl] of declarations.entries()) {
+        for (const decl of declarations) {
           declaredIds.add(decl.id);
           this.objectChannels.set(decl.id, decl.channel);
           this.renderer.addSource(`obj:${decl.id}`, { atSample: frame.samplePos });
-          const mode = this.binauralMetadata?.available ? this.binauralMetadata.objectModes[ordinal] : undefined;
-          if (mode) {
-            this.objectBinauralModes.set(decl.id, mode);
-            this.renderer.setSourceBinauralMode(`obj:${decl.id}`, mode);
-          }
           // 声明可能是整组重放；addSource 对已有 id 幂等，此处只同步独立
           // mute 包络，不触碰该源已经排队/生效的位置、增益等元数据。
           this.renderer.setSourceMuted(`obj:${decl.id}`, this.mutedObjects.has(decl.id));
@@ -806,16 +817,17 @@ export class SdaPlayer {
             // OAMD events may arrive in a later frame. Expose the object now so
             // the first opened file does not appear to have no objects.
             this.objects.set(decl.id, placeholderVisualObject(decl.id));
+            this.visualSnapshotDirty = true;
             visualChanged = true;
           }
         }
         for (const id of this.objects.keys()) {
           if (!declaredIds.has(id)) {
             this.objects.delete(id);
+            this.visualSnapshotDirty = true;
             visualChanged = true;
           }
         }
-        this.cb.onBinauralObjectModes?.(this.objectBinauralModes);
       }
       const channelToObject = new Map<number, number>();
       for (const [id, ch] of this.objectChannels) channelToObject.set(ch, id);
@@ -842,10 +854,9 @@ export class SdaPlayer {
       // Schedule metadata before exposing this frame to the worklet. Port
       // messages are FIFO, so the first sample can never render with a future
       // or stale object position merely because the player prebuffers ~2 s.
-      for (const ev of frame.events as ObjectEvent[]) {
-        this.renderer.applyEvent(ev, ev.rampDuration || 128);
-        this.pendingVisualEvents.push(ev);
-      }
+      const events = frame.events as ObjectEvent[];
+      this.renderer.applyEvents(events);
+      this.queueVisualEvents(events);
 
       // Enqueue every channel of the decoded frame atomically on the codec's
       // absolute sample clock. Per-source feed messages allowed the worklet to
@@ -886,17 +897,46 @@ export class SdaPlayer {
     }
   }
 
+  private discardPendingVisualEvents(id: number): void {
+    this.pendingVisualEvents = withoutPendingObjectEvents(
+      this.pendingVisualEvents,
+      this.pendingVisualCursor,
+      id,
+    );
+    this.pendingVisualCursor = 0;
+    this.pendingVisualTargets.delete(id);
+  }
+
+  private queueVisualEvents(events: readonly ObjectEvent[]): void {
+    for (const event of events) {
+      if (sameObjectTarget(this.pendingVisualTargets.get(event.id), event)) continue;
+      this.pendingVisualTargets.set(event.id, event);
+      this.pendingVisualEvents.push(event);
+    }
+  }
+
   private emitVisual(): void {
     const streamTimeSec = this.positionSeconds();
     const playedSample = Math.floor(streamTimeSec * this.sampleRate);
+    let changed = false;
     while (
-      this.pendingVisualEvents.length > 0 &&
-      this.pendingVisualEvents[0]!.samplePos <= playedSample
+      this.pendingVisualCursor < this.pendingVisualEvents.length &&
+      this.pendingVisualEvents[this.pendingVisualCursor]!.samplePos <= playedSample
     ) {
-      const event = this.pendingVisualEvents.shift()!;
+      const event = this.pendingVisualEvents[this.pendingVisualCursor++]!;
       this.objects.set(event.id, visualObjectFromEvent(event));
+      changed = true;
     }
-    // 即使没有任何对象（纯床层/立体声文件）也要发，时间轴靠它驱动。
-    this.cb.onVisualState?.([...this.objects.values()], streamTimeSec);
+    if (this.pendingVisualCursor >= 256 && this.pendingVisualCursor * 2 >= this.pendingVisualEvents.length) {
+      this.pendingVisualEvents.splice(0, this.pendingVisualCursor);
+      this.pendingVisualCursor = 0;
+    }
+    if (changed || this.visualSnapshotDirty) {
+      this.visualObjectsSnapshot = [...this.objects.values()];
+      this.visualSnapshotDirty = false;
+    }
+    // The timeline remains independent from object snapshots. React receives the
+    // same array identity while objects are static, so the 3D view can memoise.
+    this.cb.onVisualState?.(this.visualObjectsSnapshot, streamTimeSec);
   }
 }

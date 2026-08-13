@@ -125,10 +125,10 @@ Genelec 官方《Immersive Solutions Guide》（印刷页10–14）记录的示�
 **语义**：三档对应不同 BRIR 集 —— near 用近头、几乎无房间成分的 HRIR；
 mid 用标准听音距离、含少量早期反射的 BRIR；far 用低直达声/混响比的 BRIR。
 
-**SDA 的实现**（`packages/renderer/src/hrtf.ts`）：同一测量方向的
-**干 HRIR（消声室直达）与湿 BRIR（含房间早期反射 + ~170ms 尾音）按时域对齐混合**：
-`IR = (1-w)·HRIR + w·BRIR`，混合后能量归一化（近/中/远切换响度一致）。
-BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响总线。
+**SDA 的实现**（`packages/renderer/src/hrtf.ts`）：calibration v1 将目标方向的
+**干 HRIR 直达路径**与同一个 KU100 房间的**校准 BRIR 房间尾声**离线对齐：
+`wet = dry + roomTail`。运行时使用 `IR = dry + w·roomTail`，所以 Near/Mid/Far
+只改变房间反射比例，不改变已校准的直达参考、共同 TOF、ILD 或 ITD。
 
 | 档位 | 湿声权重 w | 听感 |
 |---|---:|---|
@@ -141,10 +141,17 @@ BRIR 自带房间响应，正是杜比房间 cue 的来源，无需独立混响�
 
 ### 3.1 双耳输出标定
 
-KU100 IR 在运行时按左右耳**合计能量**归一化，保证方向与 Near/Mid/Far 间的相对
-响度一致；它不保证经过头部/耳廓频响后的主观响度等于未空间化立体声。SDA 因此在
-全部虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+6 dB` makeup gain，
-再依次经过用户 master 音量、布局电平补偿和可选节目 dialnorm；最终与立体声路径共用
+KU100 calibration v1 把 17 个虚拟音箱的双耳共同到达时间对齐到同一参考，并用
+500–2000 Hz、4 ms 直达窗口把每方向参考电平对齐到稳健中位数。每方向只施加一组
+左右共用的延时和标量，因此保留方向性 ILD/ITD；房间响应修正同样使用左右共用、
+固定长度的线性相位 FIR，1/3 倍频程平滑且限制在 ±3 dB。运行时不再对校准 IR 做
+逐方向总能量归一，否则会破坏已校准的直达/房间标尺。VBAP 仍把每个对象的虚拟
+音箱增益向量归一到单位功率。布局只选择同一房间中的已校准音箱子集，不按布局中
+所有潜在音箱数量施加 `sqrt(5/N)` 一类总增益。
+
+这些归一化不保证经过头部/耳廓频响后的主观响度等于未空间化立体声。SDA 因此在全部
+虚拟扬声器卷积、LFE 汇总和最终双耳 merger **之后**加固定 `+6 dB` makeup gain，
+再依次经过用户 master 音量和可选节目 dialnorm；最终与立体声路径共用
 stereo-linked lookahead limiter，再进入输出模式 master。
 
 该值是 SDA 针对 AirPods/耳机主观响度的应用级标定点，**不是** Dolby、Apple 或
@@ -165,18 +172,24 @@ inter-sample peak 的保护不等同于专业 true-peak 限制器。
    所以不自动低通对象。空气吸收只能在输入包含明确物理距离元数据时再启用，避免
    将正常的沉浸声对象渲染得发闷。
 
-> 注意：harletty 解码出的事件流（OAMD）**不携带** `binauralRenderMode`。
-> SDA 仅在 BWF/RF64 的 `dbmd` chunk 中发现、且由 Dolby 公开 1.0.0.7 parser
-> 布局成功验证的 Supplemental Metadata 时，才按 program object ordinal 应用
-> `off` / `near` / `mid` / `far`。这是静态 program metadata，不随 sample event
-> 自动化；`not-indicated` 明确采用 Mid 默认策略。公开 Supplemental 段 parser
-> 不提供可绑定的 bed channel-position table，因此床层不会伪造模式。MKV、MP4、
-> raw EC-3/TrueHD 等没有该可读 DBMD 输入时保留默认 Near，并在 UI 显示不可读取，
-> 从不根据 OAMD 物理距离推断 Near/Mid/Far。
+> 注意：制作端可给每个 3D object 和 surround-bed 子声道分别指定 Binaural Render
+> Mode；Apple Logic Pro 明确写明 “Each object and surround bed channel can be set to a
+> specific binaural render mode”，Steinberg Nuendo 也提供逐 bed subchannel 设置界面。
+> 这些是 ADM/DBMD master 的静态渲染元数据，不是 E-AC-3 OAMD 的对象位置字段。
+>
+> Dolby 公开 DBMD supplemental parser 能读取 ordinal mode table，却不暴露 ordinal
+> 到 bed instance/channel、ADM element ID 或 3D object ID 的身份映射。因此 SDA 只把
+> DBMD 表显示为未绑定诊断，不按 JOC 动态对象声明顺序猜测绑定；床和对象都不会被
+> 错套模式。MKV、MP4、raw EC-3/TrueHD 等发行输入若没有 DBMD/ADM 身份映射，则保留
+> 应用默认 Near。本次 `KiLLKiSS.m4a` 全曲只含 EMDF 1（节目响度）、2（节目信息）、
+> 11（OAMD）和 14（JOC），没有可恢复的 bed/object Binaural Render Mode 表。
 
 参考：
-- Dolby 官方 dbmd 解析器: https://github.com/DolbyLaboratories/dbmd-atmos-parser
-- wavinfo 的 dbmd reader（字段表）: https://github.com/iluvcapra/wavinfo
+- Apple Logic Pro《Dolby Atmos plug-in overview》：https://support.apple.com/guide/logicpro/dolby-atmos-plug-in-overview-lgcpad99a338/mac
+- Apple Logic Pro《Binaural render modes》：https://support.apple.com/guide/logicpro/binaural-render-modes-lgcp789f000d/mac
+- Steinberg Nuendo《Binaural Render Mode for Beds Dialog》：https://archive.steinberg.help/nuendo/v11/en/cubase_nuendo/topics/surround_sound/surround_sound_adm_authoring_binaural_render_mode_for_beds_r.html
+- Dolby DBMD parser public mirror：https://github.com/Harrie2019/dbmd-atmos-parser
+- ETSI TS 103 420 V1.2.1 §5.5.9 / Annex C
 - 《Dolby Atmos Binaural Settings Plug-in Guide》(professional.dolby.com, PDF)
 
 ## 3.5 低频与 LFE
@@ -276,12 +289,12 @@ SDA 直接用 WAV（Node 脚本零依赖解析，不需要 Python/netCDF）。
 同时有 HRIR 和 BRIR —— 杜比 near/mid/far 的「干/湿混合」方案（§3）正好需要
 成对的干湿数据；③ KU100 与 SDA 3D 视图里的假头模型一致。
 
-**转换管线**（`scripts/build-hrtf.mjs`，Node 零依赖）：
-下载/读取 WAV zip → 从文件名解析方位角/仰角 → 为全部布局的 17 个音箱方向
-就近取测量点 → 截断（HRIR 512 taps / BRIR 8192 taps）→ 双耳峰值归一化
-（保 ILD）→ 写 `apps/web/public/hrtf/hrtf-set.json` + `*.f32`（f32le，
-`[leftIR][rightIR]` 拼接）。运行时加载/混合/重采样见
-`packages/renderer/src/hrtf.ts`。
+**转换与校准管线**（`scripts/build-hrtf.mjs`、`scripts/build-calibrated-hrtf.mjs`）：
+校验官方 `D1.zip` SHA-256 → 从 WAV 文件名解析方向 → 记录 17 个目标音箱与最近
+BRIR 实测点的 provenance → 生成原始基线 → 对双耳共同 TOF、500–2000 Hz 直达
+参考电平和低分辨率 BRIR/HRIR 房间传递比做逐音箱校准 → 只写 staging → 资产契约
+和 5/7/9 Group 验收通过后发布。运行时文件为 f32le `[leftIR][rightIR]` 拼接；
+calibration v1 manifest 明确禁用峰值归一和运行时逐 IR 总能量归一。
 
 > ⚠️ 方位角约定：SDA 为 + = 左（ADM/ITU），多数数据集为 + = 右，
 > 脚本默认 `--flip-az` 取反匹配（选对称侧的测量点，声道不互换）。

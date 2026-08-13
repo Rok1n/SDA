@@ -9,8 +9,9 @@
  *        { type: "error", message }
  */
 
-import { initCore, SdaDecoder, type CodecName, type DecodedFrameData } from "@sda/core";
+import { initCore, SdaDecoder, type CodecName, type DecodedFrameData, type ObjectEvent } from "@sda/core";
 import { createDemuxer, sniffContainer, type BinauralRenderMetadata, type ContainerKind, type Demuxer } from "@sda/demux";
+import { canCoalesceObjectEvent } from "./control.js";
 
 /** Minimal worker global typing (avoids DOM/WebWorker lib conflicts). */
 declare const self: {
@@ -20,8 +21,26 @@ declare const self: {
 
 let decoder: SdaDecoder | null = null;
 let demuxer: Demuxer | null = null;
+const lastObjectTargets = new Map<number, ObjectEvent>();
+
+function compactObjectEvents(frame: DecodedFrameData): void {
+  const objectIds = new Set<number>();
+  for (const declaration of frame.objectChannels) objectIds.add(declaration.id);
+  if (!frame.labels.some((label) => label.startsWith("Obj_"))) lastObjectTargets.clear();
+  else if (objectIds.size > 0) {
+    for (const id of lastObjectTargets.keys()) {
+      if (!objectIds.has(id)) lastObjectTargets.delete(id);
+    }
+  }
+  frame.events = frame.events.filter((event) => {
+    if (canCoalesceObjectEvent(lastObjectTargets.get(event.id), event)) return false;
+    lastObjectTargets.set(event.id, event);
+    return true;
+  });
+}
 
 function postFrame(frame: DecodedFrameData): void {
+  compactObjectEvents(frame);
   self.postMessage(
     { type: "frame", frame },
     frame.channels.map((c) => c.buffer),
@@ -53,6 +72,7 @@ self.onmessage = async (e: MessageEvent) => {
       decoder?.free();
       decoder = new SdaDecoder(msg.codec as CodecName);
       demuxer = null; // created on first push, after sniffing
+      lastObjectTargets.clear();
       break;
     }
     case "flush": {

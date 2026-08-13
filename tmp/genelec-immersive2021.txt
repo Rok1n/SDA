@@ -1,0 +1,294 @@
+Immersive Solutions
+
+3rd edition
+Genelec Immersive Solutions
+
+A Perceptive Perspective  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  . 4
+Immersive Audio: The Background and The Formats  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  . 6
+Research and Experimental Systems  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  . 8
+Genelec Immersive Room Solutions  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  . 10
+GLM Software: Configuration, Calibration and Control for Immersive Systems  .  .  . 14
+Monitor In-Room Performance  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  . 15
+Our Range of Monitors  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  . 17
+A Perceptive Perspective                                                       SHARPEN YOUR SENSES
+
+Hearing the world around us is so natural that we often only notice its
+importance once the ability is lost. Most of the time, a loss is fortunately
+temporary - for instance caused by a cold - but a one-side hearing loss is
+more stressful and depressing than we generally tend to believe.
+
+One of the first things a baby does is to localise, quickly and automatically
+turning eyes towards a sound. Growing up, we further learn and refine
+localisation using a system under construction. Ear canals and other
+structures of the outer ear, known as pinnae, grow and reshape, constantly
+modifying spherical hearing, as we reach out and experience a fascinating
+world in return.
+
+Sound is coloured by the pinnae, depending on its direction of arrival
+­ known as azimuth. Expert listeners constantly use this feature in
+combination with head movements; not only when evaluating immersive
+content, but also to distinguish direct sound from room reflections.
+
+The ability to position sounds spherically with precision is a key benefit of
+immersive audio. Another is the possibility to influence the sense of space
+in human listeners. For the latter, the frequency range between 50 and
+200 Hz - which constitutes the lowest two octaves of the interaural time
+difference (ITD) range - plays an essential role; but is often compromised
+by the reproduction system.
+
+A well-aligned loudspeaker system in a great room has the best chance
+of translating well to a variety of immersive playback situations, including
+headphones. The sound designer is able to make full use of outer ear
+features and head movements, and to work for long hours with reduced
+listener fatigue and "cybersickness".
+
+4
+Immersive Audio: The                                                               Dolby Atmos                              MPEG-H Audio                            22.2                                     Auro-3D                                 DTS:X                                    ITU-R and Pure
+Background and The Formats                                                                                                                                                                                                                                                                    Research
+                                                                                   Launched in 2012, Dolby Atmos is a       Developed by MPEG for broadcast and     Developed by Japanese broadcaster        Introduced in 2006, Auro-3D is a        DTS:X was launched in 2015. Like
+An immersive audio experience is created by employing playback with                widely supported object-based system     streaming applications, the MPEG-H      NHK, the three layer channel-based       channel-based three layer system which  Dolby Atmos, it is an object-based       ITU-R is researching the requirements
+more loudspeakers than a traditional surround system. In standard terms,           with up to 128 individual tracks and 64  Audio system brings immersive sound     22.2 system forms the surround sound     comes in a variety of formats.          system - but without prescribed speaker  for realistic 3D sound for UHDTV.
+this means going from an ITU-R BS.775 monitoring configuration to ITU-R            speaker feeds.                           and advanced personalization and        component of NHK's ultra HD television                                           configurations.                          Pure research is focussed on in-room
+BS.2159.                                                                                                                    accessibility features.                 system.                                  · Three layer system with surround,                                              and binaural sound with and without
+                                                                                   · Two layered system with both                                                                                                height and VoG channels.            · Two layer system with surround         movement.
+In immersive, loudspeakers are located around the listener at ear level, but           surrounds and height channels.       · The scalable architecture allows      · Three layer system for broadcast and                                               and height channels.
+crucially also positioned above or below the listener, so called "layers".                                                      flexibility in number of channels.      home use.                            · Typical formats from 7.1.2 to 7.1.6.                                           · At least three vertical layers and
+Layers may or may not be reflected in format names, so the same setup              · Typically up to 7.1.4 Home                                                                                              · Object-based `AuroMax' extension      · Audio rendering based on number            one or more subs.
+could be labelled, for example, 11.1 or 7.1.4 depending on manufacturer or             reproduction, but larger speaker     · Audio Objects enable dialog           · Fixed number, fixed channel-positions                                              and position of speakers available.
+country. In either case that system would have 11 discrete main channels               layouts are possible.                    enhancement and personalization.        for production.                          for additional channels.                                                     · Typically between 11 and 80 main
+and one LFE channel.                                                                                                                                                                                                                                 · Supports up to 32 speaker locations        channels.
+                                                                                   · Up to 64 discrete speaker feeds        · Empowers the creation and delivery    · Full or condensed home reproduction                                                and 7.2.4 channels.
+The only reliable way to ensure reference-quality immersive monitoring is              for Cinema reproduction.                 of a high-quality immersive music       systems.                                                                                                              · ITU-R is collaborating with NHK
+to adjust all monitors after placement for level, time-of-flight and frequency                                                  experience.                                                                                                                                                       (Japan), SMPTE (USA) and EBU
+response. This is easy to do with a Genelec system; please see page 14.                                                                                                                                                                                                                           (Europe).
+
+Benefits of Genelec Immersive                                                                                                                                                                                                                                                                                                                7
+Monitoring Systems:
+
+   · Neutral and uncoloured sound, both on and off axis.
+   · A wide range of loudspeaker and subwoofer sizes, meaning that we can
+
+        offer scalable systems for all room formats, from small OB vans to large
+        dubbing theatres.
+   · All monitors in this brochure tightly integrate with the GLM software
+        (included) to enable precise system calibration. GLM doubles as an
+        integrated monitor controller.
+   · We provide versatile mounting options for easy positioning and aiming
+        of loudspeakers.
+   · Rugged build quality, sustainably manufactured with bulletproof reliability.
+
+6
+Research and
+Experimental Systems
+
+Around the world, academic institutions and commercial organisations are
+engaged in extensive immersive audio research; an explosion driven by
+new hi-spatial distribution formats, and promises of commercial return for
+the first companies to solve the challenges of personal (binaural) delivery,
+i.e. to provide a credible, immersive headphone experience.
+
+Satisfactory binaural delivery for film, gaming and VR does not rely only
+on presenting sources with azimuth, but also the reflections we always
+hear under natural conditions. Direct sound and reflections furthermore
+have to be rendered specifically for each individual listener, including real-
+time head and body movements. The processing burden on a binaural
+reproduction system is therefore significant, and the data it is built on must
+be as accurate as possible.
+
+A fine immersive experimental system is at the heart of any subjective
+test and data gathering. In this respect, Genelec point source monitors,
+known as "The Ones", are in their own category entirely. By avoiding
+the colouration of direct sound and reflections, which is not possible
+with a conventional monitor design, the most serious obstacle in
+immersive research is avoided. Not surprisingly, there has been a surge in
+microphone production and immersive studies based on The Ones.
+
+For research where the requirement for ideal directivity in both planes is
+less pronounced, the range of Genelec models to choose from is wider.
+While a selection of these models appears within this brochure, please
+visit www.genelec.com for the full range, and notice how the benefits of
+GLM in-situ adjustments are available to all Genelec SAM monitors and
+subwoofers.
+
+8
+
+                                                    Pictured right: Applied Psychoacoustics Laboratory, University of Huddersfield, UK.
+                                                                                                                      Photo courtesy of Dr. Hyunkook Lee
+Genelec Immersive Room Solutions
+
+Compact 5.1.4                         Small 7.1.2                                   Small 7.1.4                           Medium 7.1.4
+
+Application: OB truck or              Application: broadcast or                     Application: broadcast or             Application: post production
+research installation                 continuity studio                             post production studio                or film commercial studio
+Typical listening distance: 0.7 m     Typical listening distance: 1.2 m             Typical listening distance: 2.0 m     Typical listening distance:
+                                                                                                                          3.0 m front, 1.5 m others
+Suggested Genelec System:             Suggested Genelec System:                     Suggested Genelec System:
+                                                                                                                          Suggested Genelec System:
+     Main LCR: 3 x 8330 or 8331             Main LCR: 3 x 8340 or 8341                    Main LCR: 3 x 8351
+     Surround: 2 x 8330 or 8331             Surround: 4 x 8340 or 8341                    Surround: 4 x 8340 or 8341           Main LCR: 3 x 8361 or S360
+     Ceiling: 4 x 8330 or 8331              Ceiling: 2 x 8331 or 8341                     Ceiling: 4 x 8341                    Surround: 4 x 8341 or 8351
+     Subwoofer (LFE): 1 x 7360              Subwoofer (LFE): 1 x 7370                     Subwoofer (LFE): 1 x 7380            Ceiling: 4 x 8341
+                                                                                                                               Subwoofer (LFE): 2 x 7380
+
+Mounting Accessories:                 Mounting Accessories:                         Mounting Accessories:                 Mounting Accessories:
+4 x 8000-420 short wall mount         4 x 8000-402 adjustable wall mount            4 x 8000-402 adjustable wall mount    4 x 8000-402 adjustable wall mount
+2 x 8000-436 short ceiling mount      2 x 8000-436 short ceiling mount              4 x 8000-436 short ceiling mount      4 x 8000-436 short ceiling mount
+
+Cabling:                              Cabling:                                      Cabling:                              Cabling:
+Analog or digital, e.g. 10 x AES/EBU  Analog or digital, e.g. 10 x AES/EBU          Analog or digital, e.g. 12 x AES/EBU  Analog or digital, e.g. 13 x AES/EBU
+XLR cables                            XLR cables                                    XLR cables                            XLR cables
+
+                                                                                                                                                                       11
+
+Pictured left: Dynamic Mixing Stage, Capcom, Japan. Photo courtesy of Ryo Kawakami
+15 Channel                                       21 Channel                                            31 Channel
+
+Application: post production                     Application: film mixing stage                        Application: film mixing stage
+or film commercial studio
+Typical listening distance: 4.0 m front,         Typical listening distance: 5.0 m front,              Typical listening distance: 8.0 m front,
+2.0 m others                                     3.0 m surround, 2.5 m ceiling                         5.0 m surround, 2.5 m ceiling
+
+Suggested Genelec System:                        Suggested Genelec System:                             Suggested Genelec System:
+                                                       Main LCR: 3 x 1234A or 1234AC                         Main LCR: 3 x 1236
+      Main LCR: 3 x 1238A/DF/AC                        Surround: 10 x 8361 or S360                           Surround: 16 x 8361 or S360
+      Surround: 8 x 8361 or S360                       Ceiling: 8 x 8351                                     Ceiling: 12 x 8351 or 8361
+      Ceiling: 4 x 8341 or 8351                        Subwoofer (LFE): 2 x 7382                             Subwoofer (LFE): 3 x 7382
+      Subwoofer (LFE): 1 x 7382
+
+Mounting Accessories:                            Mounting Accessories:                                 Mounting Accessories:
+8 x 8000-402 adjustable wall mount               10 x 8000-402 adjustable wall mount                   16 x 8000-402 adjustable wall mount
+8 x S360-424B U-bracket mounting adapter         10 x S360-424B U-bracket mounting adapter             16 x S360-424B U-bracket mounting adapter
+4 x 8000-436 short ceiling mount                 8 x 8000-444 long ceiling mount                       12 x 8000-444 long ceiling mount
+Cabling:                                                                                               12 x S360-450B U-bracket mounting adapter
+Analog or digital, e.g. 16 x AES/EBU XLR cables  Cabling:                                              12 x S360-465B ceiling mounting plate
+                                                 Analog or digital, e.g. 23 x AES/EBU XLR cables       Cabling:
+12                                                                                                     Analog or digital, e.g. 33-35 x AES/EBU XLR cables
+                                                 Options:                                              Options:
+                                                 Bass management and subwoofers for side and           Bass management and subwoofers for side and
+                                                 rear channels, e.g. 2 x 7380. In the case of digital  rear channels, e.g. 4 x 7380. In the case of digital
+                                                 interfacing, consider 2 x 9301 interface units        interfacing, consider 2 x 9301 units
+
+                                                                                                                                            Pictured right: Morten Lindberg, 2L, Norway.
+GLM Software: Configuration, Calibration and Control for                                           Monitor In-Room Performance
+Immersive Systems
+                                                                                                   Listening Distance and Sound Pressure Level
+Configuration and Calibration                                                  GLM Loudspeaker
+                                                                               Management Network  The distance between you and your monitors is
+To ensure reference listening conditions and good translation between                              crucial, both in terms of performance and the SPL
+rooms or headphones, any monitor in any room needs to be adjusted after                            delivered to the listening position. Use the table
+placement. Genelec's GLM application offers a sophisticated, integrated                            here to compare the SPL capabilities of Genelec
+solution, based on decades of research combined with data from                                     SAM monitors.
+thousands of listening rooms.                                                                      Also consider using the two Dolby Audio Room
+When setting up an immersive system, calibration after placement is                                Design Tools (DARDT) for Home Entertainment
+paramount. Otherwise, even the same type of monitors will exhibit                                  and Theatrical production, including a wide range
+different tonal balance. Monitors may also be at different distances from                          of Genelec models.
+the listener; thereby causing further difficulty with level, delay and phase.
+During setup, GLM easily compensates for such problems. It allows                                                              Room volume                                                      1235A  118  115  112  108  107
+further adjustment by the user to accommodate standards (e .g . X-curve),
+listening level or personal preferences, and it scales freely so more                                                          Room reverbation time (RT60)
+channels can be added.
+                                                                                                                               Short-term sound pressure levels
+Monitor Control                                                                                                                Maximum short-term sine wave sound pressure level
+                                                                                                                               averaged from 100 Hz to 3 kHz, measured in half-space,
+In daily operation, GLM doubles as a comprehensive Mac or PC-based                                                             on-axis. Peak levels are higher. This number tends to
+monitor controller that immediately scales with your setup requirements;                                                       under-estimate headroom by 4 dB, based on typical
+for instance if changing from stereo to 5.1, 7.1.4, 22.2, 64 channels or                                                       immersive standards and audio content. For more detailed
+higher.                                                                                                                        information, please contact Genelec.
+GLM enables you to calibrate your listening level to various loudness
+standards, and invoke solo and mutes. You can switch between formats,                                                          Long-term sound pressure levels
+monitoring systems and primary listening positions, and move entire                                                            Maximum long-term RMS sound pressure level, measured
+systems in time to retain sync with picture. The list goes on, and in each                                                     in half-space, on-axis, with simulated programme signal
+case your integrated GLM monitor controller won't burden Pro Tools or                                                          according to IEC 60268-5 (limited by driver unit protection
+any other immersive playback device.                                                                                           circuit).
+
+14                                                                                                  Listening Distances and SPL
+                                                                                                    The short-term and long-term sound pressure levels (SPL)
+
+                                                                                                                               listed take into consideration the typical room volume and
+                                                                                                                               reverberation time for each monitor (right margin, based
+                                                                                                                               on ITU-R BS.1116). If the reverberation time is longer, it will
+                                                                                                                               mainly affect the long-term SPL that will be higher than
+                                                                                                                               shown.
+
+                                                                                                    Not Recommended Distances
+                                                                                                                               When the distance to the monitor is too short, summing of
+                                                                                                                               sound from multiple drivers is not happening as designed.
+
+                                                                                                                                                                                                                                15
+  Direct Sound Dominance                                                                        SAM Monitor Models      8320A       Our Range of Monitors
+                                                                                                                        8330A
+    The balance between direct and reverberant sound has                                                                8340A       Because Genelec offers such a wide range of monitors and subwoofers - each
+    a profound influence on how your mixes will sound. The                                                              8350A       with the same consistently precise, neutral characteristics - it means that we can
+    table shown will help you identify the optimum range of                                                             8331A       provide a professional solution for any type of immersive application, with
+    listening distances for the Genelec SAM range.                                                                      8341A       a corresponding range of mounting accessories that is unrivalled in the industry.
+                                                                                                                        8351B       From the smallest compact nearfield model via midfield three-ways to the largest
+                            Room volume                                                                                 8361A       full-size main monitor, whatever your room size, format and SPL requirements you
+                                                                                                                        1032C       can rely on a Genelec solution that will deliver exquisite and reliable performance
+                            Room reverbation time (RT60)                                                                S360A       day-in, day-out.
+                                                                                                                        1237A       And because great translation between rooms and systems is so critical, it's
+ Not Recommended Distances                                                                                        1238CF/DF         reassuring to know that "when you get it right on a Genelec, it's right everywhere."
+                            When the distance to the monitor is too short, summing of sound                        1238A/AC         To see our complete range, please visit www.genelec.com
+                            from multiple drivers is not happening as designed, and this                           1234A/AC
+                            affects the flatness of the frequency response. A flatter and more                          11223365AA                                                                                                                                                                                                                              17
+                            stable frequency response is obtained by a larger distance.                                 1236A
+
+ Direct Sound Dominates
+ Within this distance the direct sound from the monitor has a
+
+                            higher level than the reverberant sound in the room. Placing the
+                            monitor within this distance range is advantageous in minimizing
+                            the tendency of the room reverberation to change the character
+                            of the monitored sound colour and affect the precision of stereo
+                            imaging. The level of the direct sound relative to the reverberant
+                            sound progressively reduces as the distance to the monitor
+                            increases.
+
+                            Critical distance
+ The critical distance is the distance where the direct sound
+
+                            from the monitor and the reverberant sound in the room have
+                            equal level in midrange frequencies (approximately between
+                            200 Hz and 4 kHz). The critical distance is affected by the room
+                            volume, the room reverberation time (referred to ITU-R BS.1116-1
+                            Recommendation), and the directivity of the monitor.
+
+                            Reverberant sound dominates
+ At these distances the reverberant sound in the room has a
+
+                            higher level than the direct sound from the monitor. This balance
+                            progressively increases as the distance from the monitor
+                            increases. The monitor can be used in these distances, but
+                            the sound character is strongly affected by the reverberation
+                            characteristics of the room, and this has a progressively
+                            increasing effect on the sound colour and stereo imaging
+                            accuracy.
+
+    16
+IMMERSIVE AUDIO IS A REALITY
+Expert Advice for Your
+New Immersive Studio
+
+Staffed by our team of global experts, the free
+Genelec helpdesk is here to guide you through the
+principles and practicalities of dimensioning and
+installing an immersive monitoring system for your
+music, broadcast, OTT or film production needs.
+
+SIMPLY SEND YOUR QUERY TO
+immersive.helpdesk@genelec.com
+
+Factory and Headquarters   USA                            Sweden                   China                                                                     Japan
+Genelec Oy                 Genelec Inc.                   Genelec Sweden           Beijing Genelec Audio                                                     Genelec Japan Inc
+Olvitie 5                  7 Tech Circle                  Ellipsvägen 10A          Room 101, Building B33                                                    2-22-21 Akasaka
+FI-74100 Iisalmi           Natick MA 01760                SE-141 75 Kungens Kurva  Universal Business Park                                                   Minato ku
+Finland                    USA                            Sweden                   No.10 Jiuxianqiao Road                                                    JP-107-0052 Tokyo
+T +358 17 83 881           T +1 508 652 0900              T +46 8 449 5220         Chaoyang District                                                         Japan
+Email genelec@genelec.com  Email genelec.usa@genelec.com  Email info@genelec.com   Beijing 100015                                                            T +81 3 6441 0591
+                                                                                   China                                                                     Email genelec.japan@genelec.com
+                                                                                   T +86 10 5823 2014
+                                                                                   T +86 400 700 1978
+                                                                                   Email genelec.china@genelec.com
+
+                                                          Genelec Document BBAGE186c. Copyright Genelec Oy 01.2021. All data subject to change.
+                           Detailed Data sheets of all Genelec models, Quick Setup Guides and other useful information can be downloaded at www.genelec.com
+

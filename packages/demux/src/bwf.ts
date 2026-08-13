@@ -36,8 +36,8 @@ export class BwfDemuxer {
       available: false,
       source: "dbmd",
       version: null,
-      objectModes: [],
-      bedModes: {},
+      modeTable: [],
+      elementMapping: "unavailable",
       error: "BWF input has no readable dbmd chunk",
     });
   }

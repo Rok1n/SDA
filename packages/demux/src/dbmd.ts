@@ -14,10 +14,10 @@ export interface BinauralRenderMetadata {
   source: "dbmd";
   /** DBMD version bytes, in the order stored in the chunk. */
   version: string | null;
-  /** Modes indexed by the DBMD supplemental segment's program object ordinal. */
-  objectModes: BinauralRenderMode[];
-  /** DBMD's public parser exposes no bed-channel-position table in this segment. */
-  bedModes: Record<string, BinauralRenderMode>;
+  /** Modes in the supplemental segment's program-element ordinal order. */
+  modeTable: BinauralRenderMode[];
+  /** The public parser does not expose ordinal -> bed subchannel/object identity. */
+  elementMapping: "unavailable";
   error?: string;
 }
 
@@ -27,7 +27,7 @@ const SUPPLEMENTAL_SYNC = 0xf8726fbd;
 const TRIM_CONFIG_COUNT = 6;
 
 function empty(version: string | null, error: string): BinauralRenderMetadata {
-  return { available: false, source: "dbmd", version, objectModes: [], bedModes: {}, error };
+  return { available: false, source: "dbmd", version, modeTable: [], elementMapping: "unavailable", error };
 }
 
 function versionText(bytes: Uint8Array): string {
@@ -81,9 +81,9 @@ export function decodeDbmdBinauralMetadata(bytes: Uint8Array): BinauralRenderMet
     const objectCount = view.getUint16(4, true);
     const modesOffset = 7 + TRIM_CONFIG_COUNT * 15 + objectCount;
     if (modesOffset + objectCount > payload.length) return empty(version, "DBMD supplemental object-mode table is truncated");
-    const objectModes: BinauralRenderMode[] = [];
-    for (let ordinal = 0; ordinal < objectCount; ordinal++) objectModes.push(modeFromValue(payload[modesOffset + ordinal]!));
-    return { available: true, source: "dbmd", version, objectModes, bedModes: {} };
+    const modeTable: BinauralRenderMode[] = [];
+    for (let ordinal = 0; ordinal < objectCount; ordinal++) modeTable.push(modeFromValue(payload[modesOffset + ordinal]!));
+    return { available: true, source: "dbmd", version, modeTable, elementMapping: "unavailable" };
   }
   return empty(version, "DBMD has no Dolby Atmos supplemental metadata segment");
 }

@@ -600,6 +600,12 @@ aside {
   box-shadow: var(--mp-glass-shadow);
 }
 
+/* SwiftShader would resample and blur the moving WebGL canvas every frame. */
+.miniplayer.software-renderer .mp-glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* 顶部一抹斜向光泽，模拟液态玻璃的镜面反射 */
 .mp-glass::before {
   content: "";
@@ -661,9 +667,12 @@ aside {
 
 .mp-art span {
   width: 4px;
-  height: 25%;
+  height: 92%;
+  transform: scaleY(0.27);
+  transform-origin: bottom;
   border-radius: 2px;
   background: linear-gradient(to top, #4a7fd4, #9fc4ff);
+  will-change: transform;
 }
 
 .mp-art.playing span {
@@ -684,10 +693,10 @@ aside {
 
 @keyframes eq {
   from {
-    height: 18%;
+    transform: scaleY(0.2);
   }
   to {
-    height: 92%;
+    transform: scaleY(1);
   }
 }
 
@@ -799,9 +808,12 @@ aside {
   left: 0;
   top: 0;
   bottom: 0;
+  width: 100%;
+  transform-origin: left;
   border-radius: 2px;
   background: var(--mp-shimmer);
-  transition: width 0.12s linear;
+  transition: transform 0.12s linear;
+  will-change: transform;
 }
 
 /* 流式播放无总时长：一道流动的光泽表示进行中 */

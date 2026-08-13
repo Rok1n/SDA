@@ -6,7 +6,7 @@
  * those stale samples later and drift away from the other object channels.
  */
 
-const WORKLET_BUILD = "startup-window-v2";
+const WORKLET_BUILD = "object-batch-v1";
 const MAX_SOURCES = 64;
 const RING_SIZE = 1 << 18; // 262144 samples ≈ 5.5 s @48k per source
 const RING_MASK = RING_SIZE - 1;
@@ -48,6 +48,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       muteRampLeft: 0,
       muteStep: 0,
       scheduledGains: [],
+      scheduledGainCursor: 0,
       lpA: 1,
       lpY: 0,
       binauralBank: 1,
@@ -97,15 +98,37 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   /** Replay every overdue event chronologically to currentTime. Each event is
    * advanced only as far as the next event that interrupts it (or now). */
   applyScheduledGainsThrough(src, currentTime) {
-    while (
-      src.scheduledGains.length > 0 &&
-      src.scheduledGains[0].at <= currentTime
-    ) {
-      const msg = src.scheduledGains.shift();
-      const next = src.scheduledGains[0];
+    const events = src.scheduledGains;
+    let cursor = src.scheduledGainCursor;
+    while (cursor < events.length && events[cursor].at <= currentTime) {
+      const msg = events[cursor++];
+      const next = events[cursor];
       const replayThrough = next && next.at <= currentTime ? next.at : currentTime;
       this.startGainRampAtTime(src, msg, msg.at, replayThrough);
     }
+    src.scheduledGainCursor = cursor;
+    if (cursor >= 256 && cursor * 2 >= events.length) {
+      events.splice(0, cursor);
+      src.scheduledGainCursor = 0;
+    }
+  }
+
+  enqueueScheduledGain(src, msg) {
+    const events = src.scheduledGains;
+    const cursor = src.scheduledGainCursor;
+    const last = events[events.length - 1];
+    if (!last || last.at <= msg.at) {
+      events.push(msg);
+      return;
+    }
+    let low = cursor;
+    let high = events.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (events[middle].at <= msg.at) low = middle + 1;
+      else high = middle;
+    }
+    events.splice(low, 0, msg);
   }
 
   scheduleLifecycle(src, at, active, token = null) {
@@ -230,10 +253,15 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       case "scheduleGains": {
         const src = this.sources.get(msg.id);
         if (!src || !Number.isSafeInteger(msg.at)) break;
-        src.scheduledGains.push(msg);
-        src.scheduledGains.sort((left, right) => left.at - right.at);
+        this.enqueueScheduledGain(src, msg);
         break;
       }
+      case "scheduleGainsBatch":
+        for (const entry of msg.entries || []) {
+          const src = this.sources.get(entry.id);
+          if (src && Number.isSafeInteger(entry.at)) this.enqueueScheduledGain(src, entry);
+        }
+        break;
       case "mute": {
         const src = this.sources.get(msg.id);
         if (!src) break;
@@ -262,6 +290,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
           src.validEnd = Number.NEGATIVE_INFINITY;
           src.valid.fill(0);
           src.scheduledGains.length = 0;
+          src.scheduledGainCursor = 0;
           src.lpY = 0;
           src.availabilityFrom = 0;
           src.availabilityRampLeft = 0;

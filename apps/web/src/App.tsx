@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SdaPlayer, nextSoloMuteSet, type VisualObject } from "@sda/player";
-import type { BinauralRenderMetadata, BinauralRenderMode } from "@sda/demux";
+import { SdaPlayer, nextSoloMuteSet, type BinauralRenderMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
+  setBinauralAssetLoader,
   setHeadphoneCompensationAssetLoader,
   type LocalHeadphoneCompensationData,
   LAYOUTS,
@@ -16,16 +16,28 @@ import {
 import workletUrl from "@sda/renderer/worklet/sda-renderer.worklet.js?url";
 import { ObjectView, type Theme } from "./components/ObjectView";
 import { MiniPlayer, type TrackInfo } from "./components/MiniPlayer";
+import { ObjectPanel } from "./components/ObjectPanel";
 
+type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string };
+
+const FILE_CHUNK_SIZE = 1 << 20;
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
+const ownedArrayBuffer = (bytes: Uint8Array): ArrayBuffer => Uint8Array.from(bytes).buffer;
+localStorage.removeItem("sda-layout-level-compensation-enabled");
+
+const bundledHrtfReader = window.sdaDesktop?.readBundledHrtf;
+setBinauralAssetLoader(bundledHrtfReader
+  ? async (assetPath) => {
+      const bytes = await bundledHrtfReader(assetPath);
+      return ownedArrayBuffer(bytes);
+    }
+  : null);
 
 const bundledFirReader = window.sdaDesktop?.readBundledHeadphoneFir;
 setHeadphoneCompensationAssetLoader(bundledFirReader
   ? async (assetPath) => {
       const bytes = await bundledFirReader(assetPath);
-      const copy = new Uint8Array(bytes.byteLength);
-      copy.set(bytes);
-      return copy.buffer;
+      return ownedArrayBuffer(bytes);
     }
   : null);
 
@@ -40,8 +52,9 @@ export function App() {
   const [theme, setTheme] = useState<Theme>("dark");
   const [track, setTrack] = useState<TrackInfo | null>(null);
   const [binauralMetadata, setBinauralMetadata] = useState<BinauralRenderMetadata | null>(null);
-  const [objectBinauralModes, setObjectBinauralModes] = useState<ReadonlyMap<number, BinauralRenderMode>>(new Map());
   const [objects, setObjects] = useState<VisualObject[]>([]);
+  const [diagnosticObjects, setDiagnosticObjects] = useState<VisualObject[]>([]);
+  const lastDiagnosticUpdateRef = useRef(0);
   /** 被静音的对象 id（Omniphony Studio 语义：mute 独立切换；
    *  solo = mute 其他全部对象，独奏态由"只剩一个未静音"导出）。 */
   const [mutedIds, setMutedIds] = useState<ReadonlySet<number>>(new Set());
@@ -58,9 +71,6 @@ export function App() {
   const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(
     () => localStorage.getItem("sda-volume-balance-enabled") === "true",
   );
-  const [layoutLevelCompensationEnabled, setLayoutLevelCompensationEnabled] = useState(
-    () => localStorage.getItem("sda-layout-level-compensation-enabled") !== "false",
-  );
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
     const readBand = (band: keyof BinauralEqBands) => {
       const value = Number(localStorage.getItem(`sda-binaural-eq-${band}-db`));
@@ -75,7 +85,7 @@ export function App() {
   const [profileBusy, setProfileBusy] = useState(false);
   const coverUrlRef = useRef<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const lastFileRef = useRef<File | null>(null);
+  const lastSourceRef = useRef<PlaybackSource | null>(null);
   /** 静音推送回调用的最新对象列表（避免闭包拿旧 state）。 */
   const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
@@ -88,17 +98,20 @@ export function App() {
         onTrack: (t) => {
           if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
           const coverUrl = t.coverArt
-            ? URL.createObjectURL(new Blob([t.coverArt.bytes], { type: t.coverArt.mimeType }))
+            ? URL.createObjectURL(new Blob([ownedArrayBuffer(t.coverArt.bytes)], { type: t.coverArt.mimeType }))
             : undefined;
           coverUrlRef.current = coverUrl ?? null;
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
         },
         onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels }),
         onBinauralMetadata: setBinauralMetadata,
-        onBinauralObjectModes: (modes) => setObjectBinauralModes(new Map(modes)),
         onVisualState: (objs, t) => {
           objectsRef.current = objs;
           setObjects(objs);
+          if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
+            lastDiagnosticUpdateRef.current = t;
+            setDiagnosticObjects(objs);
+          }
           setPosition(t);
           const p = playerRef.current;
           setDuration(p?.durationSeconds() ?? 0);
@@ -107,24 +120,22 @@ export function App() {
         onError: (m) => setErrors((prev) => [...prev.slice(-19), m]),
         onEnded: () => setPlaying(false),
       });
-      if (lid === "auto") {
-        // 自动布局：先以 7.1.4 兜底初始化，首帧到达后按码流内容重建渲染器
-        await player.init(m, workletUrl, LAYOUTS["7.1.4"], assetUrl("hrtf"), (labels, hasDynamics) => {
-          const id = detectLayoutId(labels, hasDynamics);
-          setDetectedLayout(id);
-          return LAYOUTS[id];
-        });
-      } else {
-        await player.init(m, workletUrl, LAYOUTS[lid]);
-      }
+      const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
+      const resolver = lid === "auto"
+        ? (labels: readonly string[], hasDynamics: boolean) => {
+            const id = detectLayoutId(labels, hasDynamics);
+            setDetectedLayout(id);
+            return LAYOUTS[id];
+          }
+        : undefined;
+      await player.init(m, workletUrl, fallbackLayout, assetUrl("hrtf"), resolver);
       playerRef.current = player;
       player.setVolumeBalance(volumeBalanceEnabled);
-      player.setLayoutLevelCompensation(layoutLevelCompensationEnabled);
       player.setBinauralEqBands(binauralEqBands);
       setPlayerReady(player);
       return player;
     },
-    [binauralEqBands, layoutLevelCompensationEnabled, volumeBalanceEnabled],
+    [binauralEqBands, volumeBalanceEnabled],
   );
 
   useEffect(
@@ -149,8 +160,8 @@ export function App() {
           const data = await desktop.readHeadphoneProfile!(profile.id);
           return {
             profile: data.profile,
-            leftFir: data.leftFir.buffer.slice(data.leftFir.byteOffset, data.leftFir.byteOffset + data.leftFir.byteLength),
-            rightFir: data.rightFir.buffer.slice(data.rightFir.byteOffset, data.rightFir.byteOffset + data.rightFir.byteLength),
+            leftFir: ownedArrayBuffer(data.leftFir),
+            rightFir: ownedArrayBuffer(data.rightFir),
           } satisfies LocalHeadphoneCompensationData;
         }));
         for (const entry of entries) registerLocalHeadphoneCompensation(entry);
@@ -169,8 +180,8 @@ export function App() {
       if (!data) return;
       registerLocalHeadphoneCompensation({
         profile: data.profile,
-        leftFir: data.leftFir.buffer.slice(data.leftFir.byteOffset, data.leftFir.byteOffset + data.leftFir.byteLength),
-        rightFir: data.rightFir.buffer.slice(data.rightFir.byteOffset, data.rightFir.byteOffset + data.rightFir.byteLength),
+        leftFir: ownedArrayBuffer(data.leftFir),
+        rightFir: ownedArrayBuffer(data.rightFir),
       });
       setHeadphoneProfiles(availableHeadphoneCompensationProfiles());
     } catch (error) {
@@ -224,57 +235,83 @@ export function App() {
   const toggleSolo = useCallback(
     (id: number) => {
       const next = nextSoloMuteSet(
-        objects.map((object) => object.id),
+        objectsRef.current.map((object) => object.id),
         mutedIds,
         id,
       );
       setMutedIds(next);
       applyMutes(next);
     },
-    [objects, mutedIds, applyMutes],
+    [mutedIds, applyMutes],
   );
 
   const play = useCallback(
-    async (file: File) => {
+    async (source: PlaybackSource) => {
       setErrors([]);
       setTrack(null);
       setBinauralMetadata(null);
-      setObjectBinauralModes(new Map());
       objectsRef.current = [];
       setObjects([]);
+      setDiagnosticObjects([]);
+      lastDiagnosticUpdateRef.current = 0;
       setPosition(0);
       setDuration(0);
       setDetectedLayout(null);
       setPlaying(true);
       setPaused(false);
       pausedRef.current = false;
-      lastFileRef.current = file;
-      fileNameRef.current = file.name.replace(/\.[^.]+$/, "");
+      lastSourceRef.current = source;
+      const sourceName = source.kind === "file"
+        ? source.file.name
+        : source.path.split(/[\\/]/).pop() ?? source.path;
+      fileNameRef.current = sourceName.replace(/\.[^.]+$/, "");
       try {
         // Always rebuild with the currently selected output mode and layout.
         const player = await createPlayer(mode, layoutId);
         player.setVolume(volume);
         player.setVolumeBalance(volumeBalanceEnabled);
-        player.setLayoutLevelCompensation(layoutLevelCompensationEnabled);
         player.setHeadphoneCompensation(headphoneProfileId);
         applyMutes(mutedIds); // 恢复静音/solo 状态（新播放器默认全不静音）
         // 建 player 期间用户已按暂停：补发暂停意图
         if (pausedRef.current) void player.pause();
-        await player.playFile(file, "auto");
+        if (source.kind === "file") {
+          await player.playFile(source.file, "auto");
+        } else {
+          const desktop = window.sdaDesktop;
+          if (!desktop?.openPath || !desktop.readSlice || !desktop.close) {
+            throw new Error("桌面文件读取接口不可用");
+          }
+          const opened = await desktop.openPath(source.path);
+          try {
+            player.open("auto");
+            for (let offset = 0; offset < opened.size; offset += FILE_CHUNK_SIZE) {
+              const chunk = await desktop.readSlice(opened.id, offset, Math.min(FILE_CHUNK_SIZE, opened.size - offset));
+              if (chunk.byteLength === 0) throw new Error(`文件在 ${offset} 字节处提前结束`);
+              await player.push(chunk);
+            }
+            player.end();
+          } finally {
+            await desktop.close(opened.id);
+          }
+        }
       } catch (e) {
         setErrors((prev) => [...prev, String(e)]);
         setPlaying(false);
       }
     },
-    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, layoutLevelCompensationEnabled, headphoneProfileId, applyMutes, mutedIds],
+    [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, headphoneProfileId, applyMutes, mutedIds],
   );
+
+  useEffect(() => window.sdaDesktop?.onOpenFile?.((path) => {
+    void play({ kind: "path", path });
+  }), [play]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
       const file = e.dataTransfer.files[0];
-      if (file) void play(file);
+      if (file) void play({ kind: "file", file });
     },
     [play],
   );
@@ -292,8 +329,8 @@ export function App() {
       pausedRef.current = false;
       setPaused(false);
       void player?.resume();
-    } else if (lastFileRef.current) {
-      void play(lastFileRef.current);
+    } else if (lastSourceRef.current) {
+      void play(lastSourceRef.current);
     }
   }, [playing, paused, play]);
 
@@ -323,12 +360,6 @@ export function App() {
     playerRef.current?.setVolumeBalance(enabled);
   }, []);
 
-  const changeLayoutLevelCompensation = useCallback((enabled: boolean) => {
-    setLayoutLevelCompensationEnabled(enabled);
-    localStorage.setItem("sda-layout-level-compensation-enabled", String(enabled));
-    playerRef.current?.setLayoutLevelCompensation(enabled);
-  }, []);
-
   const changeBinauralEqBand = useCallback((band: keyof BinauralEqBands, db: number) => {
     const next = { ...binauralEqBands, [band]: Math.max(-12, Math.min(12, db)) };
     setBinauralEqBands(next);
@@ -349,9 +380,30 @@ export function App() {
 
   const selectedHeadphoneProfile = headphoneProfiles.find((profile) => profile.id === headphoneProfileId) ?? null;
 
+  const stopPlayback = useCallback(() => {
+    playerRef.current?.stop();
+  }, []);
+
   const replay = useCallback(() => {
-    const file = lastFileRef.current;
-    if (file) void play(file);
+    const source = lastSourceRef.current;
+    if (source) void play(source);
+  }, [play]);
+
+  const openFile = useCallback(async () => {
+    const desktop = window.sdaDesktop;
+    if (desktop?.pickFile) {
+      const path = await desktop.pickFile();
+      if (path) void play({ kind: "path", path });
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".mkv,.mka,.mp4,.m4a,.thd,.mlp,.ec3,.eac3,.ac3,.dts";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) void play({ kind: "file", file });
+    };
+    input.click();
   }, [play]);
 
   return (
@@ -402,15 +454,7 @@ export function App() {
           >
             {theme === "dark" ? "☀️" : "🌙"}
           </button>
-          <button
-            onClick={() => {
-              const input = document.createElement("input");
-              input.type = "file";
-              input.accept = ".mkv,.mka,.mp4,.m4a,.thd,.mlp,.ec3,.eac3,.ac3,.dts";
-              input.onchange = () => input.files?.[0] && void play(input.files[0]);
-              input.click();
-            }}
-          >
+          <button onClick={() => void openFile()}>
             打开文件
           </button>
           <button disabled={!playing} onClick={() => playerRef.current?.stop()}>
@@ -442,15 +486,6 @@ export function App() {
                   onChange={(event) => changeVolumeBalance(event.target.checked)}
                 />
               </label>
-              <label className="settings-switch" title="按当前虚拟扬声器数量补偿并发功率，不改变左右平衡">
-                <span>布局电平补偿</span>
-                <input
-                  type="checkbox"
-                  role="switch"
-                  checked={layoutLevelCompensationEnabled}
-                  onChange={(event) => changeLayoutLevelCompensation(event.target.checked)}
-                />
-              </label>
             </fieldset>
             <fieldset className="settings-group settings-section" disabled={mode !== "binaural"}>
               <legend>耳机 EQ</legend>
@@ -476,7 +511,7 @@ export function App() {
                 </label>
               ))}
             </fieldset>
-            {mode === "multichannel" && <p className="settings-disabled">音量平衡与布局电平补偿仅用于双耳和立体声输出。</p>}
+            {mode === "multichannel" && <p className="settings-disabled">音量平衡仅用于双耳和立体声输出。</p>}
             {mode !== "binaural" && <p className="settings-disabled">切换至双耳输出后可启用耳机 EQ。</p>}
           </section>
         </div>
@@ -495,7 +530,7 @@ export function App() {
             objectCount={objects.length}
             volume={volume}
             onTogglePlay={togglePlay}
-            onStop={() => playerRef.current?.stop()}
+            onStop={stopPlayback}
             onReplay={replay}
             onVolume={changeVolume}
           />
@@ -535,44 +570,23 @@ export function App() {
             <dl>
               <dt>来源</dt>
               <dd>{binauralMetadata?.available ? `BWF dbmd ${binauralMetadata.version ?? ""}` : "当前输入未携带可读取的 Binaural Render Mode"}</dd>
-              <dt>对象表</dt>
-              <dd>{binauralMetadata?.available ? `${binauralMetadata.objectModes.length} 个 program object mode` : "—"}</dd>
-              <dt>床层表</dt>
-              <dd>{binauralMetadata?.available ? "公开 DBMD supplemental 段未提供可绑定的 bed channel position 表" : "—"}</dd>
+              <dt>模式表</dt>
+              <dd>{binauralMetadata?.available ? `${binauralMetadata.modeTable.length} 个未绑定 ordinal（${binauralMetadata.modeTable.join(", ")}）` : "—"}</dd>
+              <dt>元素映射</dt>
+              <dd>{binauralMetadata?.available
+                ? "公开 DBMD supplemental 解析结果未提供 ordinal 到 surround-bed 子声道或 3D object 的身份映射"
+                : "—"}</dd>
               {binauralMetadata?.error && <><dt>状态</dt><dd>{binauralMetadata.error}</dd></>}
             </dl>
           </div>
-          <div className="panel">
-            <h2>对象 ({objects.length})</h2>
-            <ul className="objects">
-              {objects.map((o) => (
-                <li key={o.id} className={mutedIds.has(o.id) ? "obj-muted" : ""}>
-                  <b>#{o.id}</b>{" "}
-                  {o.hasPos
-                    ? `(${o.pos.map((v) => v.toFixed(2)).join(", ")})`
-                    : "—"}
-                  {o.gainDb !== 0 && ` ${o.gainDb}dB`}
-                  <span className="obj-metadata">{o.anchor}{o.distanceInfinite ? " · OAMD 物理距离：无限" : o.distanceM !== null ? ` · OAMD 物理距离：${o.distanceM.toFixed(2)}m` : ""} · 双耳模式：{binauralMetadata?.available ? (objectBinauralModes.get(o.id) ?? "未指定") : "当前输入未携带可读取的 Binaural Render Mode"}</span>
-                  <span className="obj-ms">
-                    <button
-                      className={`obj-ms-btn ${mutedIds.has(o.id) ? "m-on" : ""}`}
-                      title={mutedIds.has(o.id) ? "取消静音" : "静音此对象"}
-                      onClick={() => toggleMute(o.id)}
-                    >
-                      M
-                    </button>
-                    <button
-                      className={`obj-ms-btn ${soloTarget === o.id ? "s-on" : ""}`}
-                      title={soloTarget === o.id ? "取消独奏" : "独奏此对象（静音其他全部）"}
-                      onClick={() => toggleSolo(o.id)}
-                    >
-                      S
-                    </button>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          <ObjectPanel
+            objects={diagnosticObjects}
+            mutedIds={mutedIds}
+            soloTarget={soloTarget}
+            binauralMetadata={binauralMetadata}
+            onToggleMute={toggleMute}
+            onToggleSolo={toggleSolo}
+          />
           {selectedHeadphoneProfile && (
             <div className="panel">
               <h2>耳机补偿</h2>

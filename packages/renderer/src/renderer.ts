@@ -154,14 +154,6 @@ export function stereoDownmixGains(speaker: Pick<VirtualSpeaker, "azimuth" | "is
   return [Math.sqrt((1 + pan) / 2) * 0.7, Math.sqrt((1 - pan) / 2) * 0.7];
 }
 
-export function layoutLevelCompensationGain(layout: readonly VirtualSpeaker[]): number {
-  const referenceChannels = LAYOUTS["5.1"].filter((speaker) => !speaker.isLfe).length;
-  const activeChannels = layout.filter((speaker) => !speaker.isLfe).length;
-  return Math.min(1, Math.sqrt(referenceChannels / Math.max(referenceChannels, activeChannels)));
-}
-
-/** All output modes use the selected standard speaker geometry. Output-specific
- * processing belongs in the output graph, never in the VBAP layout. */
 export function virtualLayoutForOutput(
   layout: readonly VirtualSpeaker[],
   _mode: OutputMode,
@@ -196,11 +188,25 @@ function sizeToSpread(size: [number, number, number]): number {
   return Math.min(1, (size[0] + size[1] + size[2]) / 3);
 }
 
+interface ScheduledGainMessage {
+  type: "gains" | "scheduleGains";
+  id: string;
+  at?: number;
+  gains: Float32Array;
+  gain: number;
+  lp: number;
+  ramp: number;
+}
+
 interface SourceState {
   id: string;
   spread: number;
   position: Spherical;
   gainDb: number;
+  /** At least one codec object event has established this source's target. */
+  hasObjectMetadata: boolean;
+  /** Sample where the last accepted object ramp reaches its target. */
+  objectRampEndSample: number;
   isLfe: boolean;
   /** 对象静音（mute/solo）：静音时标量增益乘 0，走平滑斜坡无爆音。 */
   muted: boolean;
@@ -220,18 +226,19 @@ export class SpatialRenderer {
   layout: readonly VirtualSpeaker[];
   /** Active gain-vector layout. Geometry is identical in every output mode. */
   private renderLayout: readonly VirtualSpeaker[];
+  /** Current logical-layout bus -> fixed worklet topology bus. Rebuilt only when
+   * the layout changes, never while processing object motion. */
+  private renderToTopology: Int16Array;
   /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
   private readonly topology: readonly VirtualSpeaker[];
   mode: OutputMode;
   /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
   private modeGains = new Map<OutputMode, GainNode>();
   private modeVolumeGains = new Map<OutputMode, GainNode>();
-  private modeLayoutGains = new Map<OutputMode, GainNode>();
   private modeProgramGains = new Map<OutputMode, GainNode>();
   private multichannelOutput: GainNode | null = null;
   private multichannelProjector: { id: string; gain: GainNode; nodes: AudioNode[] } | null = null;
   private volume = 1;
-  private layoutLevelCompensationEnabled = true;
   private volumeBalanceEnabled = false;
   private programLoudnessGainDb: number | null = null;
   private vbap: VbapSolver;
@@ -287,6 +294,7 @@ export class SpatialRenderer {
     this.layout = options.layout ?? LAYOUT_7_1_4;
     this.topology = RENDER_TOPOLOGY;
     this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
     if (options.binauralIrSet) this.irSet = options.binauralIrSet;
     this.onConsumedTick = options.onConsumedTick;
@@ -381,8 +389,18 @@ export class SpatialRenderer {
     }
   }
 
+  private buildRenderProjection(): Int16Array {
+    const topologyByKey = new Map(
+      this.topology.map((speaker, index) => [speakerBusKey(speaker), index]),
+    );
+    return Int16Array.from(
+      this.renderLayout.map((speaker) => topologyByKey.get(speakerBusKey(speaker)) ?? -1),
+    );
+  }
+
   private updateRenderLayout(): void {
     this.renderLayout = virtualLayoutForOutput(this.layout, this.mode);
+    this.renderToTopology = this.buildRenderProjection();
     this.vbap = new VbapSolver(this.renderLayout);
     for (const state of this.sources.values()) {
       if (state.bedLabel && !state.isLfe) {
@@ -398,7 +416,6 @@ export class SpatialRenderer {
     this.layout = layout;
     this.updateRenderLayout();
     this.buildExpansion();
-    this.updateLayoutLevelCompensation();
     this.updateMultichannelLayout();
     this.updateDestinationChannelCount();
     for (const state of this.sources.values()) {
@@ -457,6 +474,11 @@ export class SpatialRenderer {
   setBinauralData(set: BinauralIrSet): void {
     this.irSet = set;
     if (this.node) this.buildOutputGraph();
+  }
+
+  /** True only after the measured binaural IR set has replaced browser Panner fallback. */
+  get hasBinauralData(): boolean {
+    return this.irSet !== null;
   }
 
   /** 切换杜比近/中/远：重混每总线 IR（干 HRIR ↔ 湿 BRIR）；对象的空间位置和
@@ -593,7 +615,6 @@ export class SpatialRenderer {
     this.binauralEqHeadroom = null;
     this.modeGains.clear();
     this.modeVolumeGains.clear();
-    this.modeLayoutGains.clear();
     this.modeProgramGains.clear();
     this.multichannelOutput = null;
     this.multichannelProjector = null;
@@ -623,17 +644,12 @@ export class SpatialRenderer {
 
     const createModeOutput = (mode: OutputMode) => {
       const volume = this.ctx.createGain();
-      const balance = this.ctx.createGain();
       const program = this.ctx.createGain();
       const gain = this.ctx.createGain();
       volume.gain.value = this.volume ** 2;
-      balance.gain.value = this.layoutLevelCompensationEnabled && mode !== "multichannel"
-        ? layoutLevelCompensationGain(virtualLayoutForOutput(this.layout, mode))
-        : 1;
       program.gain.value = 1;
       gain.gain.value = mode === this.mode ? 1 : 0;
-      volume.connect(balance);
-      balance.connect(program);
+      volume.connect(program);
       program.connect(gain);
       if (mode === "multichannel") {
         const delay = this.ctx.createDelay(BINAURAL_PEAK_GUARD_LOOKAHEAD_S);
@@ -647,10 +663,9 @@ export class SpatialRenderer {
         gain.connect(peakGuard);
       }
       this.modeVolumeGains.set(mode, volume);
-      this.modeLayoutGains.set(mode, balance);
       this.modeProgramGains.set(mode, program);
       this.modeGains.set(mode, gain);
-      this.postNodes.push(volume, balance, program, gain);
+      this.postNodes.push(volume, program, gain);
       return volume;
     };
 
@@ -928,12 +943,6 @@ export class SpatialRenderer {
     this.postNodes.push(eqHeadroom, eqSplit, eqMerge);
     eqMerge.connect(makeup);
     makeup.connect(output);
-    const balance = this.modeLayoutGains.get("binaural")!;
-    const program = this.modeProgramGains.get("binaural")!;
-    output.disconnect();
-    output.connect(balance);
-    balance.disconnect();
-    balance.connect(program);
     this.postNodes.push(merger, makeup);
   }
 
@@ -980,6 +989,8 @@ export class SpatialRenderer {
       spread: 0,
       position: { azimuth: 0, elevation: 0, distance: 1 },
       gainDb: 0,
+      hasObjectMetadata: false,
+      objectRampEndSample: Number.NEGATIVE_INFINITY,
       isLfe: opts.bedLabel ? isLfeLabel(opts.bedLabel) : false,
       muted: false,
       bedLabel: opts.bedLabel ? aliasLabel(opts.bedLabel) : undefined,
@@ -1121,28 +1132,49 @@ export class SpatialRenderer {
     this.node.port.postMessage({ type: "feedBatch", sequence, start: Math.trunc(samplePos), entries });
   }
 
-  /** Queue an object event on the same absolute sample clock as its PCM. */
-  applyEvent(ev: ObjectEvent, rampSamples: number): void {
-    const state = this.sources.get(`obj:${ev.id}`);
-    if (!state) return;
-    if (ev.hasPos) {
-      state.position = admToSpherical(ev.pos);
-      state.spread = sizeToSpread(ev.size);
+  /** Queue object events on the same absolute sample clock as their PCM. Exact
+   * repeated targets are discarded before VBAP and MessagePort allocation. */
+  applyEvents(events: readonly ObjectEvent[]): number {
+    if (!this.node || events.length === 0) return 0;
+    const messages: ScheduledGainMessage[] = [];
+    for (const ev of events) {
+      const state = this.sources.get(`obj:${ev.id}`);
+      if (!state) continue;
+      const nextPosition = ev.hasPos ? admToSpherical(ev.pos) : state.position;
+      const nextSpread = ev.hasPos ? sizeToSpread(ev.size) : state.spread;
+      const ramp = ev.rampDuration || 128;
+      const at = Math.trunc(ev.samplePos);
+      const unchanged = state.hasObjectMetadata
+        && state.objectRampEndSample <= at
+        && state.position.azimuth === nextPosition.azimuth
+        && state.position.elevation === nextPosition.elevation
+        && state.position.distance === nextPosition.distance
+        && state.spread === nextSpread
+        && state.gainDb === ev.gainDb;
+      if (unchanged) continue;
+      state.position = nextPosition;
+      state.spread = nextSpread;
+      state.gainDb = ev.gainDb;
+      state.hasObjectMetadata = true;
+      state.objectRampEndSample = at + Math.max(1, ramp);
+      messages.push(this.gainMessage(state, ramp, at));
     }
-    state.gainDb = ev.gainDb;
-    this.applyGains(
-      state,
-      rampSamples || ev.rampDuration || 128,
-      Math.trunc(ev.samplePos),
-    );
+    if (messages.length === 1) this.node.port.postMessage(messages[0]);
+    else if (messages.length > 1) this.node.port.postMessage({ type: "scheduleGainsBatch", entries: messages });
+    return messages.length;
   }
 
-  /** Recompute and send a source's gain vector over the buses. */
-  private applyGains(
+  /** Queue one object event. Kept for control surfaces and focused tests. */
+  applyEvent(ev: ObjectEvent, rampSamples: number): boolean {
+    const event = rampSamples === ev.rampDuration ? ev : { ...ev, rampDuration: rampSamples };
+    return this.applyEvents([event]) > 0;
+  }
+
+  private gainMessage(
     state: SourceState,
     rampSamples: number,
     atSample?: number,
-  ): void {
+  ): ScheduledGainMessage {
     const gains = this.vbap.pan(state.position, state.spread);
 
     // ADM 半径是对象定位的归一化坐标：1 = 虚拟音箱环。渲染器只在环外
@@ -1194,12 +1226,10 @@ export class SpatialRenderer {
     // 逻辑布局不存在的总线保持 0，切换布局仅更新这组斜坡，不触碰 PCM 缓冲。
     const topologyGains = new Float32Array(this.topology.length);
     for (let bus = 0; bus < gains.length; bus++) {
-      const target = this.topology.findIndex(
-        (speaker) => speakerBusKey(speaker) === speakerBusKey(this.renderLayout[bus]!),
-      );
+      const target = this.renderToTopology[bus] ?? -1;
       if (target >= 0) topologyGains[target] = gains[bus]!;
     }
-    this.node?.port.postMessage({
+    return {
       type: atSample === undefined ? "gains" : "scheduleGains",
       id: state.id,
       at: atSample,
@@ -1207,7 +1237,16 @@ export class SpatialRenderer {
       gain: scalar,
       lp,
       ramp: Math.max(1, rampSamples),
-    });
+    };
+  }
+
+  /** Recompute and send a source's gain vector over the buses. */
+  private applyGains(
+    state: SourceState,
+    rampSamples: number,
+    atSample?: number,
+  ): void {
+    this.node?.port.postMessage(this.gainMessage(state, rampSamples, atSample));
   }
 
   /** Reset the codec timeline. MessagePort FIFO guarantees a following feed is
@@ -1223,6 +1262,10 @@ export class SpatialRenderer {
     for (const state of this.sources.values()) {
       state.lifecycleEvents.length = 0;
       state.lifecycleEventOrder = 0;
+      if (!state.bedLabel) {
+        state.hasObjectMetadata = false;
+        state.objectRampEndSample = Number.NEGATIVE_INFINITY;
+      }
     }
     this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
     this.peakGuard?.port.postMessage({ type: "reset" });
@@ -1253,28 +1296,6 @@ export class SpatialRenderer {
       gain,
       at: atSample === undefined ? undefined : Math.trunc(atSample),
     });
-  }
-
-  /** Keep stereo/binaural loudness stable as layouts add more simultaneous buses. */
-  setLayoutLevelCompensation(enabled: boolean): void {
-    this.layoutLevelCompensationEnabled = enabled;
-    this.updateLayoutLevelCompensation();
-  }
-
-  get layoutLevelCompensation(): boolean {
-    return this.layoutLevelCompensationEnabled;
-  }
-
-  private updateLayoutLevelCompensation(): void {
-    const now = this.ctx.currentTime;
-    for (const [mode, node] of this.modeLayoutGains) {
-      const renderLayout = virtualLayoutForOutput(this.layout, mode);
-      const target = this.layoutLevelCompensationEnabled ? layoutLevelCompensationGain(renderLayout) : 1;
-      const value = mode === "multichannel" ? 1 : target;
-      node.gain.cancelScheduledValues(now);
-      node.gain.setValueAtTime(node.gain.value, now);
-      node.gain.linearRampToValueAtTime(value, now + 0.05);
-    }
   }
 
   /** Master output volume, 0..1 (applied perceptually: gain = v²). */

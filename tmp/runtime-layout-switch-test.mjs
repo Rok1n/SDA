@@ -71,6 +71,11 @@ renderer.setSourceMuted("obj:9", true);
 
 check(worklets === 2, `初始创建 source renderer + final peak guard 两个 worklet（${worklets}）`);
 check(latest("bed:fl").gains.length === RENDER_TOPOLOGY.length, "输出固定为全部标准位置的 18 总线拓扑");
+check(renderer.modeLayoutGains === undefined, "输出图不存在按潜在音箱数量缩放的布局 gain");
+for (const mode of ["binaural", "stereo", "multichannel"]) {
+  check(renderer.modeVolumeGains.get(mode)?.gain.value === 1, `${mode}: 主音量初始保持 unity`);
+  check(renderer.modeProgramGains.get(mode)?.gain.value === 1, `${mode}: 节目增益初始保持 unity`);
+}
 
 for (const id of ["7.1.4", "9.1.6", "5.1"]) {
   const before = worklets;

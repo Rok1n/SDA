@@ -6,6 +6,10 @@
   "scripts": {
     "core:build": "node scripts/build-core.mjs",
     "hrtf:build": "node scripts/build-hrtf.mjs",
+    "hrtf:calibrate": "node scripts/build-calibrated-hrtf.mjs",
+    "hrtf:analyze": "node scripts/analyze-hrtf-calibration.mjs",
+    "hrtf:verify": "node scripts/verify-hrtf-assets.mjs",
+    "acoustics:test": "node scripts/test/acoustics.test.mjs && node scripts/test/hrtf-source.test.mjs && node scripts/test/impulse-metrics.test.mjs",
     "dev": "pnpm --parallel --filter @sda/web --filter @sda/desktop dev",
     "web:dev": "pnpm --filter @sda/web dev",
     "web:build": "pnpm --filter @sda/web build",

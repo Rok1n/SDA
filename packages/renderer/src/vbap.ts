@@ -226,17 +226,29 @@ export class VbapSolver {
     // position after the per-bus HRTF convolutions.
     if (spread > 0) {
       const s = Math.min(1, spread);
-      const nearest = this.dirs
-        .map((d, i) => ({
-          i,
-          dot: this.lfeMask[i] ? -Infinity : d[0] * p[0] + d[1] * p[1] + d[2] * p[2],
-        }))
-        .filter(({ dot }) => Number.isFinite(dot))
-        .sort((a, b) => b.dot - a.dot)
-        .slice(0, Math.min(4, this.lfeMask.filter((l) => !l).length));
+      const nearestIndices = [-1, -1, -1, -1];
+      const nearestDots = [-Infinity, -Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < this.speakerCount; i++) {
+        if (this.lfeMask[i]) continue;
+        const d = this.dirs[i]!;
+        const dot = d[0] * p[0] + d[1] * p[1] + d[2] * p[2];
+        for (let rank = 0; rank < nearestDots.length; rank++) {
+          if (dot <= nearestDots[rank]!) continue;
+          for (let move = nearestDots.length - 1; move > rank; move--) {
+            nearestDots[move] = nearestDots[move - 1]!;
+            nearestIndices[move] = nearestIndices[move - 1]!;
+          }
+          nearestDots[rank] = dot;
+          nearestIndices[rank] = i;
+          break;
+        }
+      }
+      const nearestCount = nearestIndices.reduce((count, index) => count + (index >= 0 ? 1 : 0), 0);
       const local = new Float32Array(this.speakerCount);
-      const diffuse = 1 / Math.sqrt(nearest.length || 1);
-      for (const { i } of nearest) local[i] = diffuse;
+      const diffuse = 1 / Math.sqrt(nearestCount || 1);
+      for (const index of nearestIndices) {
+        if (index >= 0) local[index] = diffuse;
+      }
       for (let i = 0; i < gains.length; i++) gains[i] = (1 - s) * gains[i]! + s * local[i]!;
 
       let spreadPower = 0;
