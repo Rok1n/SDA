@@ -120,7 +120,10 @@ export function App() {
           setDuration(p?.durationSeconds() ?? 0);
           setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
         },
-        onError: (m) => setErrors((prev) => [...prev.slice(-19), m]),
+        onError: (m) => {
+          console.warn(`[SDA] ${m}`);
+          setErrors((prev) => [...prev.slice(-19), m]);
+        },
         onEnded: () => setPlaying(false),
       });
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];

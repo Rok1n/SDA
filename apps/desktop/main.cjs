@@ -22,6 +22,12 @@ const enable3D = rendererMode !== "2d";
 const openDevTools = process.env.SDA_OPEN_DEVTOOLS === "1" || process.argv.includes("--open-devtools");
 const DEV_URL = process.env.SDA_DEV_URL ?? "http://localhost:5173";
 
+// 音频应用：窗口被遮挡、最小化或切到后台时都不得节流 —
+// Chromium 默认会冻结后台 renderer 的定时器/worker，直接导致解码喂不动 worklet。
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+
 // SwiftShader keeps the full WebGL/three.js scene without depending on the
 // host GPU driver. Hardware mode is available for machines with stable drivers;
 // 2d is an explicit emergency fallback only.
@@ -170,14 +176,20 @@ function createWindow() {
   }
 }
 
-ipcMain.handle("sda:pick-file", async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+ipcMain.handle("sda:pick-file", async (event) => {
+  // 挂到发起窗口上：弹窗跟随主窗口置顶，不会跑到后台/其他显示器；
+  // 且异步版本不会冻结主进程事件循环，播放中的 IPC 读文件不受影响。
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const options = {
     filters: [
       { name: "Audio / Video", extensions: ["mkv", "mka", "mp4", "m4a", "wav", "bwf", "rf64", "thd", "mlp", "ec3", "eac3", "ac3", "dts"] },
       { name: "All Files", extensions: ["*"] },
     ],
     properties: ["openFile"],
-  });
+  };
+  const { canceled, filePaths } = parent
+    ? await dialog.showOpenDialog(parent, options)
+    : await dialog.showOpenDialog(options);
   return canceled ? null : filePaths[0];
 });
 
@@ -232,12 +244,16 @@ ipcMain.handle("sda:read-bundled-hrtf", (_e, assetPath) => {
   return fs.readFileSync(filePath);
 });
 
-ipcMain.handle("sda:import-headphone-profile", async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog({
+ipcMain.handle("sda:import-headphone-profile", async (event) => {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const options = {
     title: "选择耳机校准档案 profile.json",
     filters: [{ name: "Headphone profile", extensions: ["json"] }],
     properties: ["openFile"],
-  });
+  };
+  const { canceled, filePaths } = parent
+    ? await dialog.showOpenDialog(parent, options)
+    : await dialog.showOpenDialog(options);
   if (canceled) return null;
   const sourceManifest = path.resolve(filePaths[0]);
   const sourceDirectory = path.dirname(sourceManifest);

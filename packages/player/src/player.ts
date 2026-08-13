@@ -59,7 +59,8 @@ export type LayoutResolver = (
   hasDynamics: boolean,
 ) => readonly VirtualSpeaker[] | null;
 
-const TARGET_AHEAD_SECONDS = 2;
+/** 解码前瞻：环形缓冲约 5.3s，前瞻 4s 可吞掉弹窗/后台切换造成的秒级供给抖动。 */
+const TARGET_AHEAD_SECONDS = 4;
 const STARTUP_AHEAD_SECONDS = 0.5;
 const MAX_IN_FLIGHT_BATCHES = 32;
 const MAX_IN_FLIGHT_SECONDS = 0.25;
