@@ -14,10 +14,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const isDev = process.argv.includes("--dev");
-const requestedRenderer = process.env.SDA_ELECTRON_RENDERER ?? "swiftshader";
+// 默认硬件 GPU：3D 视图走显卡，不占 CPU（SwiftShader 软渲染会和音频解码抢 CPU，
+// 外部应用一活动就容易供给抖动）。驱动有问题的机器可 SDA_ELECTRON_RENDERER=swiftshader 回退。
+const requestedRenderer = process.env.SDA_ELECTRON_RENDERER ?? "hardware";
 const rendererMode = ["swiftshader", "hardware", "2d"].includes(requestedRenderer)
   ? requestedRenderer
-  : "swiftshader";
+  : "hardware";
 const enable3D = rendererMode !== "2d";
 const openDevTools = process.env.SDA_OPEN_DEVTOOLS === "1" || process.argv.includes("--open-devtools");
 const DEV_URL = process.env.SDA_DEV_URL ?? "http://localhost:5173";
