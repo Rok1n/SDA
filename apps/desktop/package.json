@@ -31,7 +31,8 @@
       "signAndEditExecutable": false
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     }
   }
 }

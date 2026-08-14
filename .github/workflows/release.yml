@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Windows NSIS installer
+    name: Windows NSIS installers
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
         run: pnpm core:build
 
       - name: Build web + package Electron (NSIS)
-        # 上传由 softprops/action-gh-release 完成；禁止 electron-builder 自行发布，
+        # 发布由 publish-release 完成；禁止 electron-builder 自行发布，
         # 否则 tag 构建会因找不到 repository 配置而失败。
         run: |
           pnpm --filter @sda/web build
@@ -52,9 +52,79 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Upload installer to GitHub Release
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: apps/desktop/dist/*.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: macOS DMG (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/core
+
+      - name: Install wasm-bindgen-cli (must match Cargo.lock)
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build WASM decoder core (pkg-web)
+        run: pnpm core:build
+
+      - name: Build web + package Electron (unsigned DMG)
+        run: |
+          pnpm --filter @sda/web build
+          pnpm --filter @sda/desktop exec electron-builder --mac dmg --${{ matrix.arch }} --publish never
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg-${{ matrix.arch }}
+          path: apps/desktop/dist/*.dmg
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish release assets
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload installers and DMGs to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: apps/desktop/dist/*.exe
+          files: |
+            release-assets/*.exe
+            release-assets/*.dmg
           fail_on_unmatched_files: true
           generate_release_notes: true
