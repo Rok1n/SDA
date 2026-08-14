@@ -48,7 +48,7 @@ jobs:
         # 否则 tag 构建会因找不到 repository 配置而失败。
         run: |
           pnpm --filter @sda/web build
-          pnpm --filter @sda/desktop exec electron-builder --publish never
+          pnpm --filter @sda/desktop exec electron-builder --win nsis --x64 --arm64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
