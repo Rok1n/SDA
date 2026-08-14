@@ -32,6 +32,9 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     this.lastProcessAt = null;
     this.callbackGaps = 0;
     this.callbackGapMaxMs = 0;
+    this.processDurationTotalMs = 0;
+    this.processDurationCount = 0;
+    this.processDurationMaxMs = 0;
     this.port.postMessage({ type: "ready", ringSize: RING_SIZE, maxSources: MAX_SOURCES, build: WORKLET_BUILD });
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
@@ -318,6 +321,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         this.underrunSamples = 0;
         this.rejectedBatches = 0;
         this.rejectedSources = 0;
+        this.callbackGaps = 0;
+        this.callbackGapMaxMs = 0;
+        this.processDurationTotalMs = 0;
+        this.processDurationCount = 0;
+        this.processDurationMaxMs = 0;
+        this.lastProcessAt = null;
         this.port.postMessage({ type: "resetAck", epoch: this.epoch });
         break;
       case "pause":
@@ -333,9 +342,27 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
       : 0;
   }
 
+  wallClockMs() {
+    const precise = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+    // Some Electron AudioWorklet globals expose performance.now() but permanently
+    // return zero. Date.now() is lower resolution, but remains a usable wall clock
+    // for cross-machine callback-gap telemetry in that environment.
+    return precise > 0 ? precise : Date.now();
+  }
+
+  recordProcessDuration(startedAt) {
+    const endedAt = this.wallClockMs();
+    if (endedAt < startedAt) return;
+    const durationMs = endedAt - startedAt;
+    this.processDurationTotalMs += durationMs;
+    this.processDurationCount++;
+    if (durationMs > this.processDurationMaxMs) this.processDurationMaxMs = durationMs;
+  }
+
   process(_inputs, outputs) {
-    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
-    if (this.lastProcessAt !== null && now > 0 && this.timelineStarted && !this.paused) {
+    const now = this.wallClockMs();
+    const processStartedAt = now;
+    if (this.lastProcessAt !== null && this.timelineStarted && !this.paused) {
       const gapMs = now - this.lastProcessAt;
       // 正常间隔约 2.67ms；>12ms 视为一次输出侧调度间隙（约 4.5 个 quantum）
       if (gapMs > 12) {
@@ -350,7 +377,10 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     for (const buses of busesByBank) {
       for (let bus = 0; bus < this.busCount && bus < buses.length; bus++) buses[bus].fill(0);
     }
-    if (this.paused || !this.timelineStarted) return true;
+    if (this.paused || !this.timelineStarted) {
+      this.recordProcessDuration(processStartedAt);
+      return true;
+    }
 
     for (const [sourceId, src] of this.sources) {
       const buses = busesByBank[src.binauralBank] || primaryBuses;
@@ -420,6 +450,7 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     }
 
     this.consumed += blockSize;
+    this.recordProcessDuration(processStartedAt);
     const tickEvery = (typeof sampleRate === "number" ? sampleRate : 48000) >> 3;
     if (this.consumed - this.lastTick >= tickEvery) {
       this.lastTick = this.consumed;
@@ -432,12 +463,19 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         rejectedSources: this.rejectedSources,
         callbackGaps: this.callbackGaps,
         callbackGapMaxMs: Math.round(this.callbackGapMaxMs * 10) / 10,
+        processMeanMs: this.processDurationCount > 0
+          ? Math.round(this.processDurationTotalMs / this.processDurationCount * 1000) / 1000
+          : 0,
+        processMaxMs: Math.round(this.processDurationMaxMs * 1000) / 1000,
       });
       this.underrunSamples = 0;
       this.rejectedBatches = 0;
       this.rejectedSources = 0;
       this.callbackGaps = 0;
       this.callbackGapMaxMs = 0;
+      this.processDurationTotalMs = 0;
+      this.processDurationCount = 0;
+      this.processDurationMaxMs = 0;
     }
     return true;
   }

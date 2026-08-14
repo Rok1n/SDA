@@ -39,6 +39,8 @@ declare global {
     sdaDesktop?: {
       electron3D: boolean;
       rendererMode: string;
+      getOutputLatencySeconds?: () => 0.1 | 0.2 | 0.3;
+      setOutputLatencySeconds?: (seconds: 0.1 | 0.2 | 0.3) => boolean;
       pickFile?: () => Promise<string | null>;
       openPath?: (filePath: string) => Promise<{ id: number; size: number; name: string }>;
       readSlice?: (id: number, offset: number, length: number) => Promise<Uint8Array>;

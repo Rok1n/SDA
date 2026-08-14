@@ -75,6 +75,29 @@ const PROFILE_SCHEMA_VERSION = 1;
 const BUNDLED_HEADPHONE_FIR_PATTERN = /^headphone-compensation\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*\.f32$/;
 const BUNDLED_HRTF_PATTERN = /^hrtf\/(?:hrtf-set\.json|azm?\d+_elm?\d+_(?:dry|wet)\.f32)$/;
 const profileStorePath = () => path.join(app.getPath("userData"), "headphone-compensation");
+
+const OUTPUT_LATENCY_SECONDS = [0.1, 0.2, 0.3];
+const DEFAULT_OUTPUT_LATENCY_SECONDS = 0.1;
+const settingsPath = () => path.join(app.getPath("userData"), "settings.json");
+const isOutputLatencySeconds = (value) => OUTPUT_LATENCY_SECONDS.includes(value);
+
+function readOutputLatencySeconds() {
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+    return isOutputLatencySeconds(settings?.outputLatencySeconds)
+      ? settings.outputLatencySeconds
+      : DEFAULT_OUTPUT_LATENCY_SECONDS;
+  } catch {
+    return DEFAULT_OUTPUT_LATENCY_SECONDS;
+  }
+}
+
+function writeOutputLatencySeconds(seconds) {
+  if (!isOutputLatencySeconds(seconds)) throw new Error("invalid output latency seconds");
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  fs.writeFileSync(settingsPath(), JSON.stringify({ outputLatencySeconds: seconds }), "utf8");
+}
+
 const webAssetRoots = () => [
   path.join(__dirname, "web"),
   path.join(__dirname, "../web/dist"),
@@ -198,6 +221,20 @@ function createWindow() {
     });
   }
 }
+
+ipcMain.on("sda:get-output-latency-seconds", (event) => {
+  event.returnValue = readOutputLatencySeconds();
+});
+
+ipcMain.on("sda:set-output-latency-seconds", (event, seconds) => {
+  try {
+    writeOutputLatencySeconds(seconds);
+    event.returnValue = true;
+  } catch (error) {
+    console.warn("[SDA] 输出延迟设置未保存:", error);
+    event.returnValue = false;
+  }
+});
 
 ipcMain.handle("sda:pick-file", async (event) => {
   // 挂到发起窗口上：弹窗跟随主窗口置顶，不会跑到后台/其他显示器；

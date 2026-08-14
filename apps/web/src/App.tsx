@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SdaPlayer, type BinauralRenderMetadata, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
+import { SdaPlayer, type BinauralRenderMetadata, type PlayerHealthSnapshot, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
@@ -21,8 +21,36 @@ import { ObjectPanel } from "./components/ObjectPanel";
 type PlaybackSource = { kind: "file"; file: File } | { kind: "path"; path: string };
 
 const FILE_CHUNK_SIZE = 1 << 20;
+const OUTPUT_LATENCY_STORAGE_KEY = "sda-output-latency-seconds";
+type OutputLatencySeconds = 0.1 | 0.2 | 0.3;
+const DEFAULT_OUTPUT_LATENCY_SECONDS: OutputLatencySeconds = 0.1;
 const assetUrl = (path: string): string => new URL(path, document.baseURI).toString();
 const ownedArrayBuffer = (bytes: Uint8Array): ArrayBuffer => Uint8Array.from(bytes).buffer;
+
+function readOutputLatencySeconds(): OutputLatencySeconds {
+  const desktopValue = window.sdaDesktop?.getOutputLatencySeconds?.();
+  if (desktopValue === 0.1 || desktopValue === 0.2 || desktopValue === 0.3) return desktopValue;
+  try {
+    const value = Number(localStorage.getItem(OUTPUT_LATENCY_STORAGE_KEY));
+    return value === 0.1 || value === 0.2 || value === 0.3 ? value : DEFAULT_OUTPUT_LATENCY_SECONDS;
+  } catch {
+    return DEFAULT_OUTPUT_LATENCY_SECONDS;
+  }
+}
+
+function persistOutputLatencySeconds(seconds: OutputLatencySeconds): void {
+  const persistDesktopValue = window.sdaDesktop?.setOutputLatencySeconds;
+  if (persistDesktopValue) {
+    persistDesktopValue(seconds);
+    return;
+  }
+  try {
+    localStorage.setItem(OUTPUT_LATENCY_STORAGE_KEY, String(seconds));
+  } catch {
+    // Private-mode or quota failures must not interfere with playback.
+  }
+}
+
 localStorage.removeItem("sda-layout-level-compensation-enabled");
 
 const bundledHrtfReader = window.sdaDesktop?.readBundledHrtf;
@@ -62,6 +90,9 @@ export function App() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [debug, setDebug] = useState("");
+  const [health, setHealth] = useState<PlayerHealthSnapshot | null>(null);
+  /** Internal adaptive state, persisted before future player construction. */
+  const outputLatencySecondsRef = useRef<OutputLatencySeconds>(readOutputLatencySeconds());
   /** 运行期错误只进 console，不再在页面上显示日志面板。 */
   const [, setErrors] = useState<string[]>([]);
   const [playing, setPlaying] = useState(false);
@@ -94,12 +125,24 @@ export function App() {
   const objectsRef = useRef<VisualObject[]>([]);
   /** 当前文件名，容器没有标题元数据时给 miniplayer 兜底用。 */
   const fileNameRef = useRef<string | null>(null);
+  /** A monotonically increasing token makes the most recent play request win. */
+  const playRequestRef = useRef(0);
+  const playRef = useRef<(source: PlaybackSource) => Promise<void>>(async () => {});
+  const volumeBalanceRef = useRef(volumeBalanceEnabled);
+  const binauralEqBandsRef = useRef(binauralEqBands);
+  volumeBalanceRef.current = volumeBalanceEnabled;
+  binauralEqBandsRef.current = binauralEqBands;
 
   const createPlayer = useCallback(
-    async (m: OutputMode, lid: LayoutId | "auto") => {
-      await playerRef.current?.dispose();
+    async (m: OutputMode, lid: LayoutId | "auto", isCurrent: () => boolean) => {
       const player = new SdaPlayer({
+        onOutputLatencyRecommendation: (seconds) => {
+          if (!isCurrent()) return;
+          persistOutputLatencySeconds(seconds);
+          outputLatencySecondsRef.current = seconds;
+        },
         onTrack: (t) => {
+          if (!isCurrent()) return;
           if (coverUrlRef.current) URL.revokeObjectURL(coverUrlRef.current);
           const coverUrl = t.coverArt
             ? URL.createObjectURL(new Blob([ownedArrayBuffer(t.coverArt.bytes)], { type: t.coverArt.mimeType }))
@@ -108,9 +151,14 @@ export function App() {
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
           setProgramLoudness(null);
         },
-        onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels }),
-        onBinauralMetadata: setBinauralMetadata,
+        onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => {
+          if (isCurrent()) setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels });
+        },
+        onBinauralMetadata: (metadata) => {
+          if (isCurrent()) setBinauralMetadata(metadata);
+        },
         onVisualState: (objs, t) => {
+          if (!isCurrent()) return;
           objectsRef.current = objs;
           setObjects(objs);
           if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
@@ -123,12 +171,18 @@ export function App() {
           setDuration(p?.durationSeconds() ?? 0);
           setDebug(p ? `#${p.id} 已解码 ${p.durationSeconds().toFixed(1)}s / 播放头 ${t.toFixed(1)}s` : "");
         },
-        onError: (m) => {
-          console.warn(`[SDA] ${m}`);
-          setErrors((prev) => [...prev.slice(-19), m]);
+        onHealth: (snapshot) => {
+          if (isCurrent()) setHealth(snapshot);
         },
-        onEnded: () => setPlaying(false),
-      });
+        onError: (message) => {
+          if (!isCurrent()) return;
+          console.warn(`[SDA] ${message}`);
+          setErrors((prev) => [...prev.slice(-19), message]);
+        },
+        onEnded: () => {
+          if (isCurrent()) setPlaying(false);
+        },
+      }, { initialOutputLatencySeconds: outputLatencySecondsRef.current });
       const fallbackLayout = lid === "auto" ? LAYOUTS["7.1.4"] : LAYOUTS[lid];
       const resolver = lid === "auto"
         ? (labels: readonly string[], hasDynamics: boolean) => {
@@ -138,13 +192,15 @@ export function App() {
           }
         : undefined;
       await player.init(m, workletUrl, fallbackLayout, assetUrl("hrtf"), resolver);
-      playerRef.current = player;
-      player.setVolumeBalance(volumeBalanceEnabled);
-      player.setBinauralEqBands(binauralEqBands);
-      setPlayerReady(player);
+      if (!isCurrent()) {
+        await player.dispose();
+        return null;
+      }
+      player.setVolumeBalance(volumeBalanceRef.current);
+      player.setBinauralEqBands(binauralEqBandsRef.current);
       return player;
     },
-    [binauralEqBands, volumeBalanceEnabled],
+    [],
   );
 
   useEffect(
@@ -273,6 +329,16 @@ export function App() {
 
   const play = useCallback(
     async (source: PlaybackSource) => {
+      const request = ++playRequestRef.current;
+      const isCurrent = () => playRequestRef.current === request;
+      // A new request invalidates and tears down the audible player immediately.
+      // Its async reader may still unwind, but its callbacks are token-gated and it
+      // cannot overlap the incoming session while that session initializes.
+      const previous = playerRef.current;
+      playerRef.current = null;
+      setPlayerReady(null);
+      if (previous) await previous.dispose();
+      if (!isCurrent()) return;
       setErrors([]);
       setTrack(null);
       setBinauralMetadata(null);
@@ -282,6 +348,7 @@ export function App() {
       lastDiagnosticUpdateRef.current = 0;
       setPosition(0);
       setDuration(0);
+      setHealth(null);
       setDetectedLayout(null);
       setPlaying(true);
       setPaused(false);
@@ -292,8 +359,17 @@ export function App() {
         : source.path.split(/[\\/]/).pop() ?? source.path;
       fileNameRef.current = sourceName.replace(/\.[^.]+$/, "");
       try {
-        // Always rebuild with the currently selected output mode and layout.
-        const player = await createPlayer(mode, layoutId);
+        // Build privately first. A stale request never gets to replace or dispose
+        // the active player published by a newer request.
+        const player = await createPlayer(mode, layoutId, isCurrent);
+        if (!player || !isCurrent()) return;
+        playerRef.current = player;
+        setPlayerReady(player);
+        if (!isCurrent()) {
+          if (playerRef.current === player) playerRef.current = null;
+          await player.dispose();
+          return;
+        }
         player.setVolume(volume);
         player.setVolumeBalance(volumeBalanceEnabled);
         player.setHeadphoneCompensation(headphoneProfileId);
@@ -309,28 +385,32 @@ export function App() {
           }
           const opened = await desktop.openPath(source.path);
           try {
+            if (!isCurrent() || playerRef.current !== player) return;
             player.open("auto");
             for (let offset = 0; offset < opened.size; offset += FILE_CHUNK_SIZE) {
               const chunk = await desktop.readSlice(opened.id, offset, Math.min(FILE_CHUNK_SIZE, opened.size - offset));
+              if (!isCurrent() || playerRef.current !== player) return;
               if (chunk.byteLength === 0) throw new Error(`文件在 ${offset} 字节处提前结束`);
               await player.push(chunk);
             }
-            player.end();
+            if (isCurrent() && playerRef.current === player) player.end();
           } finally {
             await desktop.close(opened.id);
           }
         }
       } catch (e) {
+        if (!isCurrent()) return;
         setErrors((prev) => [...prev, String(e)]);
         setPlaying(false);
       }
     },
     [createPlayer, mode, layoutId, volume, volumeBalanceEnabled, headphoneProfileId, applyMutes, effectiveMutedIds],
   );
+  playRef.current = play;
 
   useEffect(() => window.sdaDesktop?.onOpenFile?.((path) => {
-    void play({ kind: "path", path });
-  }), [play]);
+    void playRef.current({ kind: "path", path });
+  }), []);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -606,6 +686,28 @@ export function App() {
                   : "无响度元数据"}</dd>
                 <dt>播放</dt>
                 <dd>{position.toFixed(1)} s</dd>
+                <dt>PCM 前瞻</dt>
+                <dd>{health ? `已喂入 ${health.fedBufferedSeconds.toFixed(2)} s / 排队 ${health.queuedSeconds.toFixed(2)} s` : "等待数据"}</dd>
+                <dt>双耳空间图</dt>
+                <dd>{health
+                  ? `${health.binaural.activeBankCount} 个活动 bank；空间卷积 ${health.binaural.totalSpatialConvolutions}（${health.binaural.banks.map((bank) => `${bank.bank}: ${bank.spatialConvolutions}${bank.directPaths ? `，直通 ${bank.directPaths}` : ""}`).join("；") || "未建图"}）`
+                  : "等待图"}</dd>
+                <dt>请求输出延迟</dt>
+                <dd>{health
+                  ? `当前 ${Math.round(health.requestedOutputLatencySeconds * 1000)} ms / 下次 ${Math.round(health.nextRecommendedOutputLatencySeconds * 1000)} ms${health.nextRecommendedOutputLatencySeconds !== health.requestedOutputLatencySeconds ? "（下次生效）" : ""}`
+                  : "等待数据"}</dd>
+                <dt>解码实时倍率</dt>
+                <dd>{health ? `${health.decodeRealtimeMultiplier.toFixed(2)}×（5 秒滑窗，前瞻填满后会被节流）` : "等待数据"}</dd>
+                <dt>Worklet process</dt>
+                <dd>{health ? `均值 ${health.tick.processMeanMs.toFixed(3)} ms / 最大 ${health.tick.processMaxMs.toFixed(3)} ms` : "等待 tick"}</dd>
+                <dt>回调间隙</dt>
+                <dd>{health
+                  ? `累计 ${health.callbackGaps} 次；当前 ${health.tick.callbackGaps} 次 / 最大 ${health.tick.callbackGapMaxMs.toFixed(1)} ms`
+                  : "等待 tick"}</dd>
+                <dt>断供样本</dt>
+                <dd>{health
+                  ? `累计 ${health.underrunSamples}；当前 ${health.tick.underrunSamples}（拒绝 ${health.tick.rejectedBatches} frame / ${health.tick.rejectedSources} source）`
+                  : "等待 tick"}</dd>
                 <dt>诊断</dt>
                 <dd>{debug || "—"}</dd>
               </dl>

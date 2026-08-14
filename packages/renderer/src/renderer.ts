@@ -5,8 +5,8 @@
  *   AudioWorkletNode(sda-renderer, N-bus output)
  *     ├── "multichannel": → ctx.destination (N discrete channels)
  *     ├── "binaural":     → ChannelSplitter(N)
- *     │                     → 每主总线: ConvolverNode(stereo BRIR/HRIR mix)
- *     │                     → LFE 总线: 120Hz LP（耳机路径不额外 +10dB）→ 直送双耳
+ *     │                     → 当前逻辑布局的每条主总线: ConvolverNode(stereo BRIR/HRIR mix)
+ *     │                     → 当前逻辑布局的 LFE 总线: 120Hz LP（耳机路径不额外 +10dB）→ 直送双耳
  *     │                     → ChannelMerger(2) → ctx.destination
  *     └── "stereo":       → downmix gain matrix → merger(2) → destination
  *
@@ -79,7 +79,7 @@ const BINAURAL_LFE_PEAK_ATTACK_S = 0.003;
 const BINAURAL_LFE_PEAK_RELEASE_S = 0.1;
 
 const BINAURAL_BANKS = ["off", "near", "mid", "far"] as const;
-type BinauralBank = (typeof BINAURAL_BANKS)[number];
+export type BinauralBank = (typeof BINAURAL_BANKS)[number];
 const BINAURAL_NOT_INDICATED_DEFAULT: BinauralBank = "mid";
 const PCM_RING_SAMPLES = 1 << 18;
 
@@ -175,6 +175,21 @@ export interface RendererStats {
   callbackGapMaxMs?: number;
 }
 
+export interface BinauralBankHealth {
+  bank: BinauralBank;
+  /** Measured spatial convolution nodes. LFE and the `off` bank are excluded. */
+  spatialConvolutions: number;
+  /** Non-convolution direct paths, currently used by the `off` bank. */
+  directPaths: number;
+}
+
+export interface BinauralHealthTelemetry {
+  activeBankCount: number;
+  banks: readonly BinauralBankHealth[];
+  totalSpatialConvolutions: number;
+  totalDirectPaths: number;
+}
+
 export interface RendererOptions {
   mode?: OutputMode;
   layout?: readonly VirtualSpeaker[];
@@ -232,7 +247,7 @@ export class SpatialRenderer {
   /** Current logical-layout bus -> fixed worklet topology bus. Rebuilt only when
    * the layout changes, never while processing object motion. */
   private renderToTopology: Int16Array;
-  /** 固定的最大总线拓扑。AudioWorklet 与卷积图始终按它保持存活。 */
+  /** 固定的最大总线拓扑。AudioWorklet 保持存活；双耳后级只接当前布局使用的 bus。 */
   private readonly topology: readonly VirtualSpeaker[];
   mode: OutputMode;
   /** 三条常驻模式路径的最终增益，实时切换只对它们做交叉淡化。 */
@@ -250,10 +265,16 @@ export class SpatialRenderer {
   private peakGuard: AudioWorkletNode | null = null;
   private master: GainNode | null = null;
   private postNodes: AudioNode[] = [];
-  /** Per-bank binaural convolution nodes; branches are created only when used. */
-  private convs = new Map<BinauralBank, (ConvolverNode | null)[]>();
+  /** Per-bank binaural convolution nodes, keyed by fixed topology bus. */
+  private convs = new Map<BinauralBank, Map<number, ConvolverNode | null>>();
   private binauralMerger: ChannelMergerNode | null = null;
   private binauralLfeInput: GainNode | null = null;
+  /** Nodes owned only by the replaceable binaural bus graph. */
+  private binauralBusNodes: AudioNode[] = [];
+  /** Worklet output connections that must be explicitly detached on layout swap. */
+  private binauralBankSplitters = new Map<BinauralBank, ChannelSplitterNode>();
+  /** Bus identity sequence that owns the current replaceable binaural graph. */
+  private binauralBusKeySequence = "";
   private sources = new Map<string, SourceState>();
   private retiringSources = new Map<string, number>();
   private nextRetirementToken = 1;
@@ -412,14 +433,15 @@ export class SpatialRenderer {
     }
   }
 
-  /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头和卷积图继续
-   * 存活；所有源通过短增益斜坡迁移到固定最大总线中的新位置。 */
+  /** 改变逻辑布局而不重建 AudioContext/worklet。现有 PCM、播放头继续存活；
+   * 双耳图只重建当前布局实际使用的 bus，并立即断开旧节点。 */
   setLayout(layout: readonly VirtualSpeaker[]): void {
     if (layout === this.layout) return;
     this.layout = layout;
     this.updateRenderLayout();
     this.buildExpansion();
     this.updateMultichannelLayout();
+    this.rebuildBinauralBusGraph();
     this.updateDestinationChannelCount();
     for (const state of this.sources.values()) {
       this.applyGains(state, 2048);
@@ -491,7 +513,7 @@ export class SpatialRenderer {
   setBinauralMode(mode: BinauralMode): void {
     if (mode === this.binauralMode) return;
     this.binauralMode = mode;
-    this.buildBinauralBank(mode, this.topology.length);
+    this.buildBinauralBank(mode);
     const bank = BINAURAL_BANKS.indexOf(mode);
     for (const state of this.sources.values()) {
       if (!state.binauralMode) this.node?.port.postMessage({ type: "binauralMode", id: state.id, bank });
@@ -510,7 +532,7 @@ export class SpatialRenderer {
     state.binauralMode = mode;
     const bankName = binauralBank(mode, this.binauralMode);
     const bank = BINAURAL_BANKS.indexOf(bankName);
-    this.buildBinauralBank(bankName, this.topology.length);
+    this.buildBinauralBank(bankName);
     this.node?.port.postMessage({ type: "binauralMode", id, bank });
     return true;
   }
@@ -580,20 +602,23 @@ export class SpatialRenderer {
 
   /** 实时切换最终输出模式。三条后级图保持常驻，worklet/PCM/播放头不重建。 */
   setOutputMode(mode: OutputMode): void {
-    if (mode === this.mode || !this.modeGains.size) {
-      this.mode = mode;
-      return;
-    }
-    const now = this.ctx.currentTime;
-    const duration = 0.05;
-    for (const [id, gain] of this.modeGains) {
-      const target = id === mode ? 1 : 0;
-      gain.gain.cancelScheduledValues(now);
-      gain.gain.setValueAtTime(gain.gain.value, now);
-      gain.gain.linearRampToValueAtTime(target, now + duration);
+    if (mode === this.mode) return;
+    const graphReady = this.modeGains.size > 0;
+    if (graphReady) {
+      const now = this.ctx.currentTime;
+      const duration = 0.05;
+      for (const [id, gain] of this.modeGains) {
+        const target = id === mode ? 1 : 0;
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(gain.gain.value, now);
+        gain.gain.linearRampToValueAtTime(target, now + duration);
+      }
     }
     this.mode = mode;
     this.updateRenderLayout();
+    // A mode can select a different logical layout even when its speaker count
+    // is unchanged. Rebuild only if the fixed bus identity sequence changed.
+    this.rebuildBinauralBusGraph();
     // 床层扩展只属于物理多声道。输出模式切换后必须重推 gains，不能沿用
     // 旧模式的前宽/后环派生馈送。
     for (const state of this.sources.values()) this.applyGains(state, 2048);
@@ -605,9 +630,13 @@ export class SpatialRenderer {
 
   private teardownPostNodes(): void {
     this.outputGraphRevision++;
+    for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
     for (const n of this.postNodes) n.disconnect();
     this.postNodes = [];
     this.convs.clear();
+    this.binauralBusNodes = [];
+    this.binauralBankSplitters.clear();
+    this.binauralBusKeySequence = "";
     this.binauralMerger = null;
     this.binauralLfeInput = null;
     this.headphoneDry = null;
@@ -676,7 +705,7 @@ export class SpatialRenderer {
 
     this.buildMultichannelPath(n, createModeOutput("multichannel"));
     this.buildStereoPath(n, createModeOutput("stereo"));
-    this.buildBinauralPath(n, createModeOutput("binaural"));
+    this.buildBinauralPath(createModeOutput("binaural"));
     this.peakGuard?.connect(master);
     this.loadHeadphoneCompensation();
   }
@@ -800,49 +829,114 @@ export class SpatialRenderer {
     this.postNodes.push(merger);
   }
 
-  private buildBinauralBank(bank: BinauralBank, n: number): void {
+  /** Fixed worklet buses used by the current logical layout, including LFE. */
+  private activeBinauralBuses(): { topologyBus: number; speaker: VirtualSpeaker; layoutBus: number }[] {
+    const buses: { topologyBus: number; speaker: VirtualSpeaker; layoutBus: number }[] = [];
+    for (let layoutBus = 0; layoutBus < this.renderLayout.length; layoutBus++) {
+      const topologyBus = this.renderToTopology[layoutBus] ?? -1;
+      if (topologyBus >= 0) buses.push({ topologyBus, speaker: this.renderLayout[layoutBus]!, layoutBus });
+    }
+    return buses;
+  }
+
+  /** Fixed topology bus identities used by the current logical binaural layout. */
+  private currentBinauralBusKeySequence(): string {
+    return this.activeBinauralBuses()
+      .map(({ topologyBus }) => speakerBusKey(this.topology[topologyBus]!))
+      .join(",");
+  }
+
+  /** Disconnect only the replaceable bus branches. The worklet, source rings, and
+   * final binaural processing remain connected, so a layout change cannot reset
+   * the codec timeline or leak obsolete ConvolverNodes. */
+  private rebuildBinauralBusGraph(): void {
+    if (!this.binauralMerger) return;
+    const nextBusKeySequence = this.currentBinauralBusKeySequence();
+    if (nextBusKeySequence === this.binauralBusKeySequence) return;
+    for (const splitter of this.binauralBankSplitters.values()) this.node?.disconnect(splitter);
+    for (const node of this.binauralBusNodes) node.disconnect();
+    const retired = new Set(this.binauralBusNodes);
+    this.postNodes = this.postNodes.filter((node) => !retired.has(node));
+    this.binauralBusNodes = [];
+    this.binauralBankSplitters.clear();
+    this.convs.clear();
+    this.binauralBusKeySequence = nextBusKeySequence;
+    const activeBanks = new Set<BinauralBank>([this.binauralMode]);
+    for (const source of this.sources.values()) activeBanks.add(binauralBank(source.binauralMode, this.binauralMode));
+    for (const bank of activeBanks) this.buildBinauralBank(bank);
+  }
+
+  /** Current measured spatial convolution and direct-path topology for diagnostics. */
+  get binauralHealth(): BinauralHealthTelemetry {
+    const banks: BinauralBankHealth[] = [];
+    let totalSpatialConvolutions = 0;
+    let totalDirectPaths = 0;
+    for (const [bank, buses] of this.convs) {
+      let spatialConvolutions = 0;
+      let directPaths = 0;
+      for (const [topologyBus, convolver] of buses) {
+        if (convolver) spatialConvolutions++;
+        // `off` paths are direct stereo sends. Its LFE remains on the dedicated
+        // low-pass/LFE path, so it is neither a spatial convolution nor direct.
+        else if (bank === "off" && !this.topology[topologyBus]?.isLfe) directPaths++;
+      }
+      banks.push({ bank, spatialConvolutions, directPaths });
+      totalSpatialConvolutions += spatialConvolutions;
+      totalDirectPaths += directPaths;
+    }
+    return { activeBankCount: banks.length, banks, totalSpatialConvolutions, totalDirectPaths };
+  }
+
+  private trackBinauralBusNodes(...nodes: AudioNode[]): void {
+    this.binauralBusNodes.push(...nodes);
+    this.postNodes.push(...nodes);
+  }
+
+  private buildBinauralBank(bank: BinauralBank): void {
     if (!this.node || !this.binauralMerger || this.convs.has(bank)) return;
     const outputIndex = BINAURAL_BANKS.indexOf(bank);
-    const splitter = this.ctx.createChannelSplitter(n);
+    const splitter = this.ctx.createChannelSplitter(this.topology.length);
     this.node.connect(splitter, outputIndex);
-    const convs: (ConvolverNode | null)[] = [];
+    this.binauralBankSplitters.set(bank, splitter);
+    const convs = new Map<number, ConvolverNode | null>();
     const mode: BinauralMode = bank === "far" ? "far" : bank === "mid" ? "mid" : "near";
-    const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.topology, mode) : null;
-    for (let bus = 0; bus < n; bus++) {
-      const spk = this.topology[bus]!;
-      if (spk.isLfe) {
+    // Build measured buffers from logical speaker geometry, then connect them to
+    // their fixed worklet bus. This retains calibrated per-layout IR selection.
+    const busIrs = this.irSet && bank !== "off" ? buildBusIrs(this.ctx, this.irSet, this.renderLayout, mode) : null;
+    for (const { topologyBus, speaker, layoutBus } of this.activeBinauralBuses()) {
+      if (speaker.isLfe) {
         const lfeGain = this.ctx.createGain();
         const [lpIn, lpOut] = this.lr4("lowpass", LFE_LOWPASS_HZ);
-        splitter.connect(lpIn, bus);
+        splitter.connect(lpIn, topologyBus);
         lfeGain.gain.value = BINAURAL_LFE_INBAND_GAIN;
         lpOut.connect(lfeGain);
         if (this.binauralLfeInput) lfeGain.connect(this.binauralLfeInput);
-        this.postNodes.push(lpIn, lpOut, lfeGain);
-        convs.push(null);
+        this.trackBinauralBusNodes(lpIn, lpOut, lfeGain);
+        convs.set(topologyBus, null);
         continue;
       }
       if (bank === "off") {
         const direct = this.ctx.createGain();
         direct.gain.value = 0.5;
-        splitter.connect(direct, bus);
+        splitter.connect(direct, topologyBus);
         direct.connect(this.binauralMerger, 0, 0);
         direct.connect(this.binauralMerger, 0, 1);
-        this.postNodes.push(direct);
-        convs.push(null);
+        this.trackBinauralBusNodes(direct);
+        convs.set(topologyBus, null);
         continue;
       }
-      const ir = busIrs?.get(bus);
+      const ir = busIrs?.get(layoutBus);
       if (ir) {
         const conv = this.ctx.createConvolver();
         conv.normalize = false;
         conv.buffer = ir;
         const earSplit = this.ctx.createChannelSplitter(2);
-        splitter.connect(conv, bus);
+        splitter.connect(conv, topologyBus);
         conv.connect(earSplit);
         earSplit.connect(this.binauralMerger, 0, 0);
         earSplit.connect(this.binauralMerger, 1, 1);
-        this.postNodes.push(conv, earSplit);
-        convs.push(conv);
+        this.trackBinauralBusNodes(conv, earSplit);
+        convs.set(topologyBus, conv);
       } else {
         const panner = this.ctx.createPanner();
         panner.panningModel = "HRTF";
@@ -850,26 +944,26 @@ export class SpatialRenderer {
         panner.refDistance = 1;
         panner.maxDistance = 1;
         panner.rolloffFactor = 0;
-        const [x, y, z] = sphericalToWebAudio(spk);
+        const [x, y, z] = sphericalToWebAudio(speaker);
         panner.positionX.value = x;
         panner.positionY.value = y;
         panner.positionZ.value = z;
         const earSplit = this.ctx.createChannelSplitter(2);
-        splitter.connect(panner, bus);
+        splitter.connect(panner, topologyBus);
         panner.connect(earSplit);
         earSplit.connect(this.binauralMerger, 0, 0);
         earSplit.connect(this.binauralMerger, 1, 1);
-        this.postNodes.push(panner, earSplit);
-        convs.push(null);
+        this.trackBinauralBusNodes(panner, earSplit);
+        convs.set(topologyBus, null);
       }
     }
     this.convs.set(bank, convs);
-    this.postNodes.push(splitter);
+    this.trackBinauralBusNodes(splitter);
   }
 
   /** Per-mode double-ear rendering. The worklet exposes four 18-channel
    * outputs, avoiding the browser's single-node channel limit. */
-  private buildBinauralPath(n: number, output: GainNode): void {
+  private buildBinauralPath(output: GainNode): void {
     const merger = this.ctx.createChannelMerger(2);
     const makeup = this.ctx.createGain();
     makeup.gain.value = BINAURAL_MAKEUP_GAIN;
@@ -877,6 +971,7 @@ export class SpatialRenderer {
     if (!peakGuard) throw new Error("SpatialRenderer.init() peak guard missing");
 
     this.binauralMerger = merger;
+    this.binauralBusKeySequence = this.currentBinauralBusKeySequence();
     const lfeSum = this.ctx.createGain();
     const lfePeak = this.ctx.createDynamicsCompressor();
     const lfeOut = this.ctx.createGain();
@@ -894,7 +989,7 @@ export class SpatialRenderer {
     this.postNodes.push(lfeSum, lfePeak, lfeOut);
     const activeBanks = new Set<BinauralBank>([this.binauralMode]);
     for (const source of this.sources.values()) activeBanks.add(binauralBank(source.binauralMode, this.binauralMode));
-    for (const bank of activeBanks) this.buildBinauralBank(bank, n);
+    for (const bank of activeBanks) this.buildBinauralBank(bank);
     let finalBinaural: AudioNode = merger;
     const compensationSplit = this.ctx.createChannelSplitter(2);
     const compensationMerge = this.ctx.createChannelMerger(2);
@@ -1114,6 +1209,10 @@ export class SpatialRenderer {
 
   startAt(samplePos: number): void {
     const origin = Math.trunc(samplePos);
+    // Keep the main-thread cursor coherent with the worklet immediately after a
+    // renderer recreation. Otherwise it remains at zero until the first tick,
+    // briefly making a nonzero codec-timeline restart appear to jump backwards.
+    this.consumedSamples = origin;
     this.node?.port.postMessage({ type: "start", origin });
     this.peakGuard?.port.postMessage({ type: "start", origin });
   }

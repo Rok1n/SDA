@@ -15,6 +15,8 @@ ipcRenderer.on("sda:open-file", (_event, filePath) => {
 contextBridge.exposeInMainWorld("sdaDesktop", {
   electron3D,
   rendererMode,
+  getOutputLatencySeconds: () => ipcRenderer.sendSync("sda:get-output-latency-seconds"),
+  setOutputLatencySeconds: (seconds) => ipcRenderer.sendSync("sda:set-output-latency-seconds", seconds),
   pickFile: () => ipcRenderer.invoke("sda:pick-file"),
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),
   readSlice: (id, offset, length) => ipcRenderer.invoke("sda:read-slice", id, offset, length),

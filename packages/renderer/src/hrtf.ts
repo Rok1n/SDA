@@ -235,9 +235,10 @@ function argmaxAbs(x: Float32Array, limit: number): number {
 
 /**
  * 按模式把干 HRIR 与湿 BRIR 混合成一条 IR：
- *   IR = (1-w)·HRIR + w·BRIR
- * 未校准的旧资产在运行时按直达峰兼容对齐；calibration v1 资产已离线按双耳共同
- * 到达时间对齐，运行时保持原样，再重采样到 ctx 速率。
+ *   IR = dry + w·(wet - dry)
+ * 未校准的旧资产在运行时按直达峰兼容对齐；校准资产已离线按双耳共同
+ * 到达时间对齐，并将 wet 构造成 dry 加房间 residual。因此无论模式如何，
+ * 校准后的直达路径都保持 dry 的标尺，只有已校准的房间 residual 随 w 改变。
  */
 export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinauralIr, wet: number): AudioBuffer {
   const w = Math.max(0, Math.min(1, wet));
@@ -264,6 +265,9 @@ export function mixIrForWet(ctx: AudioContext, set: BinauralIrSet, raw: RawBinau
   const outLen = wetL.length;
   const L = new Float32Array(outLen);
   const R = new Float32Array(outLen);
+  // Crossfade dry HRIR and wet BRIR. Keep the established rendering behavior
+  // while the calibrated residual-mix path is validated on actual programme
+  // material, including non-native AudioContext sample rates.
   for (let i = 0; i < dryL.length; i++) {
     const j = i + shift;
     if (j >= 0 && j < outLen) {
