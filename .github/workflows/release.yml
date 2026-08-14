@@ -52,6 +52,22 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
+      - name: Name dual-arch Windows installer
+        shell: pwsh
+        run: |
+          $version = (Get-Content apps/desktop/package.json | ConvertFrom-Json).version
+          $source = "apps/desktop/dist/SDA Setup $version.exe"
+          $destination = "apps/desktop/dist/SDA Setup $version-universal.exe"
+
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "Expected dual-arch NSIS installer was not produced: $source"
+          }
+          if (Test-Path -LiteralPath $destination) {
+            throw "Refusing to overwrite existing installer: $destination"
+          }
+
+          Rename-Item -LiteralPath $source -NewName "SDA Setup $version-universal.exe"
+
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
         with:
