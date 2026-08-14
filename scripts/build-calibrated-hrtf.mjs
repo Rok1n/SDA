@@ -25,6 +25,16 @@ const ROOM_DECORRELATION_MAXIMUM_HZ = 16000;
 const ROOM_DECORRELATION_SECTIONS = 8;
 const ROOM_DECORRELATION_MAX_ENERGY_TRIM_DB = 0.25;
 const MAX_SPEAKER_LEVEL_GAIN_DB = 3;
+/** v3 双侧对称化：KU100 头模左右耳/测量摆放的反对称偏差会让同一对象在 +θ 与 -θ
+ *  经 VBAP 相干叠加后同侧耳能量差最高达 4.4dB（±80°），听感就是 7.1.x/9.1.x
+ *  左右不平衡。物理上正前方的头对 ±θ 应有镜像响应，所以每个镜像对按
+ *  相关最优的公共符号 + 公共整数位移对齐后取平均，再镜像给两侧使用。
+ *  只用一个左右共用符号/位移/标量，不单独动任何一只耳朵，ITD/ILD 的
+ *  方向性结构保留（每方向仍有自己的 ITD/ILD——镜像对均值）。 */
+const SYMMETRY_VERSION = "sda-ku100-bilateral-v1";
+const SYMMETRY_WINDOW = [COMMON_ARRIVAL_SAMPLE, COMMON_ARRIVAL_SAMPLE + 192];
+const SYMMETRY_MAX_SHIFT_SAMPLES = 8;
+const SYMMETRY_CENTER_MAX_SHIFT_SAMPLES = 4;
 
 const args = process.argv.slice(2);
 function option(name, fallback = null) {
@@ -374,6 +384,74 @@ for (const row of rows) {
   }
 }
 
+function stereoSymmetryScore(a, b, sign, shift, perEarLen) {
+  const [from, to] = SYMMETRY_WINDOW;
+  let dot = 0, energyA = 0, energyB = 0;
+  for (const offset of [0, perEarLen]) {
+    for (let index = from; index < to; index++) {
+      const va = a[offset + index] ?? 0;
+      const vb = sign * (b[offset + index - shift] ?? 0);
+      dot += va * vb;
+      energyA += va * va;
+      energyB += vb * vb;
+    }
+  }
+  return dot / Math.sqrt(energyA * energyB + 1e-18);
+}
+
+function mirrorStereo(data, perEarLen) {
+  const output = new Float64Array(data.length);
+  output.set(data.subarray(perEarLen), 0);
+  output.set(data.subarray(0, perEarLen), perEarLen);
+  return output;
+}
+
+/** 镜像对对齐平均：B=mirror(minus)，搜公共 sign/shift 使直达窗相关最大，
+ *  avg=0.5·(plus + s·shift(B))，-θ 侧用 mirror(avg)。 */
+function symmetrizePair(plus, minus, perEarLen, maxShift) {
+  const mirroredMinus = mirrorStereo(minus, perEarLen);
+  let best = { score: -2, sign: 1, shift: 0 };
+  for (const sign of [1, -1]) {
+    for (let shift = -maxShift; shift <= maxShift; shift++) {
+      const score = stereoSymmetryScore(plus, mirroredMinus, sign, shift, perEarLen);
+      if (score > best.score) best = { score, sign, shift };
+    }
+  }
+  const avg = new Float64Array(plus.length);
+  for (let index = 0; index < plus.length; index++) {
+    avg[index] = 0.5 * ((plus[index] ?? 0) + best.sign * (mirroredMinus[index - best.shift] ?? 0));
+  }
+  return { avg, mirrored: mirrorStereo(avg, perEarLen), ...best };
+}
+
+/** 正中方向：双耳都给左右平均 IR。头朝正前时两耳物理上应收到相同响应，
+ *  实测偏差是头模/摆放不对称——是人声结像倾斜的直接来源。 */
+function symmetrizeCenter(data, perEarLen, maxShift) {
+  const mirrored = mirrorStereo(data, perEarLen);
+  let best = { score: -2, sign: 1, shift: 0 };
+  for (const sign of [1, -1]) {
+    for (let shift = -maxShift; shift <= maxShift; shift++) {
+      const score = stereoSymmetryScore(data, mirrored, sign, shift, perEarLen);
+      if (score > best.score) best = { score, sign, shift };
+    }
+  }
+  const output = new Float64Array(data.length);
+  for (let index = 0; index < perEarLen; index++) {
+    output[index] = 0.5 * ((data[index] ?? 0) + best.sign * (mirrored[index - best.shift] ?? 0));
+  }
+  output.set(output.subarray(0, perEarLen), perEarLen);
+  return { avg: output, ...best };
+}
+
+/** 对称化后把每方向 dry/wet 分别公共缩放回对称化前的立体声能量，
+ *  保持 v2 逐音箱电平校准不变（公共标量，不动 ILD/ITD）。 */
+function rescaleToEnergy(stereo, targetEnergy) {
+  const current = stereoEnergy(stereo);
+  const trimDb = energyDb(targetEnergy) - energyDb(current);
+  scaleStereo(stereo, gainFromDb(trimDb));
+  return trimDb;
+}
+
 const earlyRoomStartSample = COMMON_ARRIVAL_SAMPLE + Math.round(ROOM_GATE_END_MS * sampleRate / 1000);
 const earlyRoomEndSample = COMMON_ARRIVAL_SAMPLE + Math.round(50 * sampleRate / 1000);
 const prepared = rows.map((row) => {
@@ -437,7 +515,7 @@ const targetRoomEarlyEnergyDb = median(prepared.map((entry) => entry.roomEarlyEn
 
 for (const entry of prepared) {
   const { dryAligned, tail } = entry;
-  const { row, dryBeforeGain, dryEnergyDbBeforeGain, dryGainDb, filteredWetAnalysis } = entry;
+  const { row, dryGainDb } = entry;
   const roomGainDb = targetRoomEarlyEnergyDb - entry.roomEarlyEnergyDb;
   if (Math.abs(roomGainDb) > MAX_SPEAKER_LEVEL_GAIN_DB + 1e-9) {
     throw new Error(`房间residual校准超过±3dB ${row.position.azimuth}/${row.position.elevation}: ${roomGainDb.toFixed(2)}dB`);
@@ -460,15 +538,167 @@ for (const entry of prepared) {
       ...decorrelated.provenance,
     };
   }
-  const baselineWetAnalysis = analyze({ ...combineWet(dryAligned, tail), sampleRate }, "wet");
-  const wetOutput = combineWet(dryAligned, roomTailOutput);
+  entry.baselineWetAnalysis = analyze({ ...combineWet(dryAligned, tail), sampleRate }, "wet");
+  entry.preSymmetryWet = combineWet(dryAligned, roomTailOutput);
+  entry.finalDry = dryAligned;
+  entry.finalTail = roomTailOutput;
+  entry.tailEnergyBefore = stereoEnergy(roomTailOutput);
+  entry.roomGainDb = roomGainDb;
+  entry.roomTailDecorrelation = roomTailDecorrelation;
+  dryTotalGains.push(dryGainDb);
+  wetTotalGains.push(roomGainDb);
+}
 
+// ---- v3 双侧对称化（在 v2 电平/TOF/房间校准全部完成后进行） ----
+// 设计约束：
+// 1) dry 与房间尾声共用同一组 sign/shift（取自 dry 直达窗的相关搜索）。
+// 2) dry 与尾声分别电平恢复：尾声是扩散场，镜像对尾声互不相关，直接平均会
+//    损失约 3dB 房间能量——尾声单独缩放回对称化前能量，dry 缩放回 dry 能量，
+//    各自保持 v2 校准目标；尾声在房间门前为零，wet 直达前缀仍与 dry 逐样本一致。
+// 3) 对称化后按既有 energyCentroidTof 机制再做一次双耳公共整数 shift（dry/尾声
+//    同一 shift），把直达能量质心重新对齐到共同目标，TOF 离散回到 ≤1 sample。
+function interleave(stereo) {
+  const output = new Float64Array(stereo.left.length * 2);
+  output.set(stereo.left, 0);
+  output.set(stereo.right, stereo.left.length);
+  return output;
+}
+function deinterleave(data) {
+  const perEarLen = data.length >> 1;
+  return {
+    left: Float64Array.from(data.subarray(0, perEarLen)),
+    right: Float64Array.from(data.subarray(perEarLen)),
+  };
+}
+function symmetrizedPairOutputs(plus, minus, sign, shift, perEarLen) {
+  const mirroredMinus = mirrorStereo(interleave(minus), perEarLen);
+  const base = interleave(plus);
+  const avg = new Float64Array(base.length);
+  for (let index = 0; index < base.length; index++) {
+    avg[index] = 0.5 * ((base[index] ?? 0) + sign * (mirroredMinus[index - shift] ?? 0));
+  }
+  return { plus: deinterleave(avg), minus: deinterleave(mirrorStereo(avg, perEarLen)) };
+}
+const finalByKey = new Map(prepared.map((entry) => [`${entry.row.position.azimuth}/${entry.row.position.elevation}`, entry]));
+const symmetryByKey = new Map();
+const SYMMETRY_PAIRS = [[30, 0], [60, 0], [100, 0], [110, 0], [140, 0], [45, 45], [90, 45], [135, 45]];
+for (const [azimuth, elevation] of SYMMETRY_PAIRS) {
+  const plus = finalByKey.get(`${azimuth}/${elevation}`);
+  const minus = finalByKey.get(`-${azimuth}/${elevation}`);
+  if (!plus || !minus) throw new Error(`镜像对缺失 ±${azimuth}/${elevation}`);
+  const perEarLen = plus.finalDry.left.length;
+  const alignment = symmetrizePair(interleave(plus.finalDry), interleave(minus.finalDry), perEarLen, SYMMETRY_MAX_SHIFT_SAMPLES);
+  const dryOutputs = symmetrizedPairOutputs(plus.finalDry, minus.finalDry, alignment.sign, alignment.shift, perEarLen);
+  const tailOutputs = symmetrizedPairOutputs(plus.finalTail, minus.finalTail, alignment.sign, alignment.shift, plus.finalTail.left.length);
+  // 镜像对共用电平恢复：两侧同一增益（几何均值目标），保证输出资产逐耳精确镜像。
+  // dry 用全长能量；尾声用 4-50ms 房间窗能量（v2 房间 residual 校准的同一窗口）。
+  const dryPairTarget = Math.sqrt(stereoEnergy(plus.finalDry) * stereoEnergy(minus.finalDry));
+  const tailWindow = [earlyRoomStartSample, earlyRoomEndSample];
+  const tailPairTarget = Math.sqrt(
+    stereoRangeEnergy(plus.finalTail, ...tailWindow) * stereoRangeEnergy(minus.finalTail, ...tailWindow),
+  );
+  for (const [entry, dryOutput, tailOutput, role, partner] of [
+    [plus, dryOutputs.plus, tailOutputs.plus, "pair-average", minus],
+    [minus, dryOutputs.minus, tailOutputs.minus, "pair-average-mirrored", plus],
+  ]) {
+    entry.finalDry = dryOutput;
+    entry.finalTail = tailOutput;
+    const trimDb = rescaleToEnergy(entry.finalDry, dryPairTarget);
+    const tailTrimDb = (() => {
+      const current = stereoRangeEnergy(entry.finalTail, ...tailWindow);
+      const trim = energyDb(tailPairTarget) - energyDb(current);
+      scaleStereo(entry.finalTail, gainFromDb(trim));
+      return trim;
+    })();
+    symmetryByKey.set(`${entry.row.position.azimuth}/${entry.row.position.elevation}`, {
+      role,
+      pairWith: `${partner.row.position.azimuth}/${elevation}`,
+      sign: alignment.sign,
+      shiftSamples: alignment.shift,
+      directWindowCorrelation: alignment.score,
+      energyTrimDb: trimDb,
+      roomTailTrimDb: tailTrimDb,
+    });
+  }
+}
+{
+  const center = finalByKey.get("0/0");
+  if (!center) throw new Error("缺正中方向 0/0");
+  const perEarLen = center.finalDry.left.length;
+  const alignment = symmetrizeCenter(interleave(center.finalDry), perEarLen, SYMMETRY_CENTER_MAX_SHIFT_SAMPLES);
+  const centerWith = (stereo, earLen) => {
+    const data = interleave(stereo);
+    const mirrored = mirrorStereo(data, earLen);
+    const output = new Float64Array(data.length);
+    for (let index = 0; index < earLen; index++) {
+      output[index] = 0.5 * ((data[index] ?? 0) + alignment.sign * (mirrored[index - alignment.shift] ?? 0));
+    }
+    output.set(output.subarray(0, earLen), earLen);
+    return deinterleave(output);
+  };
+  const dryEnergyBefore = stereoEnergy(center.finalDry);
+  const tailWindowEnergyBefore = stereoRangeEnergy(center.finalTail, earlyRoomStartSample, earlyRoomEndSample);
+  center.finalDry = centerWith(center.finalDry, perEarLen);
+  center.finalTail = centerWith(center.finalTail, center.finalTail.left.length);
+  const trimDb = rescaleToEnergy(center.finalDry, dryEnergyBefore);
+  const tailTrimDb = (() => {
+    const current = stereoRangeEnergy(center.finalTail, earlyRoomStartSample, earlyRoomEndSample);
+    const trim = energyDb(tailWindowEnergyBefore) - energyDb(current);
+    scaleStereo(center.finalTail, gainFromDb(trim));
+    return trim;
+  })();
+  symmetryByKey.set("0/0", {
+    role: "center-average",
+    sign: alignment.sign,
+    shiftSamples: alignment.shift,
+    directWindowCorrelation: alignment.score,
+    energyTrimDb: trimDb,
+    roomTailTrimDb: tailTrimDb,
+  });
+}
+// 对称化后重新对齐直达能量质心（双耳公共、dry/尾声同一整数 shift）
+for (const entry of prepared) {
+  const centroid = directEnergyCentroid(entry.finalDry);
+  entry.postSymmetryShiftSamples = Math.round(targetDirectEnergyCentroidSample - centroid);
+  entry.finalDry = shiftStereo(entry.finalDry, entry.postSymmetryShiftSamples);
+  entry.finalTail = shiftStereo(entry.finalTail, entry.postSymmetryShiftSamples);
+  // 镜像对两侧的 v2 质心 shift 不同，平均会把伙伴方向更早的门控淡入混进来，
+  // 让尾声在本方向记录的门控边界之前就有非零内容（wet 直达前缀契约失败）。
+  // 在本方向最终边界上重新硬门控：边界之前尾声必须为零，wet 直达前缀逐样本等于 dry。
+  const gateBoundary = COMMON_ARRIVAL_SAMPLE
+    + Math.round(ROOM_GATE_START_MS * sampleRate / 1000)
+    + entry.energyCentroidShiftSamples
+    + entry.postSymmetryShiftSamples;
+  for (let index = 0; index <= gateBoundary && index < entry.finalTail.left.length; index++) {
+    entry.finalTail.left[index] = 0;
+    entry.finalTail.right[index] = 0;
+  }
+}
+
+rmSync(outputDirectory, { recursive: true, force: true });
+mkdirSync(outputDirectory, { recursive: true });
+if (process.env.SDA_DEBUG_SYMMETRY) {
+  for (const entry of prepared) {
+    const tail = entry.finalTail;
+    let first = -1;
+    for (let index = 0; index < tail.left.length; index++) {
+      if (tail.left[index] !== 0 || tail.right[index] !== 0) { first = index; break; }
+    }
+    console.log(`tail-onset ${entry.row.position.azimuth}/${entry.row.position.elevation}: ${first} postShift=${entry.postSymmetryShiftSamples}`);
+  }
+}
+for (const entry of prepared) {
+  const { row, dryBeforeGain, dryEnergyDbBeforeGain, dryGainDb, filteredWetAnalysis } = entry;
+  const roomGainDb = entry.roomGainDb;
+  const roomTailDecorrelation = entry.roomTailDecorrelation;
+  const baselineWetAnalysis = entry.baselineWetAnalysis;
+  const dryAligned = entry.finalDry;
+  const wetOutput = combineWet(entry.finalDry, entry.finalTail);
+  const preSymmetryWetAnalysis = analyze({ ...entry.preSymmetryWet, sampleRate }, "wet");
   const dryBytes = stereoBytes(dryAligned);
   const wetBytes = stereoBytes(wetOutput);
   writeFileSync(resolve(outputDirectory, row.position.dry), dryBytes);
   writeFileSync(resolve(outputDirectory, row.position.wet), wetBytes);
-  dryTotalGains.push(dryGainDb);
-  wetTotalGains.push(roomGainDb);
 
   const dryOutputAnalysis = analyze({ ...dryAligned, sampleRate }, "dry");
   const wetOutputAnalysis = analyze({ ...wetOutput, sampleRate }, "wet");
@@ -491,10 +721,12 @@ for (const entry of prepared) {
         energyCentroidTof: {
           beforeSample: entry.directEnergyCentroidSample,
           targetSample: targetDirectEnergyCentroidSample,
-          commonShiftSamples: entry.energyCentroidShiftSamples,
-          afterSample: entry.directEnergyCentroidOutputSample,
+          commonShiftSamples: entry.energyCentroidShiftSamples + entry.postSymmetryShiftSamples,
+          v2ShiftSamples: entry.energyCentroidShiftSamples,
+          postSymmetryShiftSamples: entry.postSymmetryShiftSamples,
+          afterSample: directEnergyCentroid(dryAligned),
         },
-        commonDelaySamples: entry.dryCoarseShiftSamples + entry.energyCentroidShiftSamples,
+        commonDelaySamples: entry.dryCoarseShiftSamples + entry.energyCentroidShiftSamples + entry.postSymmetryShiftSamples,
         calibrationGainDb: dryGainDb,
         fullHrirEnergyDbBeforeGain: dryEnergyDbBeforeGain,
         fullHrirEnergyTargetDb: targetDirectEnergyDb,
@@ -507,9 +739,9 @@ for (const entry of prepared) {
         coarseAlignmentShiftSamples: entry.wetCoarseShiftSamples,
         energyCentroidTof: {
           targetSample: targetDirectEnergyCentroidSample,
-          commonShiftSamples: entry.energyCentroidShiftSamples,
+          commonShiftSamples: entry.energyCentroidShiftSamples + entry.postSymmetryShiftSamples,
         },
-        commonDelaySamples: entry.wetCoarseShiftSamples + entry.energyCentroidShiftSamples,
+        commonDelaySamples: entry.wetCoarseShiftSamples + entry.energyCentroidShiftSamples + entry.postSymmetryShiftSamples,
         calibrationGainDb: roomGainDb,
         roomEarlyEnergyDbBeforeGain: entry.roomEarlyEnergyDb,
         roomEarlyEnergyTargetDb: targetRoomEarlyEnergyDb,
@@ -525,10 +757,10 @@ for (const entry of prepared) {
             totalEnergyDb: baselineWetAnalysis.windows.totalEnergyDb,
           },
           outputMetrics: {
-            c50Db: wetOutputAnalysis.windows.c50Db,
-            c80Db: wetOutputAnalysis.windows.c80Db,
-            directToLateDb: wetOutputAnalysis.windows.directToLateDb,
-            totalEnergyDb: wetOutputAnalysis.windows.totalEnergyDb,
+            c50Db: preSymmetryWetAnalysis.windows.c50Db,
+            c80Db: preSymmetryWetAnalysis.windows.c80Db,
+            directToLateDb: preSymmetryWetAnalysis.windows.directToLateDb,
+            totalEnergyDb: preSymmetryWetAnalysis.windows.totalEnergyDb,
           },
         },
         outputOnset: wetOutputAnalysis.onset,
@@ -538,6 +770,7 @@ for (const entry of prepared) {
       dry: { tapCountPerEar: DRY_TAPS, sha256: sha256(dryBytes) },
       wet: { tapCountPerEar: WET_TAPS, sha256: sha256(wetBytes) },
     },
+    symmetry: symmetryByKey.get(`${row.position.azimuth}/${row.position.elevation}`),
   });
 }
 
@@ -552,7 +785,7 @@ for (let index = 0; index < positions.length; index++) {
 
 const manifest = {
   ...sourceManifest,
-  calibrationVersion: 2,
+  calibrationVersion: 3,
   processing: {
     dryTapLimit: DRY_TAPS,
     wetTapLimit: WET_TAPS,
@@ -560,12 +793,22 @@ const manifest = {
     calibrated: true,
     runtimeEnergyNormalization: false,
     directPathModel: "target HRIR plus calibrated BRIR room tail",
-    note: "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, and deterministic decorrelation only for reused BRIR room tails; no layout- or programme-specific EQ.",
+    note: "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ.",
   },
   calibration: {
-    algorithm: "sda-ku100-room-v2",
+    algorithm: "sda-ku100-room-v3",
     sampleRate,
     commonArrivalSample: COMMON_ARRIVAL_SAMPLE,
+    bilateralSymmetry: {
+      version: SYMMETRY_VERSION,
+      scope: "every mirror pair ±az/el plus the 0/0 centre direction",
+      windowSamples: SYMMETRY_WINDOW,
+      maxShiftSamples: SYMMETRY_MAX_SHIFT_SAMPLES,
+      centerMaxShiftSamples: SYMMETRY_CENTER_MAX_SHIFT_SAMPLES,
+      commonLeftRightSignShift: true,
+      energyPreservedPerDirection: true,
+      rationale: "KU100 head/placement asymmetry made correlated VBAP speaker pairs sum unevenly between sides (up to 4.4dB at ±80°). Mirror-pair averaging with correlation-optimal common sign/shift restores the physical bilateral symmetry of a frontal head; each direction keeps its own ITD/ILD (the pair mean).",
+    },
     energyCentroidTof: {
       metric: "stereo direct-energy time centroid",
       targetSample: targetDirectEnergyCentroidSample,

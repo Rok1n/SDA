@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SdaPlayer, type BinauralRenderMetadata, type VisualObject } from "@sda/player";
+import { SdaPlayer, type BinauralRenderMetadata, type ProgramLoudnessMetadata, type VisualObject } from "@sda/player";
 import {
   availableHeadphoneCompensationProfiles,
   registerLocalHeadphoneCompensation,
@@ -73,6 +73,7 @@ export function App() {
   const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(
     () => localStorage.getItem("sda-volume-balance-enabled") === "true",
   );
+  const [programLoudness, setProgramLoudness] = useState<ProgramLoudnessMetadata | null>(null);
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
     const readBand = (band: keyof BinauralEqBands) => {
       const value = Number(localStorage.getItem(`sda-binaural-eq-${band}-db`));
@@ -105,6 +106,7 @@ export function App() {
             : undefined;
           coverUrlRef.current = coverUrl ?? null;
           setTrack({ ...t, coverUrl, title: t.title ?? fileNameRef.current ?? undefined });
+          setProgramLoudness(null);
         },
         onDecodedFormat: ({ rawBedLabels, bedLabels, objectChannels }) => setTrack((current) => current && { ...current, rawBedLabels, bedLabels, objectChannels }),
         onBinauralMetadata: setBinauralMetadata,
@@ -114,6 +116,7 @@ export function App() {
           if (t === 0 || t - lastDiagnosticUpdateRef.current >= 0.2) {
             lastDiagnosticUpdateRef.current = t;
             setDiagnosticObjects(objs);
+            setProgramLoudness(playerRef.current?.programLoudnessInfo() ?? null);
           }
           setPosition(t);
           const p = playerRef.current;
@@ -500,7 +503,7 @@ export function App() {
             </div>
             <fieldset className="settings-group" disabled={mode === "multichannel"}>
               <legend>输出</legend>
-              <label className="settings-switch" title="使用 Dolby dialnorm / dialogue normalization 做节目级静态衰减，不启用动态范围压缩">
+              <label className="settings-switch" title="Dolby 对话归一化（dialnorm，ETSI TS 102 366 / ATSC A/52）：把节目对白响度对齐到 -31 LUFS 参考，只衰减过响的节目（dialnorm ≤ 31 故增益恒 ≤ 0 dB），不启用 DRC 动态范围压缩。作用于双耳与立体声输出；无响度元数据的码流不受影响。">
                 <span>音量平衡</span>
                 <input
                   type="checkbox"
@@ -597,6 +600,10 @@ export function App() {
                   : `虚拟 ${layoutId === "auto" ? detectedLayout ?? "7.1.4" : layoutId} → ${mode === "binaural" ? "耳机 L/R" : "立体声 L/R"}`}</dd>
                 <dt>容器</dt>
                 <dd>{track.container}</dd>
+                <dt>响度</dt>
+                <dd>{programLoudness
+                  ? `对白 ${programLoudness.dialogueLevelDb} LUFS → 目标 ${programLoudness.targetDb} LUFS（${volumeBalanceEnabled ? `平衡中 ${programLoudness.gainDb} dB` : "平衡关闭"}）`
+                  : "无响度元数据"}</dd>
                 <dt>播放</dt>
                 <dd>{position.toFixed(1)} s</dd>
                 <dt>诊断</dt>

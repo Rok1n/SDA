@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "calibrationVersion": 2,
+  "calibrationVersion": 3,
   "sampleRate": 48000,
   "source": {
     "name": "SADIE II Database V2.2, D1 KU100",
@@ -30,7 +30,7 @@
     "calibrated": true,
     "runtimeEnergyNormalization": false,
     "directPathModel": "target HRIR plus calibrated BRIR room tail",
-    "note": "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, and deterministic decorrelation only for reused BRIR room tails; no layout- or programme-specific EQ."
+    "note": "One KU100 room/listening position. Per-speaker common arrival, direct reference level, low-resolution room-response correction, deterministic decorrelation only for reused BRIR room tails, and bilateral mirror-pair symmetrization (common sign/shift/scalar only); no layout- or programme-specific EQ."
   },
   "positions": [
     {
@@ -81,18 +81,20 @@
             "beforeSample": 177.18103798286748,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": -7,
-            "afterSample": 170.20736420354626
+            "v2ShiftSamples": -7,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.71436159448842
           },
           "commonDelaySamples": 63,
           "calibrationGainDb": -0.06143414353439092,
           "fullHrirEnergyDbBeforeGain": 0.39946430358980856,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.3380301600554161,
+          "fullHrirEnergyDbOutput": 0.3380301600554125,
           "outputOnset": {
-            "leftSample": 135,
+            "leftSample": 108,
             "rightSample": 108,
-            "commonSample": 121.5,
-            "itdSamples": 27
+            "commonSample": 108,
+            "itdSamples": 0
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 0.2846495777587057
@@ -324,10 +326,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 143,
-            "rightSample": 142,
-            "commonSample": 142.5,
-            "itdSamples": 1
+            "leftSample": 145,
+            "rightSample": 145,
+            "commonSample": 145,
+            "itdSamples": 0
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.5751987790580255
@@ -336,12 +338,20 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "d05e1a3b0d7eac9e23563c963662b4b37a4929e92cdb84b89501cbcafb046516"
+          "sha256": "c36c91acb672e8ca634e9d285e20c54123549e44d7a3bfe03824ee4c26062486"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "2aee213a524ab8a2559e7e048c3311974aafc76c297c346a6602e0bf11cda094"
+          "sha256": "c476270675f748f022ab8763598544bc8c37f0d44299572de83094d633d329d6"
         }
+      },
+      "symmetry": {
+        "role": "center-average",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.7968113102070716,
+        "energyTrimDb": 0.466570958123665,
+        "roomTailTrimDb": 2.246091991615062
       }
     },
     {
@@ -392,18 +402,20 @@
             "beforeSample": 169.88103107928924,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": 0,
-            "afterSample": 169.88103107928924
+            "v2ShiftSamples": 0,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.90313526542494
           },
           "commonDelaySamples": 68,
           "calibrationGainDb": -0.7301746544327381,
           "fullHrirEnergyDbBeforeGain": 1.0682048144881557,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.33803016005541875,
+          "fullHrirEnergyDbOutput": 0.3380301600554232,
           "outputOnset": {
-            "leftSample": 139,
+            "leftSample": 129,
             "rightSample": 118,
-            "commonSample": 128.5,
-            "itdSamples": 21
+            "commonSample": 123.5,
+            "itdSamples": 11
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": -0.3840909331396415
@@ -635,10 +647,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 147,
+            "leftSample": 141,
             "rightSample": 154,
-            "commonSample": 150.5,
-            "itdSamples": -7
+            "commonSample": 147.5,
+            "itdSamples": -13
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.005391050152997678
@@ -647,12 +659,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "5b419b0daac2f63d5ed4a1ceb17d0862d5ad0d848648567bdad31525aa25c8cd"
+          "sha256": "1e3ac631fcd723256f3d4b11b141cffa3fcea583b0d42c0d086b9a4f1a8eedab"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "9c90c58a759dc45d31fa22813cd3b1865fe7006ee3890f3e09980b6bf0d54731"
+          "sha256": "fc7d4f4997bd0e7ae7048495593a5547f8ab2ec43a2f1fac6ea35b857fdf3931"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-30/0",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.8445477889174202,
+        "energyTrimDb": 0.3516747412128217,
+        "roomTailTrimDb": 2.4550937019341177
       }
     },
     {
@@ -703,18 +724,20 @@
             "beforeSample": 177.15756625659603,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": -7,
-            "afterSample": 170.20925570525972
+            "v2ShiftSamples": -7,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.903135265425
           },
           "commonDelaySamples": 69,
           "calibrationGainDb": -0.7457466223572677,
           "fullHrirEnergyDbBeforeGain": 1.0837767824126854,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.33803016005541786,
+          "fullHrirEnergyDbOutput": 0.3380301600554232,
           "outputOnset": {
-            "leftSample": 119,
-            "rightSample": 123,
-            "commonSample": 121,
-            "itdSamples": -4
+            "leftSample": 118,
+            "rightSample": 129,
+            "commonSample": 123.5,
+            "itdSamples": -11
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": -0.3996629010641711
@@ -946,10 +969,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 155,
+            "leftSample": 154,
             "rightSample": 141,
-            "commonSample": 148,
-            "itdSamples": 14
+            "commonSample": 147.5,
+            "itdSamples": 13
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.28307547530585886
@@ -958,12 +981,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "785531a99673322411048eddb2c09e709b514f10987e7327185817566604e7e8"
+          "sha256": "1ca9f2fbc038f157c67042b64379f581cfd087c55f421ad46ace73c788cc035e"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "3a7c694a66f003a1a585df99daa1099e2533c748b000ef895c76a5d6e6f4a0df"
+          "sha256": "f0e2c1ed9a02861d5af2f08c1a4fa0f5cf6bd56610c00e9f428346adc57dd066"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "30/0",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.8445477889174202,
+        "energyTrimDb": 0.3516747412128217,
+        "roomTailTrimDb": 2.4550937019341177
       }
     },
     {
@@ -1014,17 +1046,19 @@
             "beforeSample": 163.19410199506095,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": 7,
-            "afterSample": 170.18280135253158
+            "v2ShiftSamples": 7,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.99752922875768
           },
           "commonDelaySamples": 71,
           "calibrationGainDb": -0.9440372983163297,
           "fullHrirEnergyDbBeforeGain": 1.2820674583717473,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.33803016005541964,
+          "fullHrirEnergyDbOutput": 0.3380301600554098,
           "outputOnset": {
-            "leftSample": 141,
-            "rightSample": 129,
-            "commonSample": 135,
+            "leftSample": 140,
+            "rightSample": 128,
+            "commonSample": 134,
             "itdSamples": 12
           },
           "globalGainDb": -0.3460837212930966,
@@ -1296,9 +1330,9 @@
           },
           "outputOnset": {
             "leftSample": 156,
-            "rightSample": 131,
-            "commonSample": 143.5,
-            "itdSamples": 25
+            "rightSample": 132,
+            "commonSample": 144,
+            "itdSamples": 24
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0
@@ -1307,12 +1341,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "51dc9d67c985faff74f77ab7194e88999c656645838a18e667e796444a47159f"
+          "sha256": "468613285f4f7dc0ecf45af78e7743c4cf3cb3ddeee1e11b1134d69a95e909bc"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "bae4c1e90a71593fccf9c7243104bac9c01bc4f6bc34d37b37aa9253f984cc46"
+          "sha256": "2dfa855c352ad7c56a10611b43d0be78433f2fd51b78290d10697518348b4353"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-60/0",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.7875979197827903,
+        "energyTrimDb": 0.4872462706452788,
+        "roomTailTrimDb": 1.8705910448870497
       }
     },
     {
@@ -1363,13 +1406,15 @@
             "beforeSample": 164.40767411944438,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": 6,
-            "afterSample": 170.4014197266799
+            "v2ShiftSamples": 6,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.99752922875768
           },
           "commonDelaySamples": 72,
           "calibrationGainDb": -2.049779767195399,
           "fullHrirEnergyDbBeforeGain": 2.3878099272508164,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.338030160055417,
+          "fullHrirEnergyDbOutput": 0.3380301600554098,
           "outputOnset": {
             "leftSample": 128,
             "rightSample": 140,
@@ -1644,10 +1689,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 166,
-            "rightSample": 147,
-            "commonSample": 156.5,
-            "itdSamples": 19
+            "leftSample": 132,
+            "rightSample": 156,
+            "commonSample": 144,
+            "itdSamples": -24
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.3204704587028715
@@ -1656,12 +1701,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "dd2bd4858d083f1531c8e4133163a17572a26a83112b91019f203bafcea30e64"
+          "sha256": "82f6cbe6af322e88b4b62d37a77ba821d464f5d6817f8cfe70d4cc5731c630bc"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "0c571a43ccd12c113684f33cb80743cd9776e6c464389a500bc39e3e8e25d19d"
+          "sha256": "5f273a1c7191ccadf78319694359ec9ce1e7fe39c1d0231924dfb5c2aff8822e"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "60/0",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.7875979197827903,
+        "energyTrimDb": 0.4872462706452788,
+        "roomTailTrimDb": 1.8705910448870497
       }
     },
     {
@@ -1711,19 +1765,21 @@
           "energyCentroidTof": {
             "beforeSample": 167.69348162356223,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 2,
-            "afterSample": 169.67726782284865
+            "commonShiftSamples": 1,
+            "v2ShiftSamples": 2,
+            "postSymmetryShiftSamples": -1,
+            "afterSample": 170.33881759142807
           },
-          "commonDelaySamples": 73,
+          "commonDelaySamples": 72,
           "calibrationGainDb": -0.8522438488214386,
           "fullHrirEnergyDbBeforeGain": 1.1902740088768562,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.3380301600554161,
+          "fullHrirEnergyDbOutput": 0.33803016005541875,
           "outputOnset": {
-            "leftSample": 126,
-            "rightSample": 134,
-            "commonSample": 130,
-            "itdSamples": -8
+            "leftSample": 139,
+            "rightSample": 131,
+            "commonSample": 135,
+            "itdSamples": 8
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": -0.5061601275283419
@@ -1744,9 +1800,9 @@
           "coarseAlignmentShiftSamples": -38,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 2
+            "commonShiftSamples": 1
           },
-          "commonDelaySamples": -36,
+          "commonDelaySamples": -37,
           "calibrationGainDb": -0.1239086083400025,
           "roomEarlyEnergyDbBeforeGain": -8.490249911057077,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -1955,10 +2011,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 140,
+            "leftSample": 145,
             "rightSample": 137,
-            "commonSample": 138.5,
-            "itdSamples": 3
+            "commonSample": 141,
+            "itdSamples": 8
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.1239086083400025
@@ -1967,12 +2023,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "06bf049e027975992fc62c219c637afa5090109497f1dc7262562f5dc8e8f89a"
+          "sha256": "f242c485a7a11014c93924ce6f3bf7697bda8ebfe65e1518ff04baa95e621a3f"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "8689cbe93029d790bcc05e8e036c3961f61d8ef62cfd217dc775b7ac058d33a3"
+          "sha256": "a61857cf5fb5ff3b96cbd807ac83ff01525194b172e2b72c29ac6362edcaba9c"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-100/0",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.687713612785928,
+        "energyTrimDb": 0.7388563199077565,
+        "roomTailTrimDb": 2.2461802027673308
       }
     },
     {
@@ -2022,19 +2087,21 @@
           "energyCentroidTof": {
             "beforeSample": 170.04951321991413,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 0,
-            "afterSample": 170.04951321991413
+            "commonShiftSamples": -1,
+            "v2ShiftSamples": 0,
+            "postSymmetryShiftSamples": -1,
+            "afterSample": 170.33881759142793
           },
-          "commonDelaySamples": 72,
+          "commonDelaySamples": 71,
           "calibrationGainDb": -0.41162251824166773,
           "fullHrirEnergyDbBeforeGain": 0.7496526782970854,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.3380301600554152,
+          "fullHrirEnergyDbOutput": 0.33803016005541875,
           "outputOnset": {
             "leftSample": 131,
-            "rightSample": 126,
-            "commonSample": 128.5,
-            "itdSamples": 5
+            "rightSample": 139,
+            "commonSample": 135,
+            "itdSamples": -8
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": -0.06553879694857112
@@ -2055,9 +2122,9 @@
           "coarseAlignmentShiftSamples": -39,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 0
+            "commonShiftSamples": -1
           },
-          "commonDelaySamples": -39,
+          "commonDelaySamples": -40,
           "calibrationGainDb": -0.4411699711105488,
           "roomEarlyEnergyDbBeforeGain": -8.172988548286531,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -2266,10 +2333,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 143,
-            "rightSample": 136,
-            "commonSample": 139.5,
-            "itdSamples": 7
+            "leftSample": 137,
+            "rightSample": 145,
+            "commonSample": 141,
+            "itdSamples": -8
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.4411699711105488
@@ -2278,12 +2345,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "dcd2331cf7100859f9ecb775535cae21fa157f75f5441f014479725456336d70"
+          "sha256": "088d60fa3d5e827ccd014640978f5f70200f298bf7e451bf28f500fc276e30ba"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "2297dc8a350791cb0211532649be23ea52f034dda2eccb09ebdb73b3ff846a5f"
+          "sha256": "687f309857c464543d8c55ea49200957a28c681d8296954bdb9654f2ad8af83e"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "100/0",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.687713612785928,
+        "energyTrimDb": 0.7388563199077565,
+        "roomTailTrimDb": 2.2461802027673308
       }
     },
     {
@@ -2333,19 +2409,21 @@
           "energyCentroidTof": {
             "beforeSample": 179.61794991048217,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -10,
-            "afterSample": 169.67662366522984
+            "commonShiftSamples": -11,
+            "v2ShiftSamples": -10,
+            "postSymmetryShiftSamples": -1,
+            "afterSample": 169.80584686948
           },
-          "commonDelaySamples": 72,
+          "commonDelaySamples": 71,
           "calibrationGainDb": -0.3460837212930966,
           "fullHrirEnergyDbBeforeGain": 0.6841138813485143,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.338030160055417,
+          "fullHrirEnergyDbOutput": 0.33803016005541786,
           "outputOnset": {
-            "leftSample": 107,
-            "rightSample": 130,
-            "commonSample": 118.5,
-            "itdSamples": -23
+            "leftSample": 138,
+            "rightSample": 127,
+            "commonSample": 132.5,
+            "itdSamples": 11
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 0
@@ -2366,9 +2444,9 @@
           "coarseAlignmentShiftSamples": -34,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -10
+            "commonShiftSamples": -11
           },
-          "commonDelaySamples": -44,
+          "commonDelaySamples": -45,
           "calibrationGainDb": -0.6567525959646154,
           "roomEarlyEnergyDbBeforeGain": -7.957405923432464,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -2577,10 +2655,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 139,
-            "rightSample": 143,
-            "commonSample": 141,
-            "itdSamples": -4
+            "leftSample": 144,
+            "rightSample": 135,
+            "commonSample": 139.5,
+            "itdSamples": 9
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.6567525959646154
@@ -2589,12 +2667,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "0c8b235c78a347fcc52ea42808de009e3e3373ba17f4c25f12a4473bad6fd3ab"
+          "sha256": "362c31043057f4f4e141acdecb247bd90c6d0ddd689f0453376380ab3fdb952c"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "5b1af22309c612afe531f4f6fdfedbced39db55f07e4927912027429401554b6"
+          "sha256": "82d66892a064a96b49f9c47e01d1d3cc8c89722765d3273e27ad3116a9ba1fb3"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-110/0",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.7664149271660257,
+        "energyTrimDb": 0.5449653497684498,
+        "roomTailTrimDb": 2.1488432686086405
       }
     },
     {
@@ -2644,19 +2731,21 @@
           "energyCentroidTof": {
             "beforeSample": 181.5816214267481,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -12,
-            "afterSample": 169.66210380818313
+            "commonShiftSamples": -13,
+            "v2ShiftSamples": -12,
+            "postSymmetryShiftSamples": -1,
+            "afterSample": 169.80584686948018
           },
-          "commonDelaySamples": 71,
+          "commonDelaySamples": 70,
           "calibrationGainDb": 0.0999950571008415,
           "fullHrirEnergyDbBeforeGain": 0.23803510295457614,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.3380301600554152,
+          "fullHrirEnergyDbOutput": 0.33803016005541786,
           "outputOnset": {
-            "leftSample": 128,
-            "rightSample": 105,
-            "commonSample": 116.5,
-            "itdSamples": 23
+            "leftSample": 127,
+            "rightSample": 138,
+            "commonSample": 132.5,
+            "itdSamples": -11
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 0.4460787783939381
@@ -2677,9 +2766,9 @@
           "coarseAlignmentShiftSamples": -35,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -12
+            "commonShiftSamples": -13
           },
-          "commonDelaySamples": -47,
+          "commonDelaySamples": -48,
           "calibrationGainDb": -0.27934677280008025,
           "roomEarlyEnergyDbBeforeGain": -8.334811746597,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -2888,10 +2977,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 139,
+            "leftSample": 135,
             "rightSample": 144,
-            "commonSample": 141.5,
-            "itdSamples": -5
+            "commonSample": 139.5,
+            "itdSamples": -9
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.27934677280008025
@@ -2900,12 +2989,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "6aee1699f95927c551238180c34572270c2f1156f0c28a6b1049b954ca59c768"
+          "sha256": "d5294c8cd788a97358d289b560682d19e4a7eb097c9e03b4249672bf8bd60452"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "b54a662e05f2b59d20256be13906573a6da938b9bac5261b361392e17feefe72"
+          "sha256": "6fbb4d592b7e7262f65801da4e636db539c74182cf198ecfc856b1ece94a135a"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "110/0",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.7664149271660257,
+        "energyTrimDb": 0.5449653497684498,
+        "roomTailTrimDb": 2.1488432686086405
       }
     },
     {
@@ -2955,19 +3053,21 @@
           "energyCentroidTof": {
             "beforeSample": 183.32979982345174,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -13,
-            "afterSample": 170.38146780945974
+            "commonShiftSamples": -14,
+            "v2ShiftSamples": -13,
+            "postSymmetryShiftSamples": -1,
+            "afterSample": 169.55729450802204
           },
-          "commonDelaySamples": 69,
+          "commonDelaySamples": 68,
           "calibrationGainDb": 1.5997090321767624,
           "fullHrirEnergyDbBeforeGain": -1.2616788721213448,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.3380301600554205,
+          "fullHrirEnergyDbOutput": 0.33803016005542497,
           "outputOnset": {
-            "leftSample": 107,
-            "rightSample": 123,
-            "commonSample": 115,
-            "itdSamples": -16
+            "leftSample": 104,
+            "rightSample": 119,
+            "commonSample": 111.5,
+            "itdSamples": -15
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 1.945792753469859
@@ -2988,9 +3088,9 @@
           "coarseAlignmentShiftSamples": -34,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -13
+            "commonShiftSamples": -14
           },
-          "commonDelaySamples": -47,
+          "commonDelaySamples": -48,
           "calibrationGainDb": 0.4651404277818205,
           "roomEarlyEnergyDbBeforeGain": -9.0792989471789,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -3199,10 +3299,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 142,
-            "rightSample": 159,
-            "commonSample": 150.5,
-            "itdSamples": -17
+            "leftSample": 145,
+            "rightSample": 125,
+            "commonSample": 135,
+            "itdSamples": 20
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.4651404277818205
@@ -3211,12 +3311,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "c9c69678d8ce4adc100c1863f03b80c879e697c9e5218e1476e4567c38933a2c"
+          "sha256": "cc9496b4bc3a03d6cbd3346d78ca9ca786acb6e69716b2ca238f560db3472e60"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "9a16ed5168f6c30a817fe0bff310a65723837d71f0ff915cc48c8656c4b69e24"
+          "sha256": "b9bd8cd9c93f24216210c840db68d4073e8a54766af729a6a0358c853539de2e"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-140/0",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.7581017017521359,
+        "energyTrimDb": 0.5595105504530553,
+        "roomTailTrimDb": 2.203050621992732
       }
     },
     {
@@ -3266,19 +3375,21 @@
           "energyCentroidTof": {
             "beforeSample": 186.35714019376863,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -16,
-            "afterSample": 170.51854778038555
+            "commonShiftSamples": -17,
+            "v2ShiftSamples": -16,
+            "postSymmetryShiftSamples": -1,
+            "afterSample": 169.55729450802204
           },
-          "commonDelaySamples": 68,
+          "commonDelaySamples": 67,
           "calibrationGainDb": 2.260098173574018,
           "fullHrirEnergyDbBeforeGain": -1.9220680135186003,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.33803016005541786,
+          "fullHrirEnergyDbOutput": 0.33803016005542497,
           "outputOnset": {
-            "leftSample": 121,
+            "leftSample": 119,
             "rightSample": 104,
-            "commonSample": 112.5,
-            "itdSamples": 17
+            "commonSample": 111.5,
+            "itdSamples": 15
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 2.6061818948671145
@@ -3299,9 +3410,9 @@
           "coarseAlignmentShiftSamples": -35,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": -16
+            "commonShiftSamples": -17
           },
-          "commonDelaySamples": -51,
+          "commonDelaySamples": -52,
           "calibrationGainDb": 0.12490310815344152,
           "roomEarlyEnergyDbBeforeGain": -8.739061627550521,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -3510,10 +3621,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 157,
-            "rightSample": 140,
-            "commonSample": 148.5,
-            "itdSamples": 17
+            "leftSample": 125,
+            "rightSample": 145,
+            "commonSample": 135,
+            "itdSamples": -20
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.12490310815344152
@@ -3522,12 +3633,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "5fa9b836b1b7fe13747995ee5d3583132991e74bc086af72f1bd5e13a662ed64"
+          "sha256": "9e3fd0d9b08f3d862bded9d6ca70484df36d15852d6bd4f4f86b8d1f77b0c1bf"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "cb78d5bdeb21171357d43cd4bd52ec228699e4ba88ea97d950a411d0d96e1037"
+          "sha256": "18d576daa4e34f4b2ec70f27de7d49b413cfcb1bbaa4c867fea7a98c49adcde0"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "140/0",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.7581017017521359,
+        "energyTrimDb": 0.5595105504530553,
+        "roomTailTrimDb": 2.203050621992732
       }
     },
     {
@@ -3578,7 +3698,9 @@
             "beforeSample": 168.0363827976923,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": 2,
-            "afterSample": 170.0278293958985
+            "v2ShiftSamples": 2,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.81528987730144
           },
           "commonDelaySamples": 67,
           "calibrationGainDb": 0.014054410179820787,
@@ -3587,9 +3709,9 @@
           "fullHrirEnergyDbOutput": 0.33803016005541875,
           "outputOnset": {
             "leftSample": 141,
-            "rightSample": 119,
-            "commonSample": 130,
-            "itdSamples": 22
+            "rightSample": 117,
+            "commonSample": 129,
+            "itdSamples": 24
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 0.3601381314729174
@@ -3822,9 +3944,9 @@
           },
           "outputOnset": {
             "leftSample": 147,
-            "rightSample": 155,
-            "commonSample": 151,
-            "itdSamples": -8
+            "rightSample": 153,
+            "commonSample": 150,
+            "itdSamples": -6
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3473861396885951
@@ -3833,12 +3955,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "dfad4fbb6bd846193d797926032c2f64afa80cf2ce21011383b82d15e64c150f"
+          "sha256": "90077d64fbadd916aa770172e26f1897dd64619c1beee901249c78f162d5ace6"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "5586fddcc65da3c7a064c29ccd5946b345cd33bc1c6ace539bc00f1dc6f4cd0a"
+          "sha256": "fadc70861ec018021efa673b033815d621ba8daf38cc60b10bfbcf5ebb23fac1"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-45/45",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.7829585579940682,
+        "energyTrimDb": 0.5000781558811338,
+        "roomTailTrimDb": 2.183653875928396
       }
     },
     {
@@ -3889,18 +4020,20 @@
             "beforeSample": 167.78831572887108,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": 2,
-            "afterSample": 169.77951988649357
+            "v2ShiftSamples": 2,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 169.81528987730192
           },
           "commonDelaySamples": 67,
           "calibrationGainDb": 0.14067888936303988,
           "fullHrirEnergyDbBeforeGain": 0.19735127069237776,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.338030160055417,
+          "fullHrirEnergyDbOutput": 0.33803016005541875,
           "outputOnset": {
-            "leftSample": 119,
-            "rightSample": 142,
-            "commonSample": 130.5,
-            "itdSamples": -23
+            "leftSample": 117,
+            "rightSample": 141,
+            "commonSample": 129,
+            "itdSamples": -24
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 0.48676261065613646
@@ -4132,10 +4265,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 154,
+            "leftSample": 153,
             "rightSample": 147,
-            "commonSample": 150.5,
-            "itdSamples": 7
+            "commonSample": 150,
+            "itdSamples": 6
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.41461567094440355
@@ -4144,12 +4277,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "48c5c3a882dd3205af86c850719124563a3e456970e19f441187643dadd0fbce"
+          "sha256": "cbe95047eb483df128665231ce17dc868a77aa2fbcd2375947423409902378b2"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "d2567c0845e0274bfcb2e3eff402a520cf3ed24266f3fdd9a0f386d6d252d7a4"
+          "sha256": "d7fa9e62eb1597973c81c55f5466e576d51e62f7e55d71533fa61ec323a9d81f"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "45/45",
+        "sign": 1,
+        "shiftSamples": 0,
+        "directWindowCorrelation": 0.7829585579940682,
+        "energyTrimDb": 0.5000781558811338,
+        "roomTailTrimDb": 2.183653875928396
       }
     },
     {
@@ -4199,19 +4341,21 @@
           "energyCentroidTof": {
             "beforeSample": 164.8103914739617,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 5,
-            "afterSample": 169.80105104087886
+            "commonShiftSamples": 6,
+            "v2ShiftSamples": 5,
+            "postSymmetryShiftSamples": 1,
+            "afterSample": 170.4684282142946
           },
-          "commonDelaySamples": 71,
+          "commonDelaySamples": 72,
           "calibrationGainDb": -1.8610882939708282,
           "fullHrirEnergyDbBeforeGain": 2.199118454026246,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.338030160055417,
+          "fullHrirEnergyDbOutput": 0.3380301600554241,
           "outputOnset": {
-            "leftSample": 141,
-            "rightSample": 126,
-            "commonSample": 133.5,
-            "itdSamples": 15
+            "leftSample": 138,
+            "rightSample": 125,
+            "commonSample": 131.5,
+            "itdSamples": 13
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": -1.5150045726777317
@@ -4232,9 +4376,9 @@
           "coarseAlignmentShiftSamples": -37,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 5
+            "commonShiftSamples": 6
           },
-          "commonDelaySamples": -32,
+          "commonDelaySamples": -31,
           "calibrationGainDb": -0.11399275377704754,
           "roomEarlyEnergyDbBeforeGain": -8.500165765620032,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -4443,10 +4587,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 149,
-            "rightSample": 132,
-            "commonSample": 140.5,
-            "itdSamples": 17
+            "leftSample": 144,
+            "rightSample": 130,
+            "commonSample": 137,
+            "itdSamples": 14
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.11399275377704754
@@ -4455,12 +4599,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "80d7aab766f72b0ae98a5fc733a91dee4d23a1f3acef941494c4e5c87fed279e"
+          "sha256": "e3f74fdb321da8d8aab84fa60c73100febe598e2d49ed307221dcad3841ffa97"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "b870c122eca0735b45431125ed89ad441808978a002b67a0d787b66a9574baa5"
+          "sha256": "2c3f4d9650ea24ae1f6639fa7a2b548a7dcf71c5862022e334e16b33e05b312b"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-90/45",
+        "sign": 1,
+        "shiftSamples": -1,
+        "directWindowCorrelation": 0.9007286178354575,
+        "energyTrimDb": 0.2210971261433998,
+        "roomTailTrimDb": 2.059978949545336
       }
     },
     {
@@ -4510,19 +4663,21 @@
           "energyCentroidTof": {
             "beforeSample": 167.21118264540846,
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 3,
-            "afterSample": 170.19952540987282
+            "commonShiftSamples": 4,
+            "v2ShiftSamples": 3,
+            "postSymmetryShiftSamples": 1,
+            "afterSample": 170.46842821429456
           },
-          "commonDelaySamples": 72,
+          "commonDelaySamples": 73,
           "calibrationGainDb": -0.5674139760341422,
           "fullHrirEnergyDbBeforeGain": 0.9054441360895599,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.33803016005541964,
+          "fullHrirEnergyDbOutput": 0.3380301600554241,
           "outputOnset": {
-            "leftSample": 124,
+            "leftSample": 125,
             "rightSample": 138,
-            "commonSample": 131,
-            "itdSamples": -14
+            "commonSample": 131.5,
+            "itdSamples": -13
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": -0.22133025474104562
@@ -4543,9 +4698,9 @@
           "coarseAlignmentShiftSamples": -36,
           "energyCentroidTof": {
             "targetSample": 170.04951321991413,
-            "commonShiftSamples": 3
+            "commonShiftSamples": 4
           },
-          "commonDelaySamples": -33,
+          "commonDelaySamples": -32,
           "calibrationGainDb": 0.3734954520442173,
           "roomEarlyEnergyDbBeforeGain": -8.987653971441297,
           "roomEarlyEnergyTargetDb": -8.61415851939708,
@@ -4755,9 +4910,9 @@
           },
           "outputOnset": {
             "leftSample": 130,
-            "rightSample": 142,
-            "commonSample": 136,
-            "itdSamples": -12
+            "rightSample": 144,
+            "commonSample": 137,
+            "itdSamples": -14
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.3734954520442173
@@ -4766,12 +4921,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "2a56374a505c1bd6b9a006a5e3b7f0f638b0c5cc8651700820413b4b460fcac8"
+          "sha256": "e346196f6f64830a5a61d22c01a09ff30d75ab3607b0f76e7fdd210a96a96742"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "deb7bf8fe985e21aa2a154a34e75fefc131fc5fbb73d0a1cc2375ced928c7bb6"
+          "sha256": "43b0f611f1ea7f5b127ceacc9d8b824a050d9ad8cffe3361d5065cec82d792d2"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "90/45",
+        "sign": 1,
+        "shiftSamples": -1,
+        "directWindowCorrelation": 0.9007286178354575,
+        "energyTrimDb": 0.2210971261433998,
+        "roomTailTrimDb": 2.059978949545336
       }
     },
     {
@@ -4822,18 +4986,20 @@
             "beforeSample": 184.39510392903082,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": -14,
-            "afterSample": 170.47474241340515
+            "v2ShiftSamples": -14,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 170.23938846851647
           },
           "commonDelaySamples": 69,
           "calibrationGainDb": 2.651868604777105,
           "fullHrirEnergyDbBeforeGain": -2.3138384447216875,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.338030160055417,
+          "fullHrirEnergyDbOutput": 0.33803016005541964,
           "outputOnset": {
             "leftSample": 109,
-            "rightSample": 119,
-            "commonSample": 114,
-            "itdSamples": -10
+            "rightSample": 116,
+            "commonSample": 112.5,
+            "itdSamples": -7
           },
           "globalGainDb": -0.3460837212930966,
           "speakerLevelTrimDb": 2.9979523260702017
@@ -5065,10 +5231,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 149,
-            "rightSample": 156,
-            "commonSample": 152.5,
-            "itdSamples": -7
+            "leftSample": 148,
+            "rightSample": 130,
+            "commonSample": 139,
+            "itdSamples": 18
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": -0.13690504012812355
@@ -5077,12 +5243,21 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "41808307e24b76a73545c27da2376460869be4b4d45c8ebe480b83e8befef15e"
+          "sha256": "8b6592c7ec2b96a6f83b09b8b20ccb3a74a82b48999196b8308c20563da50975"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "fb1fcf3a1960ef7f18392fbd295d857722b4d49adc8e27f1abc430c270fd28a0"
+          "sha256": "91497f7124eb6457f156a339c11756d373402d040bbf57436cff3686e027f1d1"
         }
+      },
+      "symmetry": {
+        "role": "pair-average",
+        "pairWith": "-135/45",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.8951465054407665,
+        "energyTrimDb": 0.23338120038159452,
+        "roomTailTrimDb": 1.5973899662210513
       }
     },
     {
@@ -5133,17 +5308,19 @@
             "beforeSample": 184.62465521140155,
             "targetSample": 170.04951321991413,
             "commonShiftSamples": -15,
-            "afterSample": 169.7477095097087
+            "v2ShiftSamples": -15,
+            "postSymmetryShiftSamples": 0,
+            "afterSample": 170.2393884685162
           },
           "commonDelaySamples": 68,
           "calibrationGainDb": 3,
           "fullHrirEnergyDbBeforeGain": -2.6619698399445824,
           "fullHrirEnergyTargetDb": 0.33803016005541764,
-          "fullHrirEnergyDbOutput": 0.3380301600554161,
+          "fullHrirEnergyDbOutput": 0.33803016005541964,
           "outputOnset": {
-            "leftSample": 117,
-            "rightSample": 110,
-            "commonSample": 113.5,
+            "leftSample": 116,
+            "rightSample": 109,
+            "commonSample": 112.5,
             "itdSamples": 7
           },
           "globalGainDb": -0.3460837212930966,
@@ -5376,10 +5553,10 @@
             }
           },
           "outputOnset": {
-            "leftSample": 154,
-            "rightSample": 142,
-            "commonSample": 148,
-            "itdSamples": 12
+            "leftSample": 130,
+            "rightSample": 148,
+            "commonSample": 139,
+            "itdSamples": -18
           },
           "globalGainDb": 0,
           "speakerLevelTrimDb": 0.03882882247018493
@@ -5388,19 +5565,41 @@
       "assets": {
         "dry": {
           "tapCountPerEar": 512,
-          "sha256": "585986eecf182db94cadecfef3159097fef629bf7b004fc44e5de036cb873416"
+          "sha256": "0774b237a3ce8c5b4e3b1bb7bc9d349bb8e93ac6810b119b1d0f4219bcb53606"
         },
         "wet": {
           "tapCountPerEar": 8192,
-          "sha256": "2f46818a4a4831681706af43f5e9ee1d01c67c0353acc01de8b2432887bf4f50"
+          "sha256": "d66a4541937e7ee558bc2d18efd45ab781ac7bf56a007ba4c6a1d78b9c0b10e2"
         }
+      },
+      "symmetry": {
+        "role": "pair-average-mirrored",
+        "pairWith": "135/45",
+        "sign": 1,
+        "shiftSamples": 1,
+        "directWindowCorrelation": 0.8951465054407665,
+        "energyTrimDb": 0.23338120038159452,
+        "roomTailTrimDb": 1.5973899662210513
       }
     }
   ],
   "calibration": {
-    "algorithm": "sda-ku100-room-v2",
+    "algorithm": "sda-ku100-room-v3",
     "sampleRate": 48000,
     "commonArrivalSample": 128,
+    "bilateralSymmetry": {
+      "version": "sda-ku100-bilateral-v1",
+      "scope": "every mirror pair ±az/el plus the 0/0 centre direction",
+      "windowSamples": [
+        128,
+        320
+      ],
+      "maxShiftSamples": 8,
+      "centerMaxShiftSamples": 4,
+      "commonLeftRightSignShift": true,
+      "energyPreservedPerDirection": true,
+      "rationale": "KU100 head/placement asymmetry made correlated VBAP speaker pairs sum unevenly between sides (up to 4.4dB at ±80°). Mirror-pair averaging with correlation-optimal common sign/shift restores the physical bilateral symmetry of a frontal head; each direction keeps its own ITD/ILD (the pair mean)."
+    },
     "energyCentroidTof": {
       "metric": "stereo direct-energy time centroid",
       "targetSample": 170.04951321991413,

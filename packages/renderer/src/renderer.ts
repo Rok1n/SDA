@@ -170,6 +170,9 @@ export interface RendererStats {
   underrunSamples: number;
   rejectedBatches: number;
   rejectedSources: number;
+  /** 输出侧：process() 回调间隔超过阈值（12ms）的次数与最大间隙。 */
+  callbackGaps?: number;
+  callbackGapMaxMs?: number;
 }
 
 export interface RendererOptions {
@@ -442,6 +445,8 @@ export class SpatialRenderer {
           underrunSamples: Number(e.data.underrunSamples) || 0,
           rejectedBatches: Number(e.data.rejectedBatches) || 0,
           rejectedSources: Number(e.data.rejectedSources) || 0,
+          callbackGaps: Number(e.data.callbackGaps) || 0,
+          callbackGapMaxMs: Number(e.data.callbackGapMaxMs) || 0,
         });
       } else if (e.data?.type === "sourceRetired") {
         const id = String(e.data.id ?? "");

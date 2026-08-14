@@ -18,7 +18,8 @@ const expectedDirections = new Set([
 ]);
 const hex64 = /^[a-f0-9]{64}$/;
 const calibrated = manifest.calibrationVersion >= 1 && manifest.processing?.calibrated === true;
-const calibrationV2 = calibrated && manifest.calibrationVersion === 2;
+const calibrationV2 = calibrated && manifest.calibrationVersion >= 2;
+const calibrationV3 = calibrated && manifest.calibrationVersion >= 3;
 
 function stereoEnergyDb(samples, length, start = 0, end = length) {
   let energy = 0;
@@ -68,7 +69,7 @@ if (!Array.isArray(manifest.positions) || manifest.positions.length !== expected
 if (calibrated) {
   if (manifest.processing?.peakNormalized !== false) errors.push("校准资产不得峰值归一");
   if (manifest.processing?.runtimeEnergyNormalization !== false) errors.push("校准资产必须禁用运行时IR能量归一");
-  if (!["sda-ku100-room-v1", "sda-ku100-room-v2"].includes(manifest.calibration?.algorithm)) {
+  if (!["sda-ku100-room-v1", "sda-ku100-room-v2", "sda-ku100-room-v3"].includes(manifest.calibration?.algorithm)) {
     errors.push("校准算法版本无效");
   }
   if (!Number.isFinite(manifest.calibration?.commonArrivalSample)) errors.push("缺共同到达目标");
@@ -96,12 +97,23 @@ if (calibrated) {
       errors.push("v2重复BRIR去相关范围/双耳链接无效");
     }
   }
+  if (calibrationV3) {
+    const symmetry = manifest.calibration?.bilateralSymmetry;
+    if (symmetry?.commonLeftRightSignShift !== true || symmetry?.energyPreservedPerDirection !== true) {
+      errors.push("v3双侧对称化必须只用一个左右共用sign/shift/标量并保持每方向能量");
+    }
+    if (!Array.isArray(symmetry?.windowSamples) || symmetry.windowSamples.length !== 2) {
+      errors.push("v3缺对称化直达窗记录");
+    }
+    if (!(symmetry?.maxShiftSamples >= 0)) errors.push("v3缺对称化位移上限");
+  }
 }
 
 const seen = new Set();
 const assetHashes = new Map();
 const dryAnalyses = [];
 const v2Outputs = [];
+const symmetryEnergies = new Map();
 for (const position of manifest.positions ?? []) {
   const key = `${position.azimuth}/${position.elevation}`;
   if (!expectedDirections.has(key)) errors.push(`非目标方向 ${key}`);
@@ -152,7 +164,7 @@ for (const position of manifest.positions ?? []) {
       const sourceItd = processing?.sourceOnset?.itdSamples;
       const outputItd = processing?.outputOnset?.itdSamples;
       if (!Number.isFinite(sourceItd) || !Number.isFinite(outputItd)) errors.push(`${key}/${kind}: 缺ITD provenance`);
-      if (kind === "dry" && Math.abs(sourceItd - outputItd) > 1) errors.push(`${key}/dry: ITD误差超过1 sample`);
+      if (kind === "dry" && !calibrationV3 && Math.abs(sourceItd - outputItd) > 1) errors.push(`${key}/dry: ITD误差超过1 sample`);
       if (kind === "wet") {
         if (processing?.directPathSource !== position.measurement?.dry?.sourcePath) errors.push(`${key}/wet: 直达路径不是目标HRIR`);
         if (processing?.roomTailSource !== position.measurement?.wet?.sourcePath) errors.push(`${key}/wet: 房间尾声来源不匹配`);
@@ -210,6 +222,35 @@ for (const position of manifest.positions ?? []) {
     const wet = samplesByKind.wet.samples;
     const dryLength = samplesByKind.dry.tapCountPerEar;
     const wetLength = samplesByKind.wet.tapCountPerEar;
+    if (calibrationV3) {
+      const record = position.symmetry;
+      const maxShift = manifest.calibration.bilateralSymmetry.maxShiftSamples;
+      const centerMaxShift = manifest.calibration.bilateralSymmetry.centerMaxShiftSamples;
+      if (!record?.role || (record?.sign !== 1 && record?.sign !== -1)) {
+        errors.push(`${key}: v3缺对称化provenance`);
+      }
+      const shiftLimit = key === "0/0" ? centerMaxShift : maxShift;
+      if (!Number.isInteger(record?.shiftSamples) || Math.abs(record.shiftSamples) > shiftLimit) {
+        errors.push(`${key}: v3对称化位移越界`);
+      }
+      if (!Number.isFinite(record?.directWindowCorrelation) || record.directWindowCorrelation < 0.5) {
+        errors.push(`${key}: v3对称化直达窗相关过低（对齐质量不足）`);
+      }
+      if (!Number.isFinite(record?.energyTrimDb) || Math.abs(record.energyTrimDb) > 1.5) {
+        errors.push(`${key}: v3对称化能量恢复越界`);
+      }
+      const energy = (samples, perEar, ear) => {
+        let total = 0;
+        for (let index = ear * perEar; index < (ear + 1) * perEar; index++) total += samples[index] ** 2;
+        return total;
+      };
+      symmetryEnergies.set(key, {
+        dryL: energy(dry, dryLength, 0),
+        dryR: energy(dry, dryLength, 1),
+        wetL: energy(wet, wetLength, 0),
+        wetR: energy(wet, wetLength, 1),
+      });
+    }
     const fineShift = calibrationV2 ? position.processing?.dry?.energyCentroidTof?.commonShiftSamples : 0;
     const identicalSamples = Math.round(
       manifest.calibration.commonArrivalSample
@@ -258,9 +299,58 @@ for (const expected of expectedDirections) {
   if (!seen.has(expected)) errors.push(`缺目标方向 ${expected}`);
 }
 
+// v3 数值镜像契约：镜像对双耳能量必须精确交叉相等（构造保证），正中方向双耳相等。
+if (calibrationV3 && symmetryEnergies.size === expectedDirections.size) {
+  const SYMMETRY_PAIRS = [[30, 0], [60, 0], [100, 0], [110, 0], [140, 0], [45, 45], [90, 45], [135, 45]];
+  for (const [azimuth, elevation] of SYMMETRY_PAIRS) {
+    const plus = symmetryEnergies.get(`${azimuth}/${elevation}`);
+    const minus = symmetryEnergies.get(`-${azimuth}/${elevation}`);
+    for (const kind of ["dry", "wet"]) {
+      const crossLeft = plus[`${kind}L`];
+      const crossRight = minus[`${kind}R`];
+      const directLeft = plus[`${kind}R`];
+      const directRight = minus[`${kind}L`];
+      const tolerance = 1e-6 * Math.max(crossLeft, crossRight, 1e-12);
+      if (Math.abs(crossLeft - crossRight) > tolerance || Math.abs(directLeft - directRight) > tolerance) {
+        errors.push(`±${azimuth}/${elevation}/${kind}: 镜像能量不守恒（对称化资产必须逐耳镜像）`);
+      }
+    }
+  }
+  const center = symmetryEnergies.get("0/0");
+  for (const kind of ["dry", "wet"]) {
+    const tolerance = 1e-6 * Math.max(center[`${kind}L`], 1e-12);
+    if (Math.abs(center[`${kind}L`] - center[`${kind}R`]) > tolerance) {
+      errors.push(`0/0/${kind}: 正中方向双耳能量不等`);
+    }
+  }
+}
+
 if (calibrated && dryAnalyses.length === expectedDirections.size) {
-  for (const entry of dryAnalyses) {
-    if (Math.abs(entry.analysis.onset.itdSamples - entry.sourceItd) > 1) errors.push(`${entry.key}/dry: 实际ITD误差超过1 sample`);
+  if (!calibrationV3) {
+    for (const entry of dryAnalyses) {
+      if (Math.abs(entry.analysis.onset.itdSamples - entry.sourceItd) > 1) errors.push(`${entry.key}/dry: 实际ITD误差超过1 sample`);
+    }
+  } else {
+    // v3 对称化把每方向 ITD 校准到镜像对均值：不再逐方向钉死源 ITD，
+    // 改为验证镜像反对称（+θ 与 -θ 的 ITD 必须互为相反数）与有界偏移。
+    const itdByKey = new Map(dryAnalyses.map((entry) => [entry.key, entry]));
+    for (const [azimuth, elevation] of [[30, 0], [60, 0], [100, 0], [110, 0], [140, 0], [45, 45], [90, 45], [135, 45]]) {
+      const plus = itdByKey.get(`${azimuth}/${elevation}`);
+      const minus = itdByKey.get(`-${azimuth}/${elevation}`);
+      if (Math.abs(plus.analysis.onset.itdSamples + minus.analysis.onset.itdSamples) > 1) {
+        errors.push(`±${azimuth}/${elevation}/dry: 镜像对ITD不反对称（${plus.analysis.onset.itdSamples}/${minus.analysis.onset.itdSamples}）`);
+      }
+    }
+    for (const entry of dryAnalyses) {
+      // 对称化的目的就是修正 KU100 头模/摆放的反对称 ITD 偏差（源 ITD 可错数
+      // 十 samples，如正中方向源 ITD 27），不再锚定源值；只留生理界限
+      // （人头最大 ITD ≈ 0.7ms ≈ 34 samples @48k）。
+      if (Math.abs(entry.analysis.onset.itdSamples) > 35) {
+        errors.push(`${entry.key}/dry: 对称化ITD超出生理界限（${entry.analysis.onset.itdSamples}）`);
+      }
+    }
+    const center = itdByKey.get("0/0");
+    if (Math.abs(center.analysis.onset.itdSamples) > 1) errors.push(`0/0/dry: 正中方向ITD应≈0（实际 ${center.analysis.onset.itdSamples}）`);
   }
   if (calibrationV2 && v2Outputs.length === expectedDirections.size) {
     const centroidValues = v2Outputs.map((entry) => entry.centroid);

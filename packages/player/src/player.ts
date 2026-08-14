@@ -25,7 +25,7 @@ import {
   type OutputMode,
   type VirtualSpeaker,
 } from "@sda/renderer";
-import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent } from "@sda/core";
+import type { DecodedFrameData, ObjectChannelDecl, ObjectEvent, ProgramLoudnessMetadata } from "@sda/core";
 import type { BinauralRenderMetadata } from "@sda/demux";
 import { placeholderVisualObject, sameObjectTarget, visualObjectFromEvent, withoutPendingObjectEvents } from "./control.js";
 
@@ -62,6 +62,12 @@ export type LayoutResolver = (
 /** 解码前瞻：环形缓冲约 5.3s，前瞻 4s 可吞掉弹窗/后台切换造成的秒级供给抖动。 */
 const TARGET_AHEAD_SECONDS = 4;
 const STARTUP_AHEAD_SECONDS = 0.5;
+/** 输出端 FIFO 深度（AudioContext latencyHint，秒）。Windows 系统级抖动
+ * （任务管理器/DWM 窗口合成/驱动打嗝、对象移动时的渲染线程抢占）动辄 20–60ms，
+ * "playback" 默认只给 ~20ms 输出缓冲，吸收不了就是可闻卡顿——即便 worklet 环形
+ * 缓冲里有 4s PCM 也无济于事，因为缺口发生在输出级。给到 100ms；
+ * UI/可视化播放头按 baseLatency 回拨补偿，音画同步不受影响。 */
+const OUTPUT_LATENCY_SECONDS = 0.1;
 const MAX_IN_FLIGHT_BATCHES = 32;
 const MAX_IN_FLIGHT_SECONDS = 0.25;
 const CHUNK_SIZE = 1 << 20; // 1 MiB reads
@@ -128,6 +134,7 @@ export class SdaPlayer {
   private recreateChain: Promise<void> = Promise.resolve();
   private lastVolume = 1;
   private volumeBalanceEnabled = false;
+  private programLoudness: ProgramLoudnessMetadata | null = null;
   private programLoudnessGainDb: number | null = null;
   private scheduledProgramLoudnessGainDb: number | null | undefined;
   /** 杜比 Binaural Settings（近/中/远），重建 renderer 后需恢复。
@@ -164,7 +171,7 @@ export class SdaPlayer {
     SdaPlayer.active = this;
     this.initArgs = { mode, workletUrl, layout, binauralBaseUrl, layoutResolver };
     try {
-      const ctx = new AudioContext({ latencyHint: "playback" });
+      const ctx = new AudioContext({ latencyHint: OUTPUT_LATENCY_SECONDS });
       this.renderer = new SpatialRenderer(ctx, {
         mode,
         layout,
@@ -339,10 +346,10 @@ export class SdaPlayer {
       await old?.close();
       let ctx: AudioContext;
       try {
-        ctx = new AudioContext({ latencyHint: "playback", sampleRate });
+        ctx = new AudioContext({ latencyHint: OUTPUT_LATENCY_SECONDS, sampleRate });
       } catch {
         // 设备不接受该采样率：退回默认速率（仍会变速，但优于无声）
-        ctx = new AudioContext({ latencyHint: "playback" });
+        ctx = new AudioContext({ latencyHint: OUTPUT_LATENCY_SECONDS });
       }
       const r = new SpatialRenderer(ctx, {
         mode,
@@ -479,6 +486,7 @@ export class SdaPlayer {
     this.queuedSamples = 0;
     this.containerDurationSec = null;
     this.trackReported = false;
+    this.programLoudness = null;
     this.programLoudnessGainDb = null;
     this.scheduledProgramLoudnessGainDb = undefined;
     this.renderer?.setProgramLoudnessGainDb(null);
@@ -525,6 +533,11 @@ export class SdaPlayer {
     this.renderer?.setVolumeBalance(enabled);
   }
 
+  /** 码流携带的节目响度元数据（Dolby dialnorm），无元数据时为 null。 */
+  programLoudnessInfo(): ProgramLoudnessMetadata | null {
+    return this.programLoudness;
+  }
+
   setVolume(v: number): void {
     this.lastVolume = v;
     this.renderer?.setVolume(v);
@@ -546,7 +559,12 @@ export class SdaPlayer {
    *  end of the song. */
   positionSeconds(): number {
     if (!this.renderer) return 0;
-    return Math.min(this.renderer.consumedSeconds(), this.durationSeconds());
+    // 听觉位置补偿：worklet 已渲染的样本还要经过 peak guard lookahead（5ms）
+    // 和输出级 FIFO（baseLatency，本应用固定请求 100ms）才到达 DAC。
+    // 进度条与 3D 对象可视化应对齐用户实际听到的位置，而不是渲染时钟。
+    const outputLatency = (this.renderer.ctx.baseLatency || 0) + 0.005;
+    const audible = Math.max(0, this.renderer.consumedSeconds() - outputLatency);
+    return Math.min(audible, this.durationSeconds());
   }
 
   durationSeconds(): number {
@@ -610,8 +628,9 @@ export class SdaPlayer {
     return Math.min(TARGET_AHEAD_SECONDS, this.renderer?.maxBufferedSeconds() ?? TARGET_AHEAD_SECONDS);
   }
 
-  private reportRendererHealth(stats: { underrunSamples: number; rejectedBatches: number; rejectedSources: number }): void {
-    if (stats.underrunSamples === 0 && stats.rejectedBatches === 0 && stats.rejectedSources === 0) return;
+  private reportRendererHealth(stats: { underrunSamples: number; rejectedBatches: number; rejectedSources: number; callbackGaps?: number; callbackGapMaxMs?: number }): void {
+    const gaps = stats.callbackGaps ?? 0;
+    if (stats.underrunSamples === 0 && stats.rejectedBatches === 0 && stats.rejectedSources === 0 && gaps === 0) return;
     const now = performance.now();
     if (now - this.lastUnderrunReport < 1000) return;
     this.lastUnderrunReport = now;
@@ -619,6 +638,7 @@ export class SdaPlayer {
       stats.underrunSamples ? `断供 ${stats.underrunSamples} samples` : "",
       stats.rejectedBatches ? `拒绝 ${stats.rejectedBatches} PCM frame` : "",
       stats.rejectedSources ? `拒绝 ${stats.rejectedSources} source` : "",
+      gaps ? `回调间隙 ${gaps} 次（最大 ${(stats.callbackGapMaxMs ?? 0).toFixed(1)}ms）` : "",
       `缓冲 ${Math.max(0, this.fedBufferedSeconds()).toFixed(2)}s`,
     ].filter(Boolean).join("，");
     this.cb.onError?.(`音频实时供给不足：${details}`);
@@ -692,6 +712,7 @@ export class SdaPlayer {
     // pumpPcm 自己有 null 守卫，队列在重建完成后继续泵。
     this.sampleRate = frame.sampleRate;
     if (frame.programLoudness) {
+      this.programLoudness = frame.programLoudness;
       this.programLoudnessGainDb = Math.min(0, frame.programLoudness.gainDb);
     }
 

@@ -26,6 +26,12 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
     this.underrunSamples = 0;
     this.rejectedBatches = 0;
     this.rejectedSources = 0;
+    // 输出侧回调抖动测量：process() 两次调用的墙钟间隔应约等于一个
+    // render quantum（128/48000≈2.67ms）。焦点切换/后台节流导致实时线程
+    // 被延迟调度时这里会出现间隙——即便 PCM 环形缓冲充足也会听见卡顿。
+    this.lastProcessAt = null;
+    this.callbackGaps = 0;
+    this.callbackGapMaxMs = 0;
     this.port.postMessage({ type: "ready", ringSize: RING_SIZE, maxSources: MAX_SOURCES, build: WORKLET_BUILD });
     this.port.onmessage = (e) => this.onMessage(e.data);
   }
@@ -328,6 +334,16 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs, outputs) {
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+    if (this.lastProcessAt !== null && now > 0 && this.timelineStarted && !this.paused) {
+      const gapMs = now - this.lastProcessAt;
+      // 正常间隔约 2.67ms；>12ms 视为一次输出侧调度间隙（约 4.5 个 quantum）
+      if (gapMs > 12) {
+        this.callbackGaps++;
+        if (gapMs > this.callbackGapMaxMs) this.callbackGapMaxMs = gapMs;
+      }
+    }
+    this.lastProcessAt = now;
     const busesByBank = outputs;
     const primaryBuses = busesByBank[0] || [];
     const blockSize = primaryBuses[0] ? primaryBuses[0].length : 128;
@@ -414,10 +430,14 @@ class SdaRendererProcessor extends AudioWorkletProcessor {
         underrunSamples: this.underrunSamples,
         rejectedBatches: this.rejectedBatches,
         rejectedSources: this.rejectedSources,
+        callbackGaps: this.callbackGaps,
+        callbackGapMaxMs: Math.round(this.callbackGapMaxMs * 10) / 10,
       });
       this.underrunSamples = 0;
       this.rejectedBatches = 0;
       this.rejectedSources = 0;
+      this.callbackGaps = 0;
+      this.callbackGapMaxMs = 0;
     }
     return true;
   }

@@ -13,7 +13,7 @@ const readF32 = (f) => {
 const workletSrc = readFileSync("packages/renderer/worklet/sda-renderer.worklet.js", "utf8");
 let ProcessorClass = null;
 globalThis.AudioWorkletProcessor = class { constructor() { this.port = { onmessage: null, postMessage() {} }; } };
-globalThis.registerProcessor = (name, cls) => { ProcessorClass = cls; };
+globalThis.registerProcessor = (name, cls) => { if (name === "sda-renderer") ProcessorClass = cls; };
 globalThis.sampleRate = 48000;
 eval(workletSrc);
 
@@ -23,6 +23,7 @@ const post = (m, transfer) => p.port.onmessage({ data: m });
 
 // bed:4 = SurroundLeft：snap 后 gains[4]=1 + 扩展馈后环 gains[6]=0.5（renderer 实测值）
 post({ type: "add", id: "bed:4" });
+post({ type: "start", origin: 0 });
 const gains = new Float32Array(BUS);
 gains[4] = 1; gains[6] = 0.5;
 post({ type: "gains", id: "bed:4", gains, gain: 1, lp: 1, ramp: 1 });
