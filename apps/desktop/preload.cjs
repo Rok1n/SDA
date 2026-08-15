@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   getVolumeBalanceEnabled: () => ipcRenderer.sendSync("sda:get-volume-balance-enabled"),
   setVolumeBalanceEnabled: (enabled) => ipcRenderer.sendSync("sda:set-volume-balance-enabled", enabled),
   pickFile: () => ipcRenderer.invoke("sda:pick-file"),
+  pickFolder: () => ipcRenderer.invoke("sda:pick-folder"),
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),
   readSlice: (id, offset, length) => ipcRenderer.invoke("sda:read-slice", id, offset, length),
   close: (id) => ipcRenderer.invoke("sda:close", id),
