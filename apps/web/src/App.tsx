@@ -51,7 +51,34 @@ function persistOutputLatencySeconds(seconds: OutputLatencySeconds): void {
   }
 }
 
-localStorage.removeItem("sda-layout-level-compensation-enabled");
+function readVolumeBalanceEnabled(): boolean {
+  const desktopValue = window.sdaDesktop?.getVolumeBalanceEnabled?.();
+  if (typeof desktopValue === "boolean") return desktopValue;
+  try {
+    return localStorage.getItem("sda-volume-balance-enabled") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistVolumeBalanceEnabled(enabled: boolean): void {
+  const persistDesktopValue = window.sdaDesktop?.setVolumeBalanceEnabled;
+  if (persistDesktopValue) {
+    persistDesktopValue(enabled);
+    return;
+  }
+  try {
+    localStorage.setItem("sda-volume-balance-enabled", String(enabled));
+  } catch {
+    // Private-mode or quota failures must not interfere with playback.
+  }
+}
+
+try {
+  localStorage.removeItem("sda-layout-level-compensation-enabled");
+} catch {
+  // Private-mode failures must not prevent app startup.
+}
 
 const bundledHrtfReader = window.sdaDesktop?.readBundledHrtf;
 setBinauralAssetLoader(bundledHrtfReader
@@ -101,9 +128,7 @@ export function App() {
    *  playerRef 是空的、pause() 会丢 —— play() 建好 player 后按此补发。 */
   const pausedRef = useRef(false);
   const [volume, setVolume] = useState(1);
-  const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(
-    () => localStorage.getItem("sda-volume-balance-enabled") === "true",
-  );
+  const [volumeBalanceEnabled, setVolumeBalanceEnabled] = useState(readVolumeBalanceEnabled);
   const [programLoudness, setProgramLoudness] = useState<ProgramLoudnessMetadata | null>(null);
   const [binauralEqBands, setBinauralEqBands] = useState<BinauralEqBands>(() => {
     const readBand = (band: keyof BinauralEqBands) => {
@@ -462,7 +487,7 @@ export function App() {
 
   const changeVolumeBalance = useCallback((enabled: boolean) => {
     setVolumeBalanceEnabled(enabled);
-    localStorage.setItem("sda-volume-balance-enabled", String(enabled));
+    persistVolumeBalanceEnabled(enabled);
     playerRef.current?.setVolumeBalance(enabled);
   }, []);
 

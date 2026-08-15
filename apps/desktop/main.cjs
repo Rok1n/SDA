@@ -81,21 +81,48 @@ const DEFAULT_OUTPUT_LATENCY_SECONDS = 0.1;
 const settingsPath = () => path.join(app.getPath("userData"), "settings.json");
 const isOutputLatencySeconds = (value) => OUTPUT_LATENCY_SECONDS.includes(value);
 
-function readOutputLatencySeconds() {
+function readSettings() {
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
-    return isOutputLatencySeconds(settings?.outputLatencySeconds)
-      ? settings.outputLatencySeconds
-      : DEFAULT_OUTPUT_LATENCY_SECONDS;
+    return settings && typeof settings === "object" && !Array.isArray(settings) ? settings : {};
   } catch {
-    return DEFAULT_OUTPUT_LATENCY_SECONDS;
+    return {};
   }
+}
+
+function writeSettings(updates) {
+  fs.mkdirSync(app.getPath("userData"), { recursive: true });
+  fs.writeFileSync(settingsPath(), JSON.stringify({ ...readSettings(), ...updates }), "utf8");
+}
+
+function readOutputLatencySeconds() {
+  const { outputLatencySeconds } = readSettings();
+  return isOutputLatencySeconds(outputLatencySeconds)
+    ? outputLatencySeconds
+    : DEFAULT_OUTPUT_LATENCY_SECONDS;
 }
 
 function writeOutputLatencySeconds(seconds) {
   if (!isOutputLatencySeconds(seconds)) throw new Error("invalid output latency seconds");
-  fs.mkdirSync(app.getPath("userData"), { recursive: true });
-  fs.writeFileSync(settingsPath(), JSON.stringify({ outputLatencySeconds: seconds }), "utf8");
+  writeSettings({ outputLatencySeconds: seconds });
+}
+
+function readVolumeBalanceEnabled() {
+  return readSettings().volumeBalanceEnabled === true;
+}
+
+function writeVolumeBalanceEnabled(enabled) {
+  if (typeof enabled !== "boolean") throw new Error("invalid volume balance setting");
+  writeSettings({ volumeBalanceEnabled: enabled });
+}
+
+function readLastMediaDirectory() {
+  const directory = readSettings().lastMediaDirectory;
+  try {
+    return typeof directory === "string" && fs.statSync(directory).isDirectory() ? directory : null;
+  } catch {
+    return null;
+  }
 }
 
 const webAssetRoots = () => [
@@ -236,11 +263,27 @@ ipcMain.on("sda:set-output-latency-seconds", (event, seconds) => {
   }
 });
 
+ipcMain.on("sda:get-volume-balance-enabled", (event) => {
+  event.returnValue = readVolumeBalanceEnabled();
+});
+
+ipcMain.on("sda:set-volume-balance-enabled", (event, enabled) => {
+  try {
+    writeVolumeBalanceEnabled(enabled);
+    event.returnValue = true;
+  } catch (error) {
+    console.warn("[SDA] 音量平衡设置未保存:", error);
+    event.returnValue = false;
+  }
+});
+
 ipcMain.handle("sda:pick-file", async (event) => {
   // 挂到发起窗口上：弹窗跟随主窗口置顶，不会跑到后台/其他显示器；
   // 且异步版本不会冻结主进程事件循环，播放中的 IPC 读文件不受影响。
   const parent = BrowserWindow.fromWebContents(event.sender);
+  const defaultPath = readLastMediaDirectory();
   const options = {
+    ...(defaultPath ? { defaultPath } : {}),
     filters: [
       { name: "Audio / Video", extensions: ["mkv", "mka", "mp4", "m4a", "wav", "bwf", "rf64", "thd", "mlp", "ec3", "eac3", "ac3", "dts"] },
       { name: "All Files", extensions: ["*"] },
@@ -250,7 +293,15 @@ ipcMain.handle("sda:pick-file", async (event) => {
   const { canceled, filePaths } = parent
     ? await dialog.showOpenDialog(parent, options)
     : await dialog.showOpenDialog(options);
-  return canceled ? null : filePaths[0];
+  const filePath = canceled ? null : filePaths[0] ?? null;
+  if (filePath) {
+    try {
+      writeSettings({ lastMediaDirectory: path.dirname(filePath) });
+    } catch (error) {
+      console.warn("[SDA] 最近媒体目录未保存:", error);
+    }
+  }
+  return filePath;
 });
 
 ipcMain.handle("sda:open-path", (_e, filePath) => {

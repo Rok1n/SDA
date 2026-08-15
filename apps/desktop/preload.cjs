@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("sdaDesktop", {
   rendererMode,
   getOutputLatencySeconds: () => ipcRenderer.sendSync("sda:get-output-latency-seconds"),
   setOutputLatencySeconds: (seconds) => ipcRenderer.sendSync("sda:set-output-latency-seconds", seconds),
+  getVolumeBalanceEnabled: () => ipcRenderer.sendSync("sda:get-volume-balance-enabled"),
+  setVolumeBalanceEnabled: (enabled) => ipcRenderer.sendSync("sda:set-volume-balance-enabled", enabled),
   pickFile: () => ipcRenderer.invoke("sda:pick-file"),
   openPath: (filePath) => ipcRenderer.invoke("sda:open-path", filePath),
   readSlice: (id, offset, length) => ipcRenderer.invoke("sda:read-slice", id, offset, length),
