@@ -1,1 +1,1 @@
-trigger 2026-09-02 custom Windows build 1
+trigger 2026-09-02 custom Windows build 2 - AirPods bridge bundled
