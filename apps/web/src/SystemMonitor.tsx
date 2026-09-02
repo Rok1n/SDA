@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, RoundedBox } from "@react-three/drei";
 import * as THREE from "three";
@@ -63,14 +63,15 @@ const EMPTY_SCENE: Scene = {
 };
 
 function Listener({ pose, usePose }: { pose: Pose; usePose: boolean }) {
-  const ref = useMemo(() => new THREE.Object3D(), []);
+  const ref = useRef<THREE.Group>(null);
   useFrame(() => {
+    if (!ref.current) return;
     const yaw = usePose && pose.live ? THREE.MathUtils.degToRad(-pose.yawDeg) : 0;
     const pitch = usePose && pose.live ? THREE.MathUtils.degToRad(pose.pitchDeg) : 0;
-    ref.rotation.set(pitch, yaw, 0);
+    ref.current.rotation.set(pitch, yaw, 0);
   });
   return (
-    <primitive object={ref}>
+    <group ref={ref}>
       <mesh scale={[0.85, 1.08, 0.92]}>
         <sphereGeometry args={[0.16, 20, 20]} />
         <meshStandardMaterial color="#8a93a6" roughness={0.5} />
@@ -79,11 +80,11 @@ function Listener({ pose, usePose }: { pose: Pose; usePose: boolean }) {
         <cylinderGeometry args={[0.075, 0.08, 0.09, 24]} />
         <meshStandardMaterial color="#767e91" roughness={0.55} />
       </mesh>
-      <mesh position={[0, 0, -0.17]}>
+      <mesh position={[0, 0, -0.17]} rotation={[-Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.025, 0.1, 10]} />
         <meshStandardMaterial color="#60a5fa" />
       </mesh>
-    </primitive>
+    </group>
   );
 }
 
@@ -172,6 +173,11 @@ export function SystemMonitor() {
     setScene(await bridge.setHeadTrackingEnabled(!scene.headTrackingEnabled));
   };
 
+  const recenter = async () => {
+    if (!bridge || !pose.available) return;
+    setScene(await bridge.recenterHeadTracking());
+  };
+
   const headPoseApplied = scene.connected ? scene.headTrackingEnabled : previewPose;
   const visualMode = scene.objectMetadataAvailable ? "Spatial Objects" : "Channel Activity";
 
@@ -203,9 +209,12 @@ export function SystemMonitor() {
             <strong>AirPods Head Tracking</strong>
             <small>{pose.live ? `${pose.source ?? "AirPods Motion"} · LIVE` : pose.available ? `state: ${pose.mode}` : "No live AirPods motion state"}</small>
           </div>
-          <button disabled={!pose.available} className={headPoseApplied ? "toggle on" : "toggle"} onClick={toggleTracking}>
-            {headPoseApplied ? "ON" : "OFF"}
-          </button>
+          <div className="control-actions">
+            <button disabled={!pose.available} className="secondary" onClick={recenter}>Recenter</button>
+            <button disabled={!pose.available} className={headPoseApplied ? "toggle on" : "toggle"} onClick={toggleTracking}>
+              {headPoseApplied ? "ON" : "OFF"}
+            </button>
+          </div>
         </div>
 
         <div className="metrics">
@@ -222,7 +231,7 @@ export function SystemMonitor() {
         <div className="scene-title">
           <div>
             <strong>{visualMode}</strong>
-            <small>{scene.message ?? (scene.connected ? "Global telemetry live" : "3D listener follows verified SoundStage shared head pose when available")}</small>
+            <small>{scene.message ?? (scene.connected ? "Global telemetry live" : "3D listener follows verified AirPods motion when available")}</small>
           </div>
           <span>{scene.sources.length} active visual sources</span>
         </div>
