@@ -7,6 +7,9 @@ files:
   - system-preload.cjs
   - from: ../web/dist
     to: web
+extraResources:
+  - from: ../../native/windows/SdaAirPodsBridge/publish/SdaAirPodsBridge.exe
+    to: native/SdaAirPodsBridge.exe
 win:
   target: nsis
   artifactName: SDA-System-Audio-${version}-${arch}.${ext}
