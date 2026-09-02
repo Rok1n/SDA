@@ -1,0 +1,31 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e5edf8; background: #070b13; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 980px; min-height: 720px; background: radial-gradient(circle at top, #111c31 0, #070b13 44%, #05070c 100%); }
+button { font: inherit; }
+.system-shell { min-height: 100vh; padding: 24px; display: grid; grid-template-rows: auto auto minmax(430px, 1fr) auto; gap: 16px; }
+.system-header, .scene-title, .control-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.system-header h1 { margin: 0; font-size: 24px; letter-spacing: .02em; }
+.system-header p, small, footer { color: #91a0b7; }
+.system-header p { margin: 5px 0 0; font-size: 13px; }
+.pill { font-size: 11px; letter-spacing: .08em; padding: 7px 10px; border-radius: 999px; border: 1px solid #344156; }
+.pill.ok { color: #86efac; border-color: #166534; background: #052e16; }
+.pill.warn { color: #fcd34d; border-color: #713f12; background: #291804; }
+.controls-card, .scene-card { background: rgba(9, 15, 27, .86); border: 1px solid #1e293b; border-radius: 18px; box-shadow: 0 18px 50px rgba(0,0,0,.25); overflow: hidden; }
+.controls-card { padding: 4px 20px; display: grid; grid-template-columns: 1fr 1fr; column-gap: 28px; }
+.control-row { min-height: 78px; border-bottom: 1px solid #182235; }
+.control-row strong { display: block; margin-bottom: 6px; }
+.control-row small { display: block; max-width: 480px; }
+.toggle { min-width: 66px; padding: 9px 14px; border-radius: 999px; color: #94a3b8; background: #111827; border: 1px solid #334155; cursor: pointer; }
+.toggle.on { color: white; background: #2563eb; border-color: #3b82f6; box-shadow: 0 0 28px rgba(37,99,235,.28); }
+.toggle:disabled { opacity: .4; cursor: not-allowed; }
+.metrics { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; background: #182235; margin: 4px -20px 0; }
+.metrics div { background: #0b1220; padding: 14px 18px; }
+.metrics span { display: block; color: #718096; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 5px; }
+.metrics strong { font-size: 15px; }
+.scene-card { display: grid; grid-template-rows: auto 1fr; min-height: 430px; }
+.scene-title { padding: 14px 18px; border-bottom: 1px solid #1e293b; }
+.scene-title strong, .scene-title small { display: block; }
+.scene-title small { margin-top: 4px; }
+.scene-title > span { color: #64748b; font-size: 12px; }
+.scene-canvas { min-height: 390px; }
+footer { font-size: 12px; text-align: center; padding: 2px 0 6px; }

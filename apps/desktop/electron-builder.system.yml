@@ -1,0 +1,16 @@
+appId: app.sda.system-monitor
+productName: SDA System Audio
+extraMetadata:
+  main: system-monitor.cjs
+files:
+  - system-monitor.cjs
+  - system-preload.cjs
+  - from: ../web/dist
+    to: web
+win:
+  target: nsis
+  artifactName: SDA-System-Audio-${version}-${arch}.${ext}
+  signAndEditExecutable: false
+mac:
+  target: dmg
+  artifactName: SDA-System-Audio-${version}-mac-${arch}.${ext}
