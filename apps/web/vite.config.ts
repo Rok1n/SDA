@@ -7,8 +7,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "index.html"),
-        system: resolve(__dirname, "system.html"),
+        main: resolve(process.cwd(), "index.html"),
+        system: resolve(process.cwd(), "system.html"),
       },
     },
   },
