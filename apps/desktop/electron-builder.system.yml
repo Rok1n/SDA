@@ -5,7 +5,7 @@ extraMetadata:
 files:
   - system-monitor.cjs
   - system-preload.cjs
-  - from: ../web/dist
+  - from: ../web/dist-system
     to: web
 extraResources:
   - from: ../../native/windows/SdaAirPodsBridge/publish/SdaAirPodsBridge.exe
