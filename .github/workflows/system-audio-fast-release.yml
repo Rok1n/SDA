@@ -1,0 +1,66 @@
+name: system-audio-fast-release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "system-release-trigger.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-system-audio:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build AirPods motion bridge
+        shell: pwsh
+        run: dotnet publish native/windows/SdaAirPodsBridge/SdaAirPodsBridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o native/windows/SdaAirPodsBridge/publish
+
+      - name: Build System Audio web UI only
+        run: pnpm --filter @sda/web exec vite build --config vite.system.config.ts
+
+      - name: Build SDA System Audio installer
+        shell: pwsh
+        run: pnpm --filter @sda/desktop exec electron-builder --config electron-builder.system.yml --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload System Audio artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sda-system-audio-windows
+          path: |
+            apps/desktop/dist/SDA-System-Audio-*.exe
+            native/windows/SdaAirPodsBridge/publish/SdaAirPodsBridge.exe
+          if-no-files-found: error
+
+      - name: Create System Audio prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "system-audio-${{ github.run_number }}"
+          $installer = Get-ChildItem apps/desktop/dist/SDA-System-Audio-*.exe | Select-Object -First 1
+          if (-not $installer) { throw "System Audio installer was not produced" }
+          gh release create $tag $installer.FullName --target "${{ github.sha }}" --title "SDA System Audio $tag" --notes "Customized Windows System Audio monitor/controller for Rok1n. Includes bundled AirPods AACP motion helper. Real global multichannel rendering controls activate when the SDA GlobalAudio native bridge is installed." --prerelease
