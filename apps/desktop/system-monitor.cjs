@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 const net = require("node:net");
+const { spawn } = require("node:child_process");
 
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
@@ -18,6 +19,10 @@ let pipe = null;
 let pipeBuffer = "";
 let nextRequestId = 1;
 const pending = new Map();
+let airPodsProcess = null;
+let airPodsBuffer = "";
+let airPodsPoseAt = 0;
+let lastAirPodsLaunchAttempt = 0;
 
 function emptyPose() {
   return { available: false, live: false, source: null, mode: "unknown", yawDeg: 0, pitchDeg: 0, rollDeg: 0, ageMs: null };
@@ -94,9 +99,98 @@ function readSoundStagePose() {
   }
 }
 
-function publishPose() {
-  pose = readSoundStagePose();
+function airPodsBridgeCandidates() {
+  const candidates = [];
+  if (app.isPackaged) candidates.push(path.join(process.resourcesPath, "native", "SdaAirPodsBridge.exe"));
+  candidates.push(path.join(__dirname, "..", "..", "native", "windows", "SdaAirPodsBridge", "bin", "Release", "net8.0-windows", "win-x64", "publish", "SdaAirPodsBridge.exe"));
+  return candidates;
+}
+
+function emitPose() {
   if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send("sda-system:head-pose", pose);
+}
+
+function applyAirPodsBridgeMessage(message) {
+  if (!message || typeof message !== "object") return;
+  if (message.type === "pose") {
+    airPodsPoseAt = Date.now();
+    pose = {
+      available: true,
+      live: message.state === "live",
+      source: "SDA AirPods AACP bridge",
+      mode: "tracked",
+      yawDeg: finite(Number(message.yawDeg)),
+      pitchDeg: finite(Number(message.pitchDeg)),
+      rollDeg: message.rollValid === true ? finite(Number(message.rollDeg)) : 0,
+      ageMs: 0,
+    };
+    emitPose();
+    return;
+  }
+  if (message.type === "status") {
+    const state = String(message.state ?? "unknown");
+    if (state === "calibrating") {
+      pose = { ...pose, available: true, live: false, source: "SDA AirPods AACP bridge", mode: "tracked", ageMs: 0 };
+      emitPose();
+    } else if (["driver-unavailable", "airpods-not-found", "driver-error", "unsupported"].includes(state)) {
+      pose = emptyPose();
+      emitPose();
+    }
+  }
+}
+
+function startAirPodsBridge() {
+  if (process.platform !== "win32" || airPodsProcess) return;
+  if (Date.now() - lastAirPodsLaunchAttempt < 5000) return;
+  lastAirPodsLaunchAttempt = Date.now();
+  const executable = airPodsBridgeCandidates().find((candidate) => fs.existsSync(candidate));
+  if (!executable) return;
+
+  const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  airPodsProcess = child;
+  airPodsBuffer = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    airPodsBuffer += chunk;
+    for (;;) {
+      const newline = airPodsBuffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = airPodsBuffer.slice(0, newline).trim();
+      airPodsBuffer = airPodsBuffer.slice(newline + 1);
+      if (!line) continue;
+      try { applyAirPodsBridgeMessage(JSON.parse(line)); } catch { }
+    }
+  });
+  child.on("error", () => {});
+  child.on("exit", () => {
+    if (airPodsProcess === child) airPodsProcess = null;
+    airPodsPoseAt = 0;
+  });
+}
+
+function publishPose() {
+  const shared = readSoundStagePose();
+  if (shared.live) {
+    pose = shared;
+    emitPose();
+    return;
+  }
+
+  if (airPodsProcess && airPodsPoseAt > 0) {
+    const ageMs = Math.max(0, Date.now() - airPodsPoseAt);
+    pose = { ...pose, live: ageMs < 1500, ageMs };
+    emitPose();
+    return;
+  }
+
+  if (shared.available) {
+    pose = shared;
+    emitPose();
+  } else if (!airPodsProcess) {
+    pose = emptyPose();
+    emitPose();
+    startAirPodsBridge();
+  }
 }
 
 function publishScene() {
@@ -135,7 +229,7 @@ function connectGlobalPipe() {
             else waiter.resolve(message.payload);
           }
         }
-      } catch { /* invalid telemetry is dropped */ }
+      } catch { }
     }
   });
   const lost = () => {
@@ -181,6 +275,8 @@ ipcMain.handle("sda-system:set-head-tracking", async (_event, enabled) => {
   return scene;
 });
 ipcMain.handle("sda-system:recenter", async () => {
+  if (airPodsProcess?.stdin?.writable) airPodsProcess.stdin.write(`${JSON.stringify({ type: "recenter" })}\n`);
+  if (!pipe || pipe.destroyed) return scene;
   const result = await request("recenterHeadTracking", {});
   scene = validateScene(result ?? scene);
   publishScene();
@@ -213,6 +309,11 @@ app.whenReady().then(() => {
   connectGlobalPipe();
   setInterval(publishPose, 50).unref();
   setInterval(connectGlobalPipe, 1500).unref();
+});
+
+app.on("before-quit", () => {
+  if (airPodsProcess?.stdin?.writable) airPodsProcess.stdin.write(`${JSON.stringify({ type: "stop" })}\n`);
+  airPodsProcess?.kill();
 });
 
 app.on("window-all-closed", () => app.quit());
