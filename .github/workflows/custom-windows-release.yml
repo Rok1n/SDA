@@ -1,0 +1,83 @@
+name: custom-windows-release
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "custom-release-trigger.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/core
+
+      - name: Install wasm-bindgen-cli
+        shell: pwsh
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build decoder core
+        run: pnpm core:build
+
+      - name: Build multi-page web UI
+        run: pnpm --filter @sda/web build
+
+      - name: Build original SDA player installer
+        shell: pwsh
+        run: pnpm --filter @sda/desktop exec electron-builder --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Build SDA System Audio installer
+        shell: pwsh
+        run: pnpm --filter @sda/desktop exec electron-builder --config electron-builder.system.yml --win nsis --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: List release artifacts
+        shell: pwsh
+        run: Get-ChildItem apps/desktop/dist -File | Select-Object Name,Length
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sda-custom-windows
+          path: apps/desktop/dist/*.exe
+          if-no-files-found: error
+
+      - name: Create rolling custom release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "custom-${{ github.run_number }}"
+          $title = "SDA Custom Windows $tag"
+          $files = Get-ChildItem apps/desktop/dist/*.exe | ForEach-Object { $_.FullName }
+          gh release create $tag $files --target "${{ github.sha }}" --title $title --notes "Custom Windows build for Rok1n: original SDA player plus SDA System Audio monitor/control app with AirPods head-pose compatibility and GlobalAudio bridge support." --prerelease
