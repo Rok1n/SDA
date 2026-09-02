@@ -28,6 +28,10 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -46,6 +50,10 @@ jobs:
       - name: Build decoder core
         run: pnpm core:build
 
+      - name: Build AirPods motion bridge
+        shell: pwsh
+        run: dotnet publish native/windows/SdaAirPodsBridge/SdaAirPodsBridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o native/windows/SdaAirPodsBridge/publish
+
       - name: Build multi-page web UI
         run: pnpm --filter @sda/web build
 
@@ -63,13 +71,17 @@ jobs:
 
       - name: List release artifacts
         shell: pwsh
-        run: Get-ChildItem apps/desktop/dist -File | Select-Object Name,Length
+        run: |
+          Get-ChildItem apps/desktop/dist -File | Select-Object Name,Length
+          Get-ChildItem native/windows/SdaAirPodsBridge/publish -File | Select-Object Name,Length
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: sda-custom-windows
-          path: apps/desktop/dist/*.exe
+          path: |
+            apps/desktop/dist/*.exe
+            native/windows/SdaAirPodsBridge/publish/SdaAirPodsBridge.exe
           if-no-files-found: error
 
       - name: Create rolling custom release
@@ -80,4 +92,4 @@ jobs:
           $tag = "custom-${{ github.run_number }}"
           $title = "SDA Custom Windows $tag"
           $files = Get-ChildItem apps/desktop/dist/*.exe | ForEach-Object { $_.FullName }
-          gh release create $tag $files --target "${{ github.sha }}" --title $title --notes "Custom Windows build for Rok1n: original SDA player plus SDA System Audio monitor/control app with AirPods head-pose compatibility and GlobalAudio bridge support." --prerelease
+          gh release create $tag $files --target "${{ github.sha }}" --title $title --notes "Custom Windows build for Rok1n: original SDA player plus SDA System Audio monitor/control app. The System Audio installer includes the SDA AirPods AACP motion helper, reads real yaw/pitch from a compatible installed driver, and connects to the SDA GlobalAudio bridge when present." --prerelease
