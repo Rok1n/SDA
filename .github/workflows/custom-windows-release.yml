@@ -54,8 +54,11 @@ jobs:
         shell: pwsh
         run: dotnet publish native/windows/SdaAirPodsBridge/SdaAirPodsBridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o native/windows/SdaAirPodsBridge/publish
 
-      - name: Build multi-page web UI
+      - name: Build original web UI
         run: pnpm --filter @sda/web build
+
+      - name: Build System Audio web UI
+        run: pnpm --filter @sda/web exec vite build --config vite.system.config.ts
 
       - name: Build original SDA player installer
         shell: pwsh
