@@ -55,7 +55,8 @@ jobs:
             native/windows/SdaAirPodsBridge/publish/SdaAirPodsBridge.exe
           if-no-files-found: error
 
-      - name: Create System Audio prerelease
+      - name: Create System Audio prerelease when repository token permits it
+        continue-on-error: true
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,3 +65,10 @@ jobs:
           $installer = Get-ChildItem apps/desktop/dist/SDA-System-Audio-*.exe | Select-Object -First 1
           if (-not $installer) { throw "System Audio installer was not produced" }
           gh release create $tag $installer.FullName --target "${{ github.sha }}" --title "SDA System Audio $tag" --notes "Customized Windows System Audio monitor/controller for Rok1n. Includes bundled AirPods AACP motion helper. Real global multichannel rendering controls activate when the SDA GlobalAudio native bridge is installed." --prerelease
+
+      - name: Build result
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem apps/desktop/dist/SDA-System-Audio-*.exe | Select-Object -First 1
+          if (-not $installer) { throw "System Audio installer was not produced" }
+          Write-Host "Installer ready: $($installer.FullName)"
